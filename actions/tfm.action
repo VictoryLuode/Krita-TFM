@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ActionCollection version="2" name="Scripts">
+    <Actions category="Scripts">
+        <text>TFM</text>
+        <Action name="tfm_popup">
+            <icon></icon><text>Pop Up Custom List</text><whatsThis></whatsThis>
+            <toolTip>Open the custom list menu at the cursor</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+        <Action name="tfm_color_range">
+            <icon></icon><text>Advance Selection...</text><whatsThis></whatsThis>
+            <toolTip>Select an enhanced image color range</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+        <Action name="tfm_edit">
+            <icon></icon><text>Configure TFM</text><whatsThis></whatsThis>
+            <toolTip>Configure menus, filters and tools</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+    </Actions>
+</ActionCollection>

@@ -1,0 +1,882 @@
+"""TFM menu module - config layer: multi-list JSON persistence,
+full action catalog enumeration, per-item custom labels, per-list shortcuts,
+and refresh notification.
+
+Item storage format (backward compatible):
+- no custom label  -> a plain string action id:  "mirror_canvas"
+- custom label     -> a dict: {"id": "mirror_canvas", "label": "Mirror"}
+After loading, items are normalised to dicts {"id", "label"} internally.
+"""
+
+import json
+import os
+import tempfile
+import traceback
+
+from krita import Krita
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+_RESOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(PLUGIN_DIR)))
+_TFM_DATA_DIR = os.path.join(_RESOURCE_ROOT, "TFM")
+_LEGACY_MENU_DIR = os.path.join(_RESOURCE_ROOT, "pykrita", "menubelt")
+CONFIG_FILE = os.path.join(_TFM_DATA_DIR, "config.json")
+LEGACY_CONFIG_FILE = os.path.join(_LEGACY_MENU_DIR, "config.json")
+SCRIPTS_DIR = os.path.join(_TFM_DATA_DIR, "scripts")
+LEGACY_SCRIPTS_DIR = os.path.join(_LEGACY_MENU_DIR, "scripts")
+
+_LEGACY_ACTION_PREFIXES = (
+    "krita_filter_fxmanager_",
+    "krita_filter_filtermanager_",
+)
+_LEGACY_ACTION_EXACT = {
+    "menubelt_popup": "tfm_popup",
+    "menubelt_edit": "tfm_edit",
+    "filtermanager_menu": "tfm_tools_menu",
+    "fxmanager_menu": "tfm_tools_menu",
+}
+
+
+def _normalise_action_id(aid):
+    if not isinstance(aid, str):
+        return aid
+    if aid in _LEGACY_ACTION_EXACT:
+        return _LEGACY_ACTION_EXACT[aid]
+    for prefix in _LEGACY_ACTION_PREFIXES:
+        if aid.startswith(prefix):
+            return "krita_filter_tfm_" + aid[len(prefix):]
+    return aid
+
+
+def _migrate_legacy_config():
+    if os.path.exists(CONFIG_FILE) or not os.path.isfile(LEGACY_CONFIG_FILE):
+        return
+    temporary = None
+    try:
+        directory = os.path.dirname(CONFIG_FILE)
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".tfm-migrate-", suffix=".tmp", dir=directory)
+        with os.fdopen(fd, "wb") as target, open(LEGACY_CONFIG_FILE, "rb") as source:
+            target.write(source.read())
+        os.link(temporary, CONFIG_FILE)
+    except OSError:
+        pass
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+# The authoritative LAYER blend-mode ids (from KoCompositeOpRegistry.h). These are
+# the values Node.setBlendingMode() accepts — NOT brush blend modes.
+LAYER_BLEND_MODES = [
+    ("normal", "Normal"),
+    ("multiply", "Multiply"),
+    ("screen", "Screen"),
+    ("overlay", "Overlay"),
+    ("soft_light", "Soft Light (Photoshop)"),
+    ("hard_light", "Hard Light"),
+    ("dodge", "Color Dodge"),
+    ("linear_dodge", "Linear Dodge"),
+    ("burn", "Burn"),
+    ("linear_burn", "Linear Burn"),
+    ("darken", "Darken"),
+    ("lighten", "Lighten"),
+    ("diff", "Difference"),
+    ("exclusion", "Exclusion"),
+    ("vivid_light", "Vivid Light"),
+    ("linear light", "Linear Light"),
+    ("pin_light", "Pin Light"),
+    ("hard_mix_photoshop", "Hard Mix (Photoshop)"),
+    ("dissolve", "Dissolve"),
+    ("darker color", "Darker Color"),
+    ("lighter color", "Lighter Color"),
+    ("divide", "Divide"),
+    ("subtract", "Subtract"),
+    ("hue", "Hue"),
+    ("saturation", "Saturation"),
+    ("color", "Color"),
+    ("luminize", "Luminosity"),
+]
+
+# Brush painting blend-mode ids (KoCompositeOpRegistry.h) accepted by
+# View.setCurrentBlendingMode() — the modes applied to brush STROKES, distinct
+# from the layer modes above.
+BRUSH_BLEND_MODES = [
+    ("normal", "Normal"),
+    ("behind", "Behind"),
+    ("erase", "Erase"),
+    ("clear", "Clear"),
+    ("dissolve", "Dissolve"),
+    ("multiply", "Multiply"),
+    ("screen", "Screen"),
+    ("overlay", "Overlay"),
+    ("soft_light", "Soft Light"),
+    ("hard_light", "Hard Light"),
+    ("vivid_light", "Vivid Light"),
+    ("linear light", "Linear Light"),
+    ("pin_light", "Pin Light"),
+    ("hard_mix", "Hard Mix"),
+    ("darken", "Darken"),
+    ("lighten", "Lighten"),
+    ("burn", "Burn (Color Burn)"),
+    ("linear_burn", "Linear Burn"),
+    ("dodge", "Color Dodge"),
+    ("linear_dodge", "Linear Dodge"),
+    ("add", "Addition"),
+    ("subtract", "Subtract"),
+    ("divide", "Divide"),
+    ("diff", "Difference"),
+    ("exclusion", "Exclusion"),
+    ("hue", "Hue"),
+    ("saturation", "Saturation"),
+    ("color", "Color"),
+    ("luminize", "Luminosity"),
+    ("alpha_darken", "Alpha Darken"),
+    ("marker", "Marker"),
+    ("colorize", "Colorize"),
+    ("greater", "Greater"),
+    ("darker color", "Darker Color"),
+    ("lighter color", "Lighter Color"),
+    ("displace", "Displace"),
+    ("bumpmap", "Bumpmap"),
+    ("tangent_normalmap", "Tangent Normalmap"),
+]
+
+# Quick brush value presets (View.setPaintingOpacity/Flow/BrushSize). spec:
+# "opacity:N" (%), "flow:N" (%), "size:N" (px).
+BRUSH_VALUES = [
+    ("opacity:10", "Opacity 10%"), ("opacity:25", "Opacity 25%"),
+    ("opacity:50", "Opacity 50%"), ("opacity:75", "Opacity 75%"),
+    ("opacity:100", "Opacity 100%"),
+    ("flow:10", "Flow 10%"), ("flow:25", "Flow 25%"),
+    ("flow:50", "Flow 50%"), ("flow:75", "Flow 75%"),
+    ("flow:100", "Flow 100%"),
+    ("size:8", "Size 8 px"), ("size:16", "Size 16 px"),
+    ("size:32", "Size 32 px"), ("size:64", "Size 64 px"),
+    ("size:128", "Size 128 px"),
+]
+
+# Default lists on first run (action ids verified against Krita 5.3 krita.action)
+DEFAULT_LISTS = [
+    {"name": "Canvas Assist", "shortcut": "", "items": [
+        "mirror_canvas",
+        "wrap_around_mode",
+        "toggle_brush_outline",
+        "toggle_fg_bg",
+    ]},
+    {"name": "Layers", "shortcut": "", "items": [
+        "duplicatelayer",
+        "merge_layer",
+        "flatten_layer",
+        "copy_selection_to_new_layer",
+    ]},
+    {"name": "Add Layer", "shortcut": "", "items": [
+        "add_new_paint_layer",
+        "add_new_group_layer",
+        "add_new_shape_layer",
+        "add_new_clone_layer",
+        "add_new_adjustment_layer",
+        "add_new_fill_layer",
+        "add_new_file_layer",
+        "add_new_selection_mask",
+        "add_new_transparency_mask",
+        "add_new_filter_mask",
+        "add_new_colorize_mask",
+        "add_new_transform_mask",
+    ]},
+    {"name": "Filters", "shortcut": "", "items": [
+        "krita_filter_gaussian blur",
+        "krita_filter_motion blur",
+        "krita_filter_lens blur",
+        "krita_filter_unsharp",
+        "krita_filter_sharpen",
+        "krita_filter_gaussianhighpass",
+        "krita_filter_levels",
+        "krita_filter_hsvadjustment",
+        "krita_filter_colorbalance",
+        "krita_filter_desaturate",
+        "krita_filter_invert",
+        "krita_filter_pixelize",
+        "krita_filter_height to normal",
+        "krita_filter_normalize",
+        "krita_filter_oilpaint",
+        "krita_filter_sobel",
+    ]},
+    {"name": "Blend Mode", "shortcut": "",
+     "items": [{"blend": o, "label": l} for o, l in LAYER_BLEND_MODES]},
+    {"name": "View", "shortcut": "", "items": [
+        "zoom_to_fit",
+        "zoom_to_100pct",
+        "select_all",
+        "deselect",
+    ]},
+]
+
+DEFAULT_POPUP_SHORTCUT = ""  # whole-menu popup trigger key
+
+
+def _clean_items(items):
+    """Normalise raw items recursively.
+
+    command -> {"id","label"};  blend -> {"blend","label"};
+    submenu -> {"name","shortcut","items": [...]}.
+    Plain string -> command without custom label.
+    """
+    out = []
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, str) and it:
+            out.append({"id": _normalise_action_id(it), "label": ""})
+        elif isinstance(it, dict):
+            if it.get("id"):
+                out.append({"id": _normalise_action_id(it["id"]), "label": it.get("label", "") or ""})
+            elif it.get("blend") is not None:
+                out.append({"blend": it.get("blend", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("bblend") is not None:
+                out.append({"bblend": it.get("bblend", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("bval") is not None:
+                out.append({"bval": it.get("bval", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("color") is not None:
+                out.append({"color": it.get("color", ""),
+                            "target": it.get("target", "fg"),
+                            "label": it.get("label", "") or ""})
+            elif it.get("sep"):
+                out.append({"sep": True, "label": ""})
+            elif it.get("header") is not None:
+                out.append({"header": it.get("header", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("toggle") is not None:
+                out.append({"toggle": it.get("toggle", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("brush") is not None:
+                out.append({"brush": it.get("brush", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("script") is not None:
+                out.append({"script": it.get("script", ""),
+                            "label": it.get("label", "") or ""})
+            elif it.get("name") is not None:
+                out.append({
+                    "name": it.get("name", ""),
+                    "shortcut": it.get("shortcut", "") or "",
+                    "items": _clean_items(it.get("items", [])),
+                })
+    return out
+
+
+def _clean_lists(lists):
+    """Normalise raw json lists into [{name, shortcut, items}]. Items are dicts."""
+    clean = []
+    for lst in lists if isinstance(lists, list) else []:
+        if not isinstance(lst, dict) or not lst.get("name"):
+            continue
+        clean.append({
+            "name": lst["name"],
+            "shortcut": lst.get("shortcut", "") or "",
+            "active": bool(lst.get("active", True)),
+            # menu_mode is the current field; migrate legacy "form" on load.
+            "menu_mode": lst.get("menu_mode", lst.get("form", "list")),
+            "show_icons": bool(lst.get("show_icons", True)),
+            "items": _clean_items(lst.get("items", [])),
+        })
+    return clean
+
+
+def _serialize_items(items):
+    """Serialize items (dicts) back to compact form: command or nested submenu."""
+    out = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("id"):
+            aid = it["id"]
+            label = it.get("label", "") or ""
+            out.append({"id": aid, "label": label} if label else aid)
+        elif it.get("blend") is not None:
+            out.append({"blend": it.get("blend", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("bblend") is not None:
+            out.append({"bblend": it.get("bblend", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("bval") is not None:
+            out.append({"bval": it.get("bval", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("color") is not None:
+            out.append({"color": it.get("color", ""),
+                        "target": it.get("target", "fg"),
+                        "label": it.get("label", "") or ""})
+        elif it.get("sep"):
+            out.append({"sep": True, "label": ""})
+        elif it.get("header") is not None:
+            out.append({"header": it.get("header", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("toggle") is not None:
+            out.append({"toggle": it.get("toggle", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("brush") is not None:
+            out.append({"brush": it.get("brush", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("script") is not None:
+            out.append({"script": it.get("script", ""),
+                        "label": it.get("label", "") or ""})
+        elif it.get("name") is not None:
+            out.append({
+                "name": it.get("name", ""),
+                "shortcut": it.get("shortcut", "") or "",
+                "items": _serialize_items(it.get("items", [])),
+            })
+    return out
+
+
+def _serialize_lists(lists):
+    out = []
+    for lst in lists if isinstance(lists, list) else []:
+        if not isinstance(lst, dict):
+            continue
+        out.append({
+            "name": lst.get("name", ""),
+            "shortcut": lst.get("shortcut", "") or "",
+            "active": bool(lst.get("active", True)),
+            "menu_mode": lst.get("menu_mode", lst.get("form", "list")),
+            "show_icons": bool(lst.get("show_icons", True)),
+            "items": _serialize_items(lst.get("items", [])),
+        })
+    return out
+
+
+def load_config():
+    """Return (popup_shortcut, lists). Lists items are [{"id","label"}]. Falls back to defaults."""
+    _migrate_legacy_config()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return DEFAULT_POPUP_SHORTCUT, [dict(lst) for lst in DEFAULT_LISTS]
+        raw_lists = data.get("lists")
+        lists = _clean_lists(raw_lists)
+        if isinstance(raw_lists, list) and (not raw_lists or lists):
+            popup = data.get("popup_shortcut", "") or ""
+            return popup, lists
+    except (OSError, ValueError):
+        pass
+    return DEFAULT_POPUP_SHORTCUT, [dict(lst) for lst in DEFAULT_LISTS]
+
+
+def load_lists():
+    """Return [{name, shortcut, items:[{"id","label"}]}, ...] only."""
+    return load_config()[1]
+
+
+def load_popup_shortcut():
+    """Return the whole-menu popup shortcut string (may be empty)."""
+    return load_config()[0]
+
+
+def save_config(popup_shortcut, lists):
+    """Write popup_shortcut + multi-list model to JSON (compact item form)."""
+    try:
+        old = _read_raw(strict=True)
+        last_identity = old.get("last_identity")
+        data = dict(old)
+        data.update({
+            "popup_shortcut": popup_shortcut or "",
+            "lists": _serialize_lists(lists),
+        })
+        if last_identity is not None:
+            data["last_identity"] = last_identity
+        overrides = old.get("overrides") if isinstance(old, dict) else None
+        if overrides:
+            data["overrides"] = overrides
+        return _write_raw(data)
+    except (OSError, ValueError, TypeError) as e:
+        print(f"failed to save config: {e}")
+        return False
+
+
+# ---------- Shortcut overrides (Krita bindings MenuBelt took over) ----------
+def _read_raw(strict=False):
+    _migrate_legacy_config()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("menu configuration must be an object")
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeError):
+        if strict:
+            raise
+        return {}
+
+
+def _write_raw(data):
+    temporary = None
+    try:
+        directory = os.path.dirname(CONFIG_FILE)
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".tfm-", suffix=".tmp", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(temporary, CONFIG_FILE)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError) as e:
+        print(f"failed to write config: {e}")
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def load_overrides():
+    """Return {"<list name>": [record, ...]} of Krita shortcuts MenuBelt took over.
+
+    A record is {"id", "label", "key", "prev_runtime", "prev_file"} where
+    prev_file is the value that was in kritashortcutsrc (None = no entry, so
+    restoring means deleting ours and letting the built-in default return).
+    """
+    ov = _read_raw().get("overrides")
+    return ov if isinstance(ov, dict) else {}
+
+
+def add_overrides(list_name, records):
+    """Append `records` to the override history of `list_name`."""
+    try:
+        data = _read_raw(strict=True)
+    except (OSError, ValueError):
+        return False
+    ov = data.get("overrides")
+    if not isinstance(ov, dict):
+        ov = {}
+    ov.setdefault(list_name or "", []).extend(records)
+    data["overrides"] = ov
+    return _write_raw(data)
+
+
+def pop_overrides(list_name):
+    """Return and drop the override history of `list_name`."""
+    try:
+        data = _read_raw(strict=True)
+    except (OSError, ValueError):
+        return None
+    ov = data.get("overrides")
+    if not isinstance(ov, dict):
+        return []
+    out = ov.pop(list_name or "", [])
+    data["overrides"] = ov
+    if not _write_raw(data):
+        return None
+    return out
+
+
+def load_last_identity():
+    """Return the persisted last-triggered item identity (or None)."""
+    _migrate_legacy_config()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        val = data.get("last_identity")
+        if val:
+            return tuple(_normalise_action_id(x) for x in val)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def save_last_identity(identity):
+    """Persist the last-triggered item identity for the 'last used' popup position."""
+    try:
+        data = _read_raw(strict=True)
+    except (OSError, ValueError):
+        return False
+    data["last_identity"] = list(identity) if identity else None
+    return _write_raw(data)
+
+
+def save_lists(lists):
+    """Compatibility wrapper: save lists, preserving current popup_shortcut."""
+    popup, _ = load_config()
+    save_config(popup, lists)
+
+
+def catalog_actions():
+    """Enumerate every Krita action. Returns [(action_id, label), ...], sorted by label."""
+    out = []
+    try:
+        for a in Krita.instance().actions():
+            try:
+                oid = a.objectName()
+                text = a.text().replace("&", "").strip()
+            except RuntimeError:
+                continue
+            if oid:
+                out.append((oid, text or oid))
+    except Exception as e:
+        print(f"failed to enumerate actions: {e}")
+    out.sort(key=lambda x: x[1].lower())
+    return out
+
+
+def build_config_dict(popup_shortcut, lists):
+    """Serialise in-memory lists to a config dict (for export)."""
+    return {"popup_shortcut": popup_shortcut or "", "lists": _serialize_lists(lists)}
+
+
+def parse_config_dict(data):
+    """Parse a config dict into (popup_shortcut, lists)."""
+    popup = data.get("popup_shortcut", "") or ""
+    return popup, _clean_lists(data.get("lists", []))
+
+
+# ---------- Script items ----------
+def _candidate_action_dirs():
+    """Candidate dirs holding Krita's .action XML files (ready-made categories)."""
+    dirs = []
+    try:
+        from .qtcompat import QApplication
+        appdir = QApplication.applicationDirPath()
+        for rel in (os.path.join("..", "share", "krita", "actions"),
+                    os.path.join("share", "krita", "actions")):
+            dirs.append(os.path.join(appdir, rel))
+    except Exception:
+        pass
+    return dirs
+
+
+def load_action_categories():
+    """Parse Krita's .action XML files -> {action_id: category}.
+
+    Reuses the ready-made categories Krita's shortcut editor already groups by
+    (File/Edit/View/Select/Layer/Filter/Settings/Help/...). Returns {} on failure.
+    """
+    mapping = {}
+    try:
+        import xml.etree.ElementTree as ET
+        for d in _candidate_action_dirs():
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                if not fn.endswith(".action"):
+                    continue
+                try:
+                    tree = ET.parse(os.path.join(d, fn))
+                except Exception:
+                    continue
+                for actions in tree.getroot().findall("Actions"):
+                    cat = actions.get("category")
+                    if not cat:
+                        continue
+                    for a in actions.findall("Action"):
+                        aid = a.get("name")
+                        if aid:
+                            mapping[aid] = cat
+    except Exception:
+        return {}
+    return mapping
+
+
+def run_composite_op(op_id):
+    """Set the active layer's blend mode by its Krita id (setBlendingMode)."""
+    if not isinstance(op_id, str) or not op_id:
+        return
+    try:
+        doc = Krita.instance().activeDocument()
+    except Exception:
+        return
+    if doc is None:
+        return
+    node = doc.activeNode()
+    if node is not None:
+        try:
+            node.setBlendingMode(op_id)
+        except Exception as e:
+            print(f"setBlendingMode error: {e}")
+
+
+def run_brush_blend(op_id):
+    """Set the active brush painting blend mode (View.setCurrentBlendingMode)."""
+    if not isinstance(op_id, str) or not op_id:
+        return
+    try:
+        win = Krita.instance().activeWindow()
+    except Exception:
+        return
+    if win is None:
+        return
+    for view in win.views():
+        try:
+            view.setCurrentBlendingMode(op_id)
+            return
+        except Exception:
+            continue
+
+
+def run_brush_value(spec):
+    """Set a quick brush value. spec = 'opacity:N' | 'flow:N' | 'size:N'."""
+    if not isinstance(spec, str) or ":" not in spec:
+        return
+    kind, num = spec.split(":", 1)
+    try:
+        val = float(num)
+    except (TypeError, ValueError):
+        return
+    try:
+        win = Krita.instance().activeWindow()
+    except Exception:
+        return
+    if win is None:
+        return
+    for view in win.views():
+        try:
+            if kind == "opacity":
+                view.setPaintingOpacity(val / 100.0)
+            elif kind == "flow":
+                view.setPaintingFlow(val / 100.0)
+            elif kind == "size":
+                view.setBrushSize(val)
+            else:
+                return
+            return
+        except Exception:
+            continue
+
+
+def run_set_color(hex_str, target):
+    """Set the active foreground/background colour from a #rrggbb hex string."""
+    if not isinstance(hex_str, str) or not hex_str.startswith("#"):
+        return
+    try:
+        from .qtcompat import QColor
+        from krita import ManagedColor
+        qc = QColor(hex_str)
+        if not qc.isValid():
+            return
+        col = ManagedColor.fromQColor(qc)
+        win = Krita.instance().activeWindow()
+        if win is None:
+            return
+        for view in win.views():
+            try:
+                if target == "bg":
+                    view.setBackGroundColor(col)
+                else:
+                    view.setForeGroundColor(col)
+                return
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"set color error: {e}")
+
+
+def run_brush(name):
+    """Set the active Krita brush preset by its name (View.activateResource)."""
+    if not isinstance(name, str) or not name:
+        return
+    try:
+        presets = Krita.instance().resources("preset")
+        resource = presets.get(name)
+        if resource is None:
+            # fallback: legacy configs stored the preset filename
+            for p in presets.values():
+                try:
+                    if p.filename() == name:
+                        resource = p
+                        break
+                except Exception:
+                    continue
+        if resource is None:
+            return
+        window = Krita.instance().activeWindow()
+        if window is None:
+            return
+        for view in window.views():
+            try:
+                view.activateResource(resource)
+                return
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"run_brush error: {e}")
+
+
+# ---------- Script library (menu items that run a .py file) ----------
+SCRIPT_TEMPLATE = '''"""TFM menu script.
+
+Injected names: krita / app (the Krita instance), document / doc, window, view,
+layer / node (the active node) and the Krita class itself.
+"""
+
+if document is None:
+    raise RuntimeError("TFM: no active document")
+
+print("Hello from TFM:", document.name())
+'''
+
+
+def ensure_scripts_dir():
+    """Create the user script library folder if needed; returns its path."""
+    try:
+        os.makedirs(SCRIPTS_DIR, exist_ok=True)
+    except OSError as e:
+        print(f"TFM: cannot create {SCRIPTS_DIR}: {e}")
+    return SCRIPTS_DIR
+
+
+def bundled_scripts_dir():
+    return os.path.join(os.path.dirname(PLUGIN_DIR), "scripts")
+
+
+def list_scripts():
+    """Return unique [(filename, label)] entries from user and bundled libraries."""
+    entries = {}
+    for directory in (bundled_scripts_dir(), SCRIPTS_DIR):
+        try:
+            for fn in os.listdir(directory):
+                if fn.lower().endswith(".py") and not fn.startswith("_"):
+                    entries[fn] = (fn, fn[:-3])
+        except OSError:
+            pass
+    return sorted(entries.values(), key=lambda pair: pair[1].lower())
+
+
+def script_filename(name):
+    """Normalise a user supplied script name into a library file name."""
+    fn = os.path.basename(str(name or "").strip())
+    if fn.lower().endswith(".py"):
+        fn = fn[:-3].strip() + ".py"
+    elif fn:
+        fn += ".py"
+    return fn
+
+
+def script_path(name):
+    fn = script_filename(name)
+    user_path = os.path.join(SCRIPTS_DIR, fn)
+    if os.path.isfile(user_path):
+        return user_path
+    return os.path.join(bundled_scripts_dir(), fn)
+
+
+def read_script(name):
+    try:
+        with open(script_path(name), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def write_script(name, code):
+    """Create/overwrite a library script. Returns the stored file name ('' on failure)."""
+    fn = script_filename(name)
+    if not fn:
+        return ""
+    ensure_scripts_dir()
+    try:
+        with open(os.path.join(SCRIPTS_DIR, fn), "w", encoding="utf-8", newline="\n") as f:
+            f.write(code if code is not None else "")
+        return fn
+    except OSError as e:
+        print(f"TFM: cannot write script {fn}: {e}")
+        return ""
+
+
+def delete_script(name):
+    try:
+        os.remove(os.path.join(SCRIPTS_DIR, script_filename(name)))
+        return True
+    except OSError as e:
+        print(f"TFM: cannot delete script {name}: {e}")
+        return False
+
+
+def rename_script(old, new):
+    """Rename a library script. Returns the new file name ('' on failure)."""
+    old_fn, new_fn = script_filename(old), script_filename(new)
+    if not old_fn or not new_fn or old_fn == new_fn:
+        return ""
+    if os.path.exists(os.path.join(SCRIPTS_DIR, new_fn)) or os.path.exists(os.path.join(bundled_scripts_dir(), new_fn)):
+        return ""
+    try:
+        os.replace(os.path.join(SCRIPTS_DIR, old_fn), os.path.join(SCRIPTS_DIR, new_fn))
+        return new_fn
+    except OSError as e:
+        print(f"TFM: cannot rename {old_fn}: {e}")
+        return ""
+
+
+def _report(title, text):
+    """Show a short error dialog and never fail while doing so."""
+    print(f"TFM: {title}: {text}")
+    try:
+        from .qtcompat import QMessageBox, exec_
+        box = QMessageBox()
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("MenuBelt")
+        box.setText(title)
+        box.setInformativeText(text)
+        exec_(box)
+    except Exception:
+        pass
+
+
+def run_script(name):
+    """Run a library script, with Krita handles injected into its namespace."""
+    fn = script_filename(name)
+    if not fn:
+        return
+    path = script_path(fn)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+    except OSError as e:
+        _report("Script not found", f"{fn}\n{e}")
+        return
+
+    app = Krita.instance()
+    doc = app.activeDocument()
+    win = app.activeWindow()
+    try:
+        view = win.activeView() if win is not None else None
+    except Exception:
+        view = None
+    node = doc.activeNode() if doc is not None else None
+    namespace = {
+        "__name__": "__tfm_script__",
+        "__file__": path,
+        "Krita": Krita, "krita": app, "app": app,
+        "document": doc, "doc": doc,
+        "window": win, "view": view,
+        "layer": node, "node": node,
+    }
+    try:
+        exec(compile(code, path, "exec"), namespace)
+    except Exception:
+        traceback.print_exc()
+        lines = [ln for ln in traceback.format_exc().strip().splitlines() if ln.strip()]
+        _report("Script failed", "%s\n\n%s" % (fn, "\n".join(lines[-2:])))
+
+
+# ---------- Refresh notification (reload Tools menu / Docker / shortcuts after editing) ----------
+_refresh_callbacks = []
+
+
+def register_refresh(callback):
+    """Register a callback to run after any config edit is saved."""
+    if callback not in _refresh_callbacks:
+        _refresh_callbacks.append(callback)
+
+
+def notify_refresh():
+    for cb in list(_refresh_callbacks):
+        try:
+            cb()
+        except Exception as e:
+            print(f"refresh callback failed: {e}")

@@ -1,0 +1,10 @@
+{
+    "Id": "TFM",
+    "Name": "tfm",
+    "Type": "Service",
+    "X-KDE-Library": "kritatfm",
+    "X-KDE-ServiceTypes": [
+        "Krita/Filter"
+    ],
+    "X-Krita-Version": "28"
+}

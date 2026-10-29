@@ -1,0 +1,27 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build outputs, candidate staging, and local backups
+/build/
+/build-*.log
+/backups/
+/native-candidates/
+*.obj
+*.lib
+*.exp
+*.pdb
+*.dll
+!pykrita/tfm/native/tfm_color_range.dll
+
+# Local-only files (never commit machine paths or agent notes)
+/AGENTS.md
+/CLAUDE.md
+.cursorrules
+/docs/handoffs/
+/deploy.py
+/deploy.local.*
+*.bak
+*.bak-*
+/.hermes/

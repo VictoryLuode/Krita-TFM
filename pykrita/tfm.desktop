@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=tfm
+X-Python-2-Compatible=false
+Name=TFM
+Comment=Manage custom menus, filters and tools.
