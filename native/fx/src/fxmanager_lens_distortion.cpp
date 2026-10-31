@@ -1,6 +1,7 @@
 #include "fxmanager_lens_distortion.h"
 #include "fxmanager_lens_distortion_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_lens_gpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +136,21 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
 
     const QImage source = fxmanager::readImage(device, frame);
     if (source.isNull()) return;
+    if (fxmanager::gpuRequested()) {
+        QImage gpuOutput;
+        QString reason;
+        QString gpuDevice;
+        if (tfm_lens_gpu::render(source, frame, outputRect, horizontal, distortion,
+                                 dispersion, fit, jitter, gpuOutput, reason, gpuDevice)) {
+            fxmanager::writeImage(device, gpuOutput, outputRect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+            if (updater) updater->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     QImage output(outputRect.size(), QImage::Format_ARGB32);
 
     const double width = frame.width();

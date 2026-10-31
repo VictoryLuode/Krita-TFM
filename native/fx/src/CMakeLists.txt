@@ -6,6 +6,7 @@ set(KRITA_FXMANAGER_SOURCES
     fxmanager_vulkan.cpp
     tfm_motion_gpu.cpp
     tfm_pointwise_gpu.cpp
+    tfm_lens_gpu.cpp
     fxmanager_bloom.cpp
     fxmanager_film_grain.cpp
     fxmanager_lens_distortion.cpp

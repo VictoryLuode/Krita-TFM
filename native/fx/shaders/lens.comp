@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { uint pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+ int sourceW,sourceH,frameX,frameY,frameW,frameH,outputX,outputY,outputW,outputH,horizontal,fit,jitter;
+ float distortion,dispersion;
+} p;
+uint pixelAt(ivec2 q){if(q.x<0||q.y<0||q.x>=p.sourceW||q.y>=p.sourceH)return 0u;return src.pixels[q.y*p.sourceW+q.x];}
+vec4 unpackPixel(uint v){return vec4(float((v>>16u)&255u),float((v>>8u)&255u),float(v&255u),float((v>>24u)&255u));}
+uint packPixel(vec4 v){return(uint(clamp(round(v.a),0.,255.))<<24u)|(uint(clamp(round(v.r),0.,255.))<<16u)|(uint(clamp(round(v.g),0.,255.))<<8u)|uint(clamp(round(v.b),0.,255.));}
+vec4 sampleBilinear(vec2 q){if(q.x<-.5||q.y<-.5||q.x>float(p.sourceW)-.5||q.y>float(p.sourceH)-.5)return vec4(0.);vec2 s=clamp(q,vec2(0.),vec2(p.sourceW-1,p.sourceH-1));ivec2 b=ivec2(floor(s));vec2 t=s-vec2(b);return mix(mix(unpackPixel(pixelAt(b)),unpackPixel(pixelAt(b+ivec2(1,0))),t.x),mix(unpackPixel(pixelAt(b+ivec2(0,1))),unpackPixel(pixelAt(b+ivec2(1,1))),t.x),t.y);}
+float jitterNoise(int x,int y,int seed){uint h=uint(x)*374761393u+uint(y)*668265263u+uint(seed)*2246822519u+71u*3266489917u;h=(h^(h>>13u))*1274126177u;h^=h>>16u;return float(h%10000u)/5000.-1.;}
+void main(){int x=int(gl_GlobalInvocationID.x),y=int(gl_GlobalInvocationID.y);if(x>=p.outputW||y>=p.outputH)return;float w=float(p.frameW),h=float(p.frameH),ix=float(p.outputX+x)+.5-float(p.frameX),iy=float(p.outputY+y)+.5-float(p.frameY),cx=w*.5,cy=h*.5;vec4 result;
+ if(p.horizontal!=0){float dx=p.dispersion*5./max(1.,w);vec4 red=sampleBilinear(vec2((ix/w+dx)*w-.5,iy-.5)),green=sampleBilinear(vec2(ix-.5,iy-.5)),blue=sampleBilinear(vec2((ix/w-dx)*w-.5,iy-.5));result=vec4(red.r,green.g,blue.b,(red.a+green.a+blue.a)/3.);}
+ else{float ri=clamp(p.distortion+p.dispersion/4.,-.999,1.),bi=clamp(p.distortion-p.dispersion/4.,-.999,1.),cr=ri*4.,cg=p.distortion*4.,cb=bi*4.,mx=max(ri,max(p.distortion,bi)),scale=(p.fit!=0&&mx>0.)?1./(1.+2.*mx):1./(1.+mx);vec2 uv=scale*(vec2(ix-cx,iy-cy)/vec2(cx,cy));float q=dot(uv,uv);if(cr*q>1.||cg*q>1.||cb*q>1.)result=vec4(0.);else{float sr=1./(1.+sqrt(max(0.,1.-cr*q))),sg=1./(1.+sqrt(max(0.,1.-cg*q))),sb=1./(1.+sqrt(max(0.,1.-cb*q)));int nr=max(1,int(length(uv*(sr-sg)*vec2(w,h))+1.)),nb=max(1,int(length(uv*(sg-sb)*vec2(w,h))+1.));vec4 sum=vec4(0.);for(int i=0;i<nr;i++){float t=(float(i)+(p.jitter!=0?(jitterNoise(x,y,i)+1.)*.5:.5))/float(nr),v=cr+t*(cg-cr),s=1./(1.+sqrt(max(0.,1.-v*q)));vec4 z=sampleBilinear((uv*s+.5)*vec2(w,h)-.5);sum.r+=(1.-t)*z.r;sum.g+=t*z.g;sum.a+=z.a;}for(int i=0;i<nb;i++){float t=(float(i)+(p.jitter!=0?(jitterNoise(x,y,nr+i)+1.)*.5:.5))/float(nb),v=cg+t*(cb-cg),s=1./(1.+sqrt(max(0.,1.-v*q)));vec4 z=sampleBilinear((uv*s+.5)*vec2(w,h)-.5);sum.g+=(1.-t)*z.g;sum.b+=t*z.b;sum.a+=z.a;}result=vec4(sum.r*2./float(nr),sum.g*2./float(nr+nb),sum.b*2./float(nb),sum.a/float(nr+nb));}}
+ dst.pixels[y*p.outputW+x]=packPixel(result);}
+
