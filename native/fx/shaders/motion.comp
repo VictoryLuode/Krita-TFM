@@ -1,0 +1,67 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Source { vec4 pixels[]; } src;
+layout(std430, binding = 1) writeonly buffer Output { vec4 pixels[]; } dst;
+// Scalar fields have the same explicit 4-byte sequence as Parameters in C++.
+layout(std430, binding = 2) readonly buffer Parameters {
+    int storedX; int storedY; int storedW; int storedH;
+    int readX; int readY; int readW; int readH;
+    int outX; int outY; int outW; int outH;
+    int frameX; int frameY; int frameW; int frameH;
+    float centerX; float centerY; float angle; float factor;
+    int circular; int samples; int reserved0; int reserved1;
+    float defaultR; float defaultG; float defaultB; float defaultA;
+} p;
+
+bool containsPixel(ivec2 xy, ivec2 origin, ivec2 size) {
+    return all(greaterThanEqual(xy, origin)) && all(lessThan(xy - origin, size));
+}
+vec4 getPixel(ivec2 xy) {
+    if (containsPixel(xy, ivec2(p.storedX, p.storedY), ivec2(p.storedW, p.storedH))) {
+        ivec2 local = xy - ivec2(p.storedX, p.storedY);
+        return src.pixels[local.y * p.storedW + local.x];
+    }
+    return vec4(p.defaultR, p.defaultG, p.defaultB, p.defaultA);
+}
+void main() {
+    ivec2 local = ivec2(gl_GlobalInvocationID.xy);
+    if (local.x >= p.outW || local.y >= p.outH) return;
+    ivec2 pos = local + ivec2(p.outX, p.outY);
+    vec2 center = vec2(p.centerX, p.centerY);
+    vec2 delta = vec2(pos) - center;
+    bool normalizeEdge = p.circular != 0 && containsPixel(pos,
+        ivec2(p.frameX, p.frameY), ivec2(p.frameW, p.frameH));
+    vec4 sum = vec4(0.0);
+    float support = 0.0;
+    for (int i = 0; i < p.samples; ++i) {
+        vec2 samplePos = vec2(pos);
+        if (p.circular != 0 && p.samples > 1) {
+            float a = (-1.0 + 2.0 * float(i) / float(p.samples - 1)) * p.angle * 0.008726646259971648;
+            float c = cos(a), s = sin(a);
+            samplePos = center + vec2(delta.x*c - delta.y*s, delta.x*s + delta.y*c);
+        } else if (p.circular == 0) {
+            float scale = 1.0 - float(i) / float(p.samples) * p.factor;
+            samplePos = center + delta * scale;
+        }
+        ivec2 base = ivec2(floor(samplePos));
+        vec2 t = samplePos - vec2(base);
+        for (int v = 0; v < 2; ++v) for (int u = 0; u < 2; ++u) {
+            ivec2 xy = base + ivec2(u, v);
+            if (!containsPixel(xy, ivec2(p.readX, p.readY), ivec2(p.readW, p.readH))) continue;
+            if (normalizeEdge && !containsPixel(xy, ivec2(p.frameX, p.frameY), ivec2(p.frameW, p.frameH))) continue;
+            float weight = (u != 0 ? t.x : 1.0-t.x) * (v != 0 ? t.y : 1.0-t.y);
+            vec4 pixel = getPixel(xy);
+            support += weight;
+            sum.a += weight * pixel.a;
+            if (pixel.a != 0.0) sum.rgb += weight * pixel.a * pixel.rgb;
+        }
+    }
+    float divisor = normalizeEdge ? support : float(p.samples);
+    vec4 result;
+    if (normalizeEdge && divisor == 0.0) result = getPixel(pos);
+    else {
+        result.a = divisor > 0.0 ? sum.a / divisor : 0.0;
+        result.rgb = sum.a != 0.0 ? sum.rgb / sum.a : vec3(0.0);
+    }
+    dst.pixels[local.y * p.outW + local.x] = result;
+}

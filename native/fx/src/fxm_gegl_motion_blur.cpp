@@ -2,6 +2,7 @@
 
 #include "fxmanager_processing.h"
 #include "fxm_blur_point_preview.h"
+#include "tfm_motion_gpu.h"
 
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -359,6 +360,25 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
         dense = fxmanager::readFloatImage(snapshot, stored);
         if (dense.isNull()) return;
     }
+    if (progressUpdater && progressUpdater->interrupted()) return;
+    QString backendReason;
+    if (fxmanager::gpuRequested()) {
+        fxmanager::FloatRgbaImage gpuOutput;
+        QString gpuDevice;
+        if (tfm_motion_gpu::render(dense, stored, defaultImage, read, rect, frame,
+                                   circular, gx, gy, angle, factor, gpuOutput, backendReason, gpuDevice)) {
+            if (progressUpdater && progressUpdater->interrupted()) return;
+            if (fxmanager::writeFloatImage(device, gpuOutput, rect)) {
+                fxmanager::reportBackend(id(), QStringLiteral("gpu"), QString(), gpuDevice);
+                if (progressUpdater) progressUpdater->setProgress(100);
+                return;
+            }
+            backendReason = QStringLiteral("Motion GPU image write failed");
+        }
+    }
+    // An explicit CPU choice has no failure reason; all other fallback cases
+    // preserve the existing immutable snapshot and sampler below.
+    fxmanager::reportBackend(id(), QStringLiteral("cpu"), backendReason);
     // Cached source tiles preserve global sampler coordinates and bound float memory.
     constexpr int side = 128;
     constexpr int maxCached = 256;
@@ -504,7 +524,7 @@ FxmGeglMotionBlur::Widget::Widget(Variant variant, const QRect &deviceFrame, con
 
     root->addLayout(form);
 
-    m_statusLabel = new QLabel(i18n("Native CPU processing."), this);
+    m_statusLabel = new QLabel(i18n("Auto Vulkan / CPU fallback."), this);
     m_statusLabel->setWordWrap(true);
     root->addWidget(m_statusLabel);
     root->addStretch(1);

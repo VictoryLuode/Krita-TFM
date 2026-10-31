@@ -1,5 +1,8 @@
 """TFM management entry point."""
 
+import json
+import os
+
 from .menus.qtcompat import QtCore, QtWidgets, exec_
 from krita import Krita
 from .menus.version import __version__
@@ -120,13 +123,29 @@ class ManagerDialog(QtWidgets.QDialog):
         self.cpu_threads.addItem('Auto (safe default: 1)', 0)
         for count in (1, 2, 4, 6, 8, 12, 16, 24, 32):
             self.cpu_threads.addItem(str(count), count)
-        cpu = filter_settings.load().get('cpu_threads', 0)
+        filter_options = filter_settings.load()
+        cpu = filter_options.get('cpu_threads', 0)
         self.cpu_threads.setCurrentIndex(max(0, self.cpu_threads.findData(cpu)))
+        self.filter_backend = QtWidgets.QComboBox()
+        for label, value in (('Auto (Vulkan when available)', 'auto'),
+                             ('CPU', 'cpu'), ('GPU (Vulkan)', 'gpu')):
+            self.filter_backend.addItem(label, value)
+        self.filter_backend.setCurrentIndex(max(0, self.filter_backend.findData(filter_options.get('backend', 'auto'))))
         settings_form.addRow('Default window width', self.default_width)
         settings_form.addRow('Default window height', self.default_height)
         self.cpu_threads.setToolTip('Controls plugin filters using the shared CPU worker pool. Other processing paths may use their own threads.')
         settings_form.addRow('Plugin filters CPU threads', self.cpu_threads)
+        settings_form.addRow('Filter backend', self.filter_backend)
         settings_layout.addLayout(settings_form)
+        backend_note = QtWidgets.QLabel('Vulkan supports Circular and Zoom Motion Blur. Other filters use CPU; Background Removal has separate ggml settings. GPU requests fall back to CPU when unavailable.')
+        backend_note.setWordWrap(True)
+        settings_layout.addWidget(backend_note)
+        self.backend_status = QtWidgets.QLabel()
+        self.backend_status.setWordWrap(True)
+        self.backend_status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        settings_layout.addWidget(self.backend_status)
+        self._refresh_backend_status()
+        tabs.currentChanged.connect(lambda index: self._refresh_backend_status() if tabs.widget(index) is settings_page else None)
         self.settings_status = QtWidgets.QLabel('Settings save automatically when this window closes. Window size applies when TFM is reopened; CPU threads after Krita restarts.')
         self.settings_status.setWordWrap(True)
         settings_layout.addWidget(self.settings_status)
@@ -140,13 +159,36 @@ class ManagerDialog(QtWidgets.QDialog):
         tabs.addTab(settings_page, 'Settings')
         self._saved_general = self._general_settings()
 
+    def _refresh_backend_status(self):
+        text = 'Last filter backend: Not used this session'
+        path = self._filter_settings.config_path()
+        try:
+            if path:
+                with open(os.path.join(os.path.dirname(path), 'backend-status.json'), encoding='utf-8') as handle:
+                    status = json.load(handle)
+                if (isinstance(status, dict) and type(status.get('pid')) is int
+                        and status['pid'] == os.getpid()
+                        and status.get('requested') in ('auto', 'cpu', 'gpu')
+                        and status.get('actual') in ('cpu', 'gpu', 'vulkan')
+                        and all(isinstance(status.get(key), str) for key in ('device', 'reason', 'filter'))
+                        and status['filter'].strip()):
+                    text = 'Last filter: {}\nRequested: {} | Actual: {}'.format(
+                        status['filter'], status['requested'].upper(), status['actual'].upper())
+                    if status['device'].strip():
+                        text += '\nDevice: ' + status['device']
+                    if status['reason'].strip():
+                        text += '\nReason: ' + status['reason']
+        except (OSError, ValueError, TypeError):
+            pass
+        self.backend_status.setText(text)
+
     def _general_settings(self):
-        return (self.default_width.value(), self.default_height.value(), self.cpu_threads.currentData())
+        return (self.default_width.value(), self.default_height.value(), self.cpu_threads.currentData(), self.filter_backend.currentData())
 
     def save_general_settings(self):
-        width, height, threads = self._general_settings()
-        if not self._filter_settings.save({'cpu_threads': threads}):
-            self.settings_status.setText('Could not save CPU settings; window size was not changed.')
+        width, height, threads, backend = self._general_settings()
+        if not self._filter_settings.save({'cpu_threads': threads, 'backend': backend, 'gpu_fallback': 'cpu'}):
+            self.settings_status.setText('Could not save filter settings; window size was not changed.')
             return False
         app = Krita.instance()
         try:

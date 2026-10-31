@@ -8,6 +8,7 @@ struct Rect { int x=0,y=0,w=0,h=0; bool contains(int X,int Y) const { return X>=
 using Pixel=std::array<float,4>;
 struct Image {
     Rect bounds;
+    Rect canvasBounds; // Empty preserves legacy filtering semantics.
     std::vector<Pixel> pixels;
     Pixel outside{0,0,0,0}; // Converted paint-device default, not assumed transparent.
     explicit Image(Rect b={}, Pixel fill={0,0,0,0});

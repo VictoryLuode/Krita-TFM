@@ -22,6 +22,10 @@ struct FloatRgbaImage {
 };
 
 void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP config);
+// Auto/GPU request compute for supported filters; CPU remains a live fallback.
+bool gpuRequested();
+void reportBackend(const QString &filter, const QString &actual, const QString &reason,
+                   const QString &device = QString());
 
 QImage readImage(KisPaintDeviceSP device, const QRect &rect);
 void writeImage(KisPaintDeviceSP device, const QImage &image, const QRect &rect);

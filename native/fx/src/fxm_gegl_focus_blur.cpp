@@ -271,6 +271,7 @@ void FxmGeglFocusBlur::processImpl(KisPaintDeviceSP device,
                 auto input=fxmanager::readFloatImage(sourceSnapshot,read);
                 if(input.isNull())throw std::runtime_error("ICC source conversion failed");
                 inputs.emplace_back(nr(read));
+                if(device->defaultBounds())inputs.back().canvasBounds=nr(device->defaultBounds()->bounds());
                 for(size_t p=0;p<inputs.back().pixels.size();++p)
                     std::copy_n(input.pixels.constData()+4*p,4,inputs.back().pixels[p].data());
                 results[size_t(i)].write=core.intersected(rect);

@@ -9,6 +9,7 @@ constexpr double pi=3.14159265358979323846;
 using Acc=std::array<double,4>;
 int floorMultiple(int x,int n) { return int(std::floor(double(x)/n))*n; }
 Rect expand(Rect r,int h) { return {r.x-h,r.y-h,r.w+2*h,r.h+2*h}; }
+bool empty(Rect r) { return r.w<=0||r.h<=0; }
 Rect canonical(Rect r,int n) {
     if(r.w<=0||r.h<=0) return r;
     int x=floorMultiple(r.x,n),y=floorMultiple(r.y,n);
@@ -62,22 +63,35 @@ Image gaussianCore(const Image&s,Rect core,Rect frame,const Params&p) {
             // Only horizontal columns needed by the vertical core are evaluated.
             // Four independent adjacent pixels; preserve each pixel's tap order.
             for(int y=H-radius;y<H+core.h+radius;++y)for(int x=H;x<H+core.w;x+=4){
-                Acc accum[4]{};
+                Acc accum[4]{}; double norm[4]{};
+                const int gy=read.y+y;
                 for(int k=-radius;k<=radius;++k) {
-                    const Acc *src=&original[size_t(y)*read.w+x+k];
                     const double weight=kernel[k+radius];
-                    for(int j=0;j<4;++j)for(int c=0;c<4;++c)accum[j][c]+=src[j][c]*weight;
+                    for(int j=0;j<4;++j) {
+                        const int gx=read.x+x+j;
+                        if(s.canvasBounds.contains(gx,gy) && !s.canvasBounds.contains(gx+k,gy)) continue;
+                        const Acc *src=&original[size_t(y)*read.w+x+j+k];
+                        for(int c=0;c<4;++c)accum[j][c]+=(*src)[c]*weight;
+                        norm[j]+=weight;
+                    }
                 }
-                for(int j=0;j<4;++j)b[size_t(y)*read.w+x+j]=accum[j];
+                for(int j=0;j<4;++j){if(norm[j]>0)for(double &v:accum[j])v/=norm[j];b[size_t(y)*read.w+x+j]=accum[j];}
             }
             for(int y=H;y<H+core.h;++y)for(int x=H;x<H+core.w;x+=4){
-                Acc accum[4]{};
+                Acc accum[4]{}; double norm[4]{};
                 for(int k=-radius;k<=radius;++k) {
                     const Acc *src=&b[size_t(y+k)*read.w+x];
                     const double weight=kernel[k+radius];
-                    for(int j=0;j<4;++j)for(int c=0;c<4;++c)accum[j][c]+=src[j][c]*weight;
+                    for(int j=0;j<4;++j){
+                        const int gx=read.x+x+j, gy=read.y+y;
+                        const bool clipOutput=!empty(s.canvasBounds) && s.canvasBounds.contains(gx,gy);
+                        if(!clipOutput || s.canvasBounds.contains(gx,read.y+y+k)) {
+                            for(int c=0;c<4;++c)accum[j][c]+=src[j][c]*weight;
+                            if(clipOutput)norm[j]+=weight;
+                        }
+                    }
                 }
-                for(int j=0;j<4;++j)a[size_t(y)*read.w+x+j]=accum[j];
+                for(int j=0;j<4;++j){if(norm[j]>0)for(double &v:accum[j])v/=norm[j];a[size_t(y)*read.w+x+j]=accum[j];}
             }
         }
         for(int y=0;y<core.h;++y)for(int x=0;x<core.w;++x) {
@@ -103,25 +117,48 @@ Image lensCore(const Image&s,Rect core,Rect frame,const Params&p) {
         for(double &c:v.rgba)c*=weight;
     }
     // Difference rows implement source-dependent disk scatter in O(radius), not O(radius^2).
-    std::vector<std::array<double,5>> diff(core.w+1);
-    std::vector<int> coverage(core.w+1);
+    std::vector<std::array<double,5>> diff(core.w+1),canvasDiff(core.w+1);
+    std::vector<int> coverage(core.w+1),canvasCoverage(core.w+1);
     for(int y=0;y<core.h;++y) {
         std::fill(diff.begin(),diff.end(),std::array<double,5>{});
         std::fill(coverage.begin(),coverage.end(),0);
+        std::fill(canvasDiff.begin(),canvasDiff.end(),std::array<double,5>{});
+        std::fill(canvasCoverage.begin(),canvasCoverage.end(),0);
         for(int dy=-H;dy<=H;++dy)for(int sx=0;sx<read.w;++sx) {
+            const int sourceX=read.x+sx, sourceY=read.y+y+H+dy;
+            const bool sourceInCanvas=empty(s.canvasBounds) || s.canvasBounds.contains(sourceX,sourceY);
             const auto &v=samples[size_t(y+H+dy)*read.w+sx];
             if(v.radius2<double(dy)*dy)continue;
             int reach=int(std::sqrt(v.radius2-double(dy)*dy));
             int left=std::max(0,sx-H-reach),right=std::min(core.w,sx-H+reach+1);
             if(left>=right)continue;
+            const bool outputRowInCanvas=empty(s.canvasBounds) || (core.y+y>=s.canvasBounds.y && core.y+y<s.canvasBounds.y+s.canvasBounds.h);
+            int canvasLeft=left,canvasRight=right;
+            if(!sourceInCanvas) canvasLeft=canvasRight=left;
+            else if(!empty(s.canvasBounds) && outputRowInCanvas) {
+                canvasLeft=std::max(left,s.canvasBounds.x-core.x);
+                canvasRight=std::min(right,s.canvasBounds.x+s.canvasBounds.w-core.x);
+            } else if(!empty(s.canvasBounds)) canvasLeft=canvasRight=left;
             for(int c=0;c<4;++c){diff[left][c]+=v.rgba[c];diff[right][c]-=v.rgba[c];}
             diff[left][4]+=v.weight;diff[right][4]-=v.weight;
             if(v.rgba[3]>0){++coverage[left];--coverage[right];}
+            if(canvasLeft<canvasRight) {
+                for(int c=0;c<4;++c){canvasDiff[canvasLeft][c]+=v.rgba[c];canvasDiff[canvasRight][c]-=v.rgba[c];}
+                canvasDiff[canvasLeft][4]+=v.weight;canvasDiff[canvasRight][4]-=v.weight;
+                if(v.rgba[3]>0){++canvasCoverage[canvasLeft];--canvasCoverage[canvasRight];}
+            }
         }
-        std::array<double,5> sum{}; int covered=0;
+        std::array<double,5> sum{},canvasSum{}; int covered=0,canvasCovered=0;
         for(int x=0;x<core.w;++x) {
-            for(int c=0;c<5;++c)sum[c]+=diff[x][c];
-            covered+=coverage[x];
+            for(int c=0;c<5;++c){sum[c]+=diff[x][c];canvasSum[c]+=canvasDiff[x][c];}
+            covered+=coverage[x];canvasCovered+=canvasCoverage[x];
+            const bool outputInCanvas=!empty(s.canvasBounds) && s.canvasBounds.contains(core.x+x,core.y+y);
+            if(outputInCanvas){
+                if(canvasCovered==0){out.at(core.x+x,core.y+y)={0,0,0,0};continue;}
+                Pixel v=unassociate({canvasSum[0],canvasSum[1],canvasSum[2],canvasSum[3]});
+                v[3]=canvasSum[4]>0?float(std::clamp(canvasSum[3]/canvasSum[4],0.0,1.0)):0;
+                if(v[3]==0)v={0,0,0,0};out.at(core.x+x,core.y+y)=v;continue;
+            }
             // Exact integer support avoids ghost RGB from cancellation at zero coverage.
             if(covered==0){out.at(core.x+x,core.y+y)={0,0,0,0};continue;}
             Pixel v=unassociate({sum[0],sum[1],sum[2],sum[3]});

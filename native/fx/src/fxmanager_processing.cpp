@@ -9,6 +9,11 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QCoreApplication>
+#include <QSaveFile>
+#include <QDateTime>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSemaphore>
 #include <QStandardPaths>
 #include <QThreadPool>
@@ -110,6 +115,43 @@ QString settingsReadPath()
         if (legacy != canonical && QFileInfo(legacy).isFile()) return legacy;
     }
     return QString();
+}
+
+namespace {
+QString requestedBackend()
+{
+    const QString override = qEnvironmentVariable("TFM_BACKEND").toLower();
+    if (override == QLatin1String("cpu") || override == QLatin1String("gpu") || override == QLatin1String("auto")) return override;
+    QFile file(settingsReadPath());
+    if (file.open(QIODevice::ReadOnly)) {
+        const QString value = QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("backend")).toString();
+        if (value == QLatin1String("cpu") || value == QLatin1String("gpu")) return value;
+    }
+    return QStringLiteral("auto");
+}
+}
+
+bool gpuRequested() { return requestedBackend() != QLatin1String("cpu"); }
+
+void reportBackend(const QString &filter, const QString &actual, const QString &reason, const QString &device)
+{
+    static QMutex mutex;
+    QMutexLocker lock(&mutex);
+    const QString directory = QFileInfo(settingsPath()).absolutePath();
+    if (!QDir().mkpath(directory)) return;
+    QJsonObject record;
+    record.insert(QStringLiteral("pid"), double(QCoreApplication::applicationPid()));
+    record.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    record.insert(QStringLiteral("requested"), requestedBackend());
+    record.insert(QStringLiteral("actual"), actual);
+    record.insert(QStringLiteral("filter"), filter);
+    record.insert(QStringLiteral("device"), device);
+    record.insert(QStringLiteral("reason"), reason);
+    QSaveFile file(QDir(directory).filePath(QStringLiteral("backend-status.json")));
+    if (file.open(QIODevice::WriteOnly)) {
+        const QByteArray content = QJsonDocument(record).toJson();
+        if (file.write(content) == content.size()) file.commit();
+    }
 }
 
 void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP config)

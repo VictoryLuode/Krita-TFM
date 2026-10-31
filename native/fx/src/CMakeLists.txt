@@ -3,6 +3,8 @@ set(KRITA_FXMANAGER_SOURCES
     fxmanager_birefnet.cpp
     fxmanager_background_removal.cpp
     fxmanager_processing.cpp
+    fxmanager_vulkan.cpp
+    tfm_motion_gpu.cpp
     fxmanager_bloom.cpp
     fxmanager_film_grain.cpp
     fxmanager_lens_distortion.cpp
@@ -81,4 +83,5 @@ target_include_directories(visioncpp PUBLIC
 )
 target_link_libraries(visioncpp PRIVATE filtermanager_stb)
 target_include_directories(kritatfm PRIVATE "${FXMANAGER_VISIONCPP_ROOT}/include")
+target_include_directories(kritatfm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vulkan-headers/include")
 install(TARGETS kritatfm DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})

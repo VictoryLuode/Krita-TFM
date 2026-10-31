@@ -134,7 +134,8 @@ def main():
         args = [a.replace('kritafiltermanager_EXPORTS', 'kritatfm_EXPORTS') for a in args]
         args = [a.replace('Krita-FilterManager', 'Krita-TFM/native/fx') for a in args]
         args = [a for a in args if 'plugins/filters/filtermanager' not in a.replace(chr(92), '/')]
-        args[0:0] = ['-I' + str(STAGE), '-I' + str(auto)]
+        args[0:0] = ['-I' + str(STAGE), '-I' + str(auto), '-I' + str(PROJECT / 'src'),
+                      '-I' + str(PROJECT / 'third_party/vulkan-headers/include')]
         rsp = obj.with_suffix('.rsp')
         args = [a.replace('\\', '/') if not a.startswith('-D') else a for a in args]
         rsp.write_text(subprocess.list2cmdline(args), encoding='utf-8')
