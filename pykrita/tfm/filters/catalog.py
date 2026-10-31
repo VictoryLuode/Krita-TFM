@@ -95,7 +95,6 @@ FILTERS = [
             {"key": "reanalyze_target", "label": "Re-analyze Target", "type": "action"},
         ],
     },
-
     {
         "id": "tfm_guided_color_match",
         "label": "Guided Color Match",
@@ -145,6 +144,59 @@ FILTERS = [
             {"key": "softness", "label": "Softness", "min": 0.0, "max": 0.5, "default": 0.05},
             {"key": "invert", "label": "Invert", "default": False},
             {"key": "preserve_rgb", "label": "Preserve RGB", "default": True, "editable": False},
+        ],
+    },
+    {
+        "id": "tfm_motion_blur_circular",
+        "label": "Circular Motion Blur",
+        "description": "Rotational motion blur around a configurable focal center (GEGL motion-blur-circular).",
+        "category": "Blur",
+        "settings": [
+            {"key": "center_x", "label": "Center X", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "center_y", "label": "Center Y", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "angle", "label": "Angle", "min": 0.0, "max": 360.0, "default": 20.0},
+        ],
+    },
+    {
+        "id": "tfm_motion_blur_zoom",
+        "label": "Zoom Motion Blur",
+        "description": "Fixed document-coordinate radial sampling with bounded support; extreme factors may exceed the processing limit.",
+        "category": "Blur",
+        "settings": [
+            {"key": "center_x", "label": "Center X", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "center_y", "label": "Center Y", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "factor", "label": "Blurring Factor", "min": -10.0, "max": 1.0, "default": 0.1},
+        ],
+    },
+    {
+        "id": "tfm_focus_blur",
+        "label": "Focus Blur",
+        "description": "Native CPU depth-of-field / tilt-shift blur. F32 filter masks may show small boundary differences; use a paint layer or adjustment layer for F32 documents.",
+        "category": "Blur",
+        "settings": [
+            {"key": "blur_type", "label": "Blur Type", "default": "gaussian", "options": [
+                ["gaussian", "Gaussian Blur"],
+                ["lens", "Lens Blur"],
+            ]},
+            {"key": "blur_radius", "label": "Blur Radius", "min": 0.0, "max": 200.0, "default": 25.0},
+            {"key": "highlight_factor", "label": "Highlight Factor", "min": 0.0, "max": 1.0, "default": 0.0},
+            {"key": "highlight_threshold_low", "label": "Highlight Threshold (Low)", "min": 0.0, "max": 1.0, "default": 0.0},
+            {"key": "highlight_threshold_high", "label": "Highlight Threshold (High)", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "shape", "label": "Shape", "default": "circle", "options": [
+                ["circle", "Circle"],
+                ["square", "Square"],
+                ["diamond", "Diamond"],
+                ["horizontal", "Horizontal"],
+                ["vertical", "Vertical"],
+            ]},
+            {"key": "x", "label": "Center X", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "y", "label": "Center Y", "min": -1.0, "max": 2.0, "default": 0.5},
+            {"key": "radius", "label": "Outer Radius", "min": 0.0, "max": 3.0, "default": 0.75},
+            {"key": "focus", "label": "Sharpness (Focus)", "min": 0.0, "max": 1.0, "default": 0.25},
+            {"key": "midpoint", "label": "Transition Midpoint", "min": 0.0, "max": 1.0, "default": 0.5},
+            {"key": "aspect_ratio", "label": "Aspect Ratio", "min": -1.0, "max": 1.0, "default": 0.0},
+            {"key": "rotation", "label": "Rotation", "min": -180.0, "max": 180.0, "default": 0.0},
+            {"key": "high_quality", "label": "High Quality", "default": False},
         ],
     },
 ]

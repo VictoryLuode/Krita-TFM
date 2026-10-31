@@ -20,7 +20,20 @@ HOST = WORKSPACE / 'Krita-Master-5.3.4.1/build-fxm-5.3'
 STAGE = REPO / 'build' / 'native-5.3' / 'stage'
 OUT = REPO / 'build' / 'native-5.3'
 DEPS = WORKSPACE / 'deps'
-COMPILER = Path(os.environ.get('CXX') or shutil.which('clang++') or 'clang++.exe')
+def _find_compiler():
+    if os.environ.get('CXX'):
+        return Path(os.environ['CXX'])
+    found = shutil.which('clang++')
+    if found:
+        return Path(found)
+    for drive in (Path('D:/'), Path('C:/')):
+        candidate = drive / 'Scoop/apps/llvm-mingw/current/bin/clang++.exe'
+        if candidate.is_file():
+            return candidate
+    return Path('clang++.exe')
+
+
+COMPILER = _find_compiler()
 
 
 def split(command):
@@ -46,9 +59,11 @@ def escape(path):
 
 def main():
     env = os.environ.copy()
-    env['PATH'] = str(COMPILER.parent) + ';' + str(DEPS / 'bin') + ';' + env['PATH']
+    extra_paths = [str(COMPILER.parent), str(DEPS / 'bin'), str(Path.home() / '.local/bin')]
+    env['PATH'] = ';'.join(extra_paths) + ';' + env['PATH']
     env['PKG_CONFIG_PATH'] = str(DEPS / 'lib/pkgconfig')
-    ninja, cmake = shutil.which('ninja'), shutil.which('cmake')
+    ninja = shutil.which('ninja', path=env['PATH'])
+    cmake = shutil.which('cmake', path=env['PATH'])
     if not ninja or not cmake or not COMPILER.is_file():
         raise SystemExit('Need Scoop LLVM-MinGW, ninja, and cmake (uv tool or Scoop)')
     for args in ([cmake, '--version'], [ninja, '--version'], [str(COMPILER), '--version']):
@@ -90,8 +105,15 @@ def main():
         raise SystemExit('Missing KRITA_FXMANAGER_SOURCES')
     required = set(re.findall(r'\b[\w.-]+\.cpp\b', source_match.group(1)))
     actual = {Path(e['file']).name.replace('filtermanager', 'fxmanager') for e in entries} - {'mocs_compilation.cpp'}
-    if required != actual:
-        raise SystemExit(f'Reference source mismatch: missing={required-actual}, stale={actual-required}')
+    stale = actual - required
+    if stale:
+        raise SystemExit(f'Reference source has stale entries: {stale}')
+    extra_sources = sorted(required - actual)
+    template_entry = next(e for e in entries if Path(e['file']).name != 'mocs_compilation.cpp')
+    for extra_name in extra_sources:
+        synth = dict(template_entry)
+        synth['file'] = str(STAGE / extra_name)
+        entries.append(synth)
     graph = ['rule compile', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = COMPILE $out', 'rule link', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = LINK $out']
     objects, database = [], []
     for e in entries:
@@ -130,14 +152,15 @@ def main():
         if not lib.startswith('-') and not (HOST / lib).is_file():
             raise SystemExit('Missing existing library: ' + lib)
     dll = OUT / 'bin/kritatfm.dll'
+    candidate = OUT / 'bin/kritatfm.candidate.dll'
     dll.parent.mkdir(exist_ok=True)
     args = split(values['LANGUAGE_COMPILE_FLAGS']) + split(values['LINK_FLAGS'])
-    args += ['-shared', '-o', str(dll), '-Wl,--major-image-version,0,--minor-image-version,0']
+    args += ['-shared', '-o', str(candidate), '-Wl,--major-image-version,0,--minor-image-version,0']
     args += [str(p) for p in objects] + libs
     rsp = OUT / 'link.rsp'
     args = [a.replace('\\', '/') if not a.startswith('-D') else a for a in args]
     rsp.write_text(subprocess.list2cmdline(args), encoding='utf-8')
-    graph += ['build ' + escape(dll) + ': link ' + ' '.join(escape(p) for p in objects), '  rsp = ' + subprocess.list2cmdline([str(rsp)]), 'default ' + escape(dll)]
+    graph += ['build ' + escape(candidate) + ': link ' + ' '.join(escape(p) for p in objects), '  rsp = ' + subprocess.list2cmdline([str(rsp)]), 'default ' + escape(candidate)]
     (OUT / 'build.ninja').write_text('\n'.join(graph) + '\n')
     (OUT / 'compile_commands.json').write_text(json.dumps(database, indent=2))
     command = [ninja, '-f', str(OUT / 'build.ninja'), '-j8']
@@ -145,6 +168,16 @@ def main():
     subprocess.run(command, cwd=HOST, env=env, check=True)
     if before != {p.name: digest(p) for p in files}:
         raise SystemExit('Sources changed during build; rerun before validating candidate')
+    # A failed compile/link never replaces the previous working artifact.
+    # Preserve immutable rollback copies before atomically publishing the DLL.
+    if dll.is_file():
+        rollback = OUT / 'rollback' / digest(dll)
+        rollback.mkdir(parents=True, exist_ok=True)
+        if not (rollback / dll.name).exists():
+            shutil.copy2(dll, rollback / dll.name)
+        if (OUT / 'manifest.json').is_file() and not (rollback / 'manifest.json').exists():
+            shutil.copy2(OUT / 'manifest.json', rollback / 'manifest.json')
+    os.replace(candidate, dll)
     manifest = {'dll': str(dll), 'sha256': digest(dll), 'sources': before, 'compiler': str(COMPILER), 'cmake': cmake, 'ninja': ninja}
     (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     print('BUILD_OK', dll, 'SHA256', manifest['sha256'], flush=True)

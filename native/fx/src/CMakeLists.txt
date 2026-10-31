@@ -24,6 +24,13 @@ set(KRITA_FXMANAGER_SOURCES
     fxmanager_guided_widget.h
     fxmanager_guided_color_match_filter.cpp
     fxmanager_guided_color_match_filter.h
+    fxm_blur_point_preview.h
+    fxm_gegl_motion_blur.cpp
+    fxm_gegl_motion_blur.h
+    fxm_gegl_focus_blur.cpp
+    fxm_gegl_focus_blur.h
+    focus_native.cpp
+    focus_native.h
     fxmanager_plugin.h
     fxmanager_processing.h
     fxmanager_bloom.h

@@ -118,7 +118,7 @@ class ManagerDialog(QtWidgets.QDialog):
         self.default_height.setValue(self._window_height)
         self.cpu_threads = QtWidgets.QComboBox()
         self.cpu_threads.addItem('Auto (safe default: 1)', 0)
-        for count in (1, 2, 4, 6, 8, 12, 16, 24, 32, 40, 48):
+        for count in (1, 2, 4, 6, 8, 12, 16, 24, 32):
             self.cpu_threads.addItem(str(count), count)
         cpu = filter_settings.load().get('cpu_threads', 0)
         self.cpu_threads.setCurrentIndex(max(0, self.cpu_threads.findData(cpu)))

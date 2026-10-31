@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -12,7 +14,9 @@
 #include <QThreadPool>
 #include <QTemporaryFile>
 #include <QRunnable>
+#include <KoColorModelStandardIds.h>
 #include <KoColorSpace.h>
+#include <KoColorSpaceRegistry.h>
 
 namespace fxmanager {
 namespace {
@@ -113,8 +117,18 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
     if (!config) return;
     QFile file(settingsReadPath());
     if (!file.open(QIODevice::ReadOnly)) return;
-    const QJsonObject values = QJsonDocument::fromJson(file.readAll()).object()
-        .value(QStringLiteral("filter_defaults")).toObject().value(filterId).toObject();
+    const QJsonObject allDefaults = QJsonDocument::fromJson(file.readAll()).object()
+        .value(QStringLiteral("filter_defaults")).toObject();
+    QJsonObject values = allDefaults.value(filterId).toObject();
+    if (values.isEmpty() && filterId.startsWith(QLatin1String("tfm_"))) {
+        const QString legacyId = QStringLiteral("fxmanager_") + filterId.mid(4);
+        values = allDefaults.value(legacyId).toObject();
+    } else if (values.isEmpty() && filterId.startsWith(QLatin1String("fxmanager_"))) {
+        const QString tfmId = QStringLiteral("tfm_") + filterId.mid(10);
+        values = allDefaults.value(tfmId).toObject();
+    }
+    if (values.isEmpty()) return;
+
     auto number = [&](const char *key, double min, double max, bool integer = false) {
         const QJsonValue value = values.value(QLatin1String(key));
         if (!value.isDouble()) return;
@@ -132,23 +146,41 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
         const QString text = value.toString();
         for (const char *option : options) if (text == QLatin1String(option)) { config->setProperty(key, text); return; }
     };
-    if (filterId == QLatin1String("tfm_bloom")) {
+    if (filterId == QLatin1String("tfm_bloom") || filterId == QLatin1String("fxmanager_bloom")) {
         number("threshold",0,1); number("radius",1,64); number("strength",0,2); number("diffusion",0,1); number("softness",0,1);
-    } else if (filterId == QLatin1String("tfm_filmgrain")) {
+    } else if (filterId == QLatin1String("tfm_filmgrain") || filterId == QLatin1String("fxmanager_filmgrain")) {
         choice("preset",{"8mm_caffenol","8mm_home_movie","super_8","16mm_broadcast","16mm_indie_cinema","35mm_portra_400","super_35","70mm_cinema","custom"});
         number("amount",0,1); number("size",0.5,8); number("seed",0,999,true); boolean("monochrome");
-    } else if (filterId == QLatin1String("tfm_lens_distortion")) {
+    } else if (filterId == QLatin1String("tfm_lens_distortion") || filterId == QLatin1String("fxmanager_lens_distortion")) {
         choice("mode",{"radial","horizontal"}); number("distortion",-1,1); number("dispersion",0,1); boolean("jitter"); boolean("fit");
-    } else if (filterId == QLatin1String("tfm_vignette")) {
+    } else if (filterId == QLatin1String("tfm_vignette") || filterId == QLatin1String("fxmanager_vignette")) {
         number("factor",0,1); number("feather",0,1); number("corner_roundness",0,1); number("scale_x",0.0001,4); number("scale_y",0.0001,4); number("offset_x",-2,2); number("offset_y",-2,2); number("angle",-180,180);
-    } else if (filterId == QLatin1String("tfm_clipboard_color_match")) {
+    } else if (filterId == QLatin1String("tfm_clipboard_color_match") || filterId == QLatin1String("fxmanager_clipboard_color_match")) {
         choice("reference_source",{"clipboard","file"}); number("match_strength",0,1); number("luminance",0,2); number("color_intensity",0,2); number("fade",0,1); number("tone_distribution",0,1); number("tonal_color",0,1); number("color_correlation",0,1); number("gain_limit",1,8); number("shift_limit",0,100); number("variance_floor",0.1,10); boolean("gamut_protection");
-    } else if (filterId == QLatin1String("tfm_guided_color_match")) {
+    } else if (filterId == QLatin1String("tfm_guided_color_match") || filterId == QLatin1String("fxmanager_guided_color_match")) {
         number("match_strength",0,1); number("luminance",0,1); number("chroma",0,2); number("shadow_color",0,1); number("highlight_warmth",0,2); number("neutral_protection",0,1); number("smoothness",0,1);
-    } else if (filterId == QLatin1String("tfm_background_removal")) {
+    } else if (filterId == QLatin1String("tfm_background_removal") || filterId == QLatin1String("fxmanager_background_removal")) {
         choice("model",{"BiRefNet-lite-F16.gguf","BiRefNet-dynamic-F16.gguf"}); choice("backend",{"cpu","gpu"}); choice("output_mode",{"cutout","grayscale_mask"}); choice("foreground_mode",{"fast_mask","refined_foreground"}); number("preserve_foreground",0,100,true); number("mask_contrast",-100,100,true);
-    } else if (filterId == QLatin1String("tfm_color_range_mask")) {
+    } else if (filterId == QLatin1String("tfm_color_range_mask") || filterId == QLatin1String("fxmanager_color_range_mask")) {
         choice("channel",{"gray","r","g","b","hue","saturation"}); number("range_min",0,1); number("range_max",0,1); number("softness",0,0.5); boolean("invert");
+    } else if (filterId == QLatin1String("tfm_motion_blur_circular") || filterId == QLatin1String("fxmanager_motion_blur_circular")) {
+        number("center_x",-1,2); number("center_y",-1,2); number("angle",0,360);
+    } else if (filterId == QLatin1String("tfm_motion_blur_zoom") || filterId == QLatin1String("fxmanager_motion_blur_zoom")) {
+        number("center_x",-1,2); number("center_y",-1,2); number("factor",-10,1);
+    } else if (filterId == QLatin1String("tfm_focus_blur") || filterId == QLatin1String("fxmanager_focus_blur")) {
+        choice("blur_type",{"gaussian","lens"});
+        number("blur_radius",0,200);
+        number("highlight_factor",0,1);
+        number("highlight_threshold_low",0,1);
+        number("highlight_threshold_high",0,1);
+        choice("shape",{"circle","square","diamond","horizontal","vertical"});
+        number("x",-1,2); number("y",-1,2);
+        number("radius",0,3);
+        number("focus",0,1);
+        number("midpoint",0,1);
+        number("aspect_ratio",-1,1);
+        number("rotation",-180,180);
+        boolean("high_quality");
     }
 }
 
@@ -178,7 +210,7 @@ int workerCount(int rows)
 {
     if (rows <= 1) return 1;
     const int configured = configuredThreadCount();
-    return std::clamp(std::min(configured > 0 ? configured : 1, rows), 1, 48);
+    return std::clamp(std::min(configured > 0 ? configured : 1, rows), 1, 32);
 }
 
 class BandJob final : public QRunnable
@@ -205,6 +237,74 @@ QImage readImage(KisPaintDeviceSP device, const QRect &rect)
 void writeImage(KisPaintDeviceSP device, const QImage &image, const QRect &rect)
 {
     device->convertFromQImage(image.rgbSwapped(), device->colorSpace()->profile(), rect.x(), rect.y());
+}
+
+namespace {
+
+const KoColorSpace *floatWorkingColorSpace()
+{
+    // babl's "RGBA float" uses linear sRGB/Rec.709 primaries. Never infer
+    // the transfer curve or primaries from the source channel depth.
+    auto *registry = KoColorSpaceRegistry::instance();
+    const KoColorProfile *profile = registry->p709G10Profile();
+    if (!profile) return nullptr;
+    const KoColorSpace *space = registry->colorSpace(
+        RGBAColorModelID.id(), Float32BitsColorDepthID.id(), profile);
+    return space && space->pixelSize() == 4 * sizeof(float) ? space : nullptr;
+}
+
+} // namespace
+
+FloatRgbaImage readFloatImage(KisPaintDeviceSP device, const QRect &rect)
+{
+    FloatRgbaImage out;
+    if (!device || rect.isEmpty()) return out;
+    const KoColorSpace *cs = device->colorSpace();
+    const KoColorSpace *working = floatWorkingColorSpace();
+    if (!cs || !working) return out;
+
+    const qint64 count = qint64(rect.width()) * rect.height();
+    if (count <= 0 || count > 268435456LL ||
+        count * cs->pixelSize() > std::numeric_limits<int>::max()) return out;
+
+    // Convert an independent buffer: reading must not change the source device,
+    // its profile, or its default pixel. No integer intermediate clips HDR.
+    QVector<quint8> raw(int(count * cs->pixelSize()));
+    device->readBytes(raw.data(), rect.x(), rect.y(), rect.width(), rect.height());
+    out.pixels.resize(int(count * 4));
+    if (!cs->convertPixelsTo(raw.constData(),
+                            reinterpret_cast<quint8 *>(out.pixels.data()),
+                            working, quint32(count),
+                            KoColorConversionTransformation::internalRenderingIntent(),
+                            KoColorConversionTransformation::internalConversionFlags())) {
+        return FloatRgbaImage();
+    }
+    out.width = rect.width();
+    out.height = rect.height();
+    out.linearHdr = true;
+    return out;
+}
+
+bool writeFloatImage(KisPaintDeviceSP device, const FloatRgbaImage &image, const QRect &rect)
+{
+    if (!device || image.isNull() || rect.isEmpty() || !image.linearHdr) return false;
+    if (image.width != rect.width() || image.height != rect.height()) return false;
+    const KoColorSpace *cs = device->colorSpace();
+    const KoColorSpace *working = floatWorkingColorSpace();
+    if (!cs || !working) return false;
+
+    const qint64 count = qint64(rect.width()) * rect.height();
+    if (count <= 0 || count > 268435456LL ||
+        count * cs->pixelSize() > std::numeric_limits<int>::max()) return false;
+
+    QVector<quint8> raw(int(count * cs->pixelSize()));
+    if (!working->convertPixelsTo(reinterpret_cast<const quint8 *>(image.pixels.constData()),
+                                 raw.data(), cs, quint32(count),
+                                 KoColorConversionTransformation::internalRenderingIntent(),
+                                 KoColorConversionTransformation::internalConversionFlags())) return false;
+    // Publish only after the complete reverse ICC conversion succeeds.
+    device->writeBytes(raw.constData(), rect.x(), rect.y(), rect.width(), rect.height());
+    return true;
 }
 
 void parallelRows(int rows, const std::function<void(int, int)> &body)

@@ -144,6 +144,7 @@ class FxManagerDialog(QWidget):
             self._managed = {entry["id"] for entry in FILTERS}
         if "enabled_filters" not in self._pending:
             self._enabled = set(self._managed)
+        self._collapsed_categories = set()
         self._build_ui()
         self._reload()
         self._saved_filter_state = self._filter_state()
@@ -173,6 +174,7 @@ class FxManagerDialog(QWidget):
         self._category_list.setDropIndicatorShown(True)
         self._category_list.setDefaultDropAction((Qt.DropAction.MoveAction if PYQT6 else Qt.MoveAction))
         self._category_list.currentItemChanged.connect(self._category_selected)
+        self._category_list.itemClicked.connect(self._toggle_category)
         self._category_list.itemChanged.connect(self._managed_changed)
         self._category_list.model().rowsMoved.connect(self._categories_moved)
         self._category_list.setContextMenuPolicy((Qt.ContextMenuPolicy.CustomContextMenu if PYQT6 else Qt.CustomContextMenu))
@@ -260,7 +262,11 @@ class FxManagerDialog(QWidget):
                         if not needle or needle in name.lower() or needle in row["label"].lower() or needle in row["id"].lower()]
             if needle and needle not in name.lower() and not matching:
                 continue
-            header = QListWidgetItem(name)
+            expanded = bool(needle) or name not in self._collapsed_categories
+            header = QListWidgetItem(("▾  " if expanded else "▸  ") + name)
+            font = header.font()
+            font.setBold(True)
+            header.setFont(font)
             header.setData(_ROLE, None)
             header.setData(_ROLE + 1, name)
             header.setFlags(header.flags() & ~item_is_user_checkable())
@@ -271,7 +277,7 @@ class FxManagerDialog(QWidget):
                 if needle and needle not in name.lower() and needle not in row["label"].lower() and needle not in ident.lower():
                     continue
                 managed = ident in self._managed
-                item = QListWidgetItem(row["label"] if managed else "＋ " + row["label"])
+                item = QListWidgetItem("      " + (row["label"] if managed else "＋ " + row["label"]))
                 if not managed:
                     item.setForeground(QColor("#9a9a9a"))
                 item.setData(_ROLE, ident)
@@ -279,9 +285,11 @@ class FxManagerDialog(QWidget):
                 item.setToolTip(row["description"])
                 item.setFlags(item.flags() & ~item_is_user_checkable())
                 self._category_list.addItem(item)
+                item.setHidden(not expanded)
                 self._filter_items[ident] = item
-                visible_ids.append(ident)
-        if selected_id in self._filter_items:
+                if expanded:
+                    visible_ids.append(ident)
+        if selected_id in visible_ids:
             selected = self._filter_items[selected_id]
             self._category_list.setCurrentItem(selected)
             self._category_list.scrollToItem(selected)
@@ -404,6 +412,25 @@ class FxManagerDialog(QWidget):
 
     def _category_selected(self, current, _previous=None):
         self._show_selected()
+
+    def _toggle_category(self, item):
+        if item is None or item.data(_ROLE) is not None:
+            return
+        name = item.data(_ROLE + 1)
+        if not name:
+            return
+        if self._search.text().strip():
+            return
+        if name in self._collapsed_categories:
+            self._collapsed_categories.remove(name)
+        else:
+            self._collapsed_categories.add(name)
+        expanded = name not in self._collapsed_categories
+        item.setText(("▾  " if expanded else "▸  ") + name)
+        for ident in self._categories[name]:
+            child = self._filter_items.get(ident)
+            if child is not None:
+                child.setHidden(not expanded)
 
     def _categories_moved(self, *args):
         names = [self._category_list.item(i).data(_ROLE + 1) for i in range(self._category_list.count())

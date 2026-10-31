@@ -11,7 +11,7 @@ _OPTIONS = {
     "backend": "auto",
     "gpu_fallback": "cpu",
     "cpu_threads": 0,
-    "cpu_thread_limit": 48,
+    "cpu_thread_limit": 32,
 
     "managed_filters": [entry["id"] for entry in FILTERS],
     "enabled_filters": [entry["id"] for entry in FILTERS],
@@ -20,7 +20,7 @@ _OPTIONS = {
 }
 _BACKENDS = {"auto", "cpu", "gpu"}
 _FALLBACKS = {"cpu", "error"}
-_THREAD_VALUES = {0, 1, 2, 4, 6, 8, 12, 16, 24, 32, 40, 48}
+_THREAD_VALUES = {0, 1, 2, 4, 6, 8, 12, 16, 24, 32}
 
 
 def _kritarc_path():
