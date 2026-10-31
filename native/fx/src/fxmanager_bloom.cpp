@@ -1,6 +1,7 @@
 #include "fxmanager_bloom.h"
 #include "fxmanager_filter_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_bloom_gpu.h"
 #include "bloom_algorithm.h"
 
 #include <algorithm>
@@ -40,11 +41,29 @@ void KisFilterBloom::processImpl(KisPaintDeviceSP d,const QRect &rect,const KisF
     const QImage source=fxmanager::readImage(input,read);
     if(source.isNull())return;
     QImage out;
-    if(diffusion) out=fxmanager::bloom::diffuse(source,threshold,radius,strength,c->getDouble("softness",0.0));
-    else {
+    const QRect localOutput(rect.topLeft() - read.topLeft(), rect.size());
+    if (diffusion) {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("Bloom diffusion remains CPU-only"));
+        out=fxmanager::bloom::diffuse(source,threshold,radius,strength,c ? c->getDouble("softness",0.0) : 0.0);
+    } else {
+        if (fxmanager::gpuRequested()) {
+            QImage gpuOutput;
+            QString reason;
+            QString gpuDevice;
+            if (tfm_bloom_gpu::renderLegacy(source, localOutput, threshold, radius, strength,
+                                             gpuOutput, reason, gpuDevice)) {
+                fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+                fxmanager::writeImage(d, gpuOutput, rect);
+                if (u) u->setProgress(100);
+                return;
+            }
+            fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
         out=source.copy();
         fxmanager::parallelRows(source.height(),[&](int y0,int y1){fxmanager::bloom::legacyBand(source,out,y0,y1,threshold,radius,strength);});
     }
-    fxmanager::writeImage(d,out.copy(QRect(rect.topLeft()-read.topLeft(),rect.size())),rect);
+    fxmanager::writeImage(d,out.copy(localOutput),rect);
     if(u)u->setProgress(100);
 }

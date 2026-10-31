@@ -137,7 +137,7 @@ class ManagerDialog(QtWidgets.QDialog):
         settings_form.addRow('Plugin filters CPU threads', self.cpu_threads)
         settings_form.addRow('Filter backend', self.filter_backend)
         settings_layout.addLayout(settings_form)
-        backend_note = QtWidgets.QLabel('Vulkan supports Motion Blur, Film Grain, Vignette, Color Range Mask, and Lens Distortion. Bloom, Focus Blur, and color matching currently use CPU; Background Removal has separate ggml settings. GPU requests fall back to CPU when unavailable.')
+        backend_note = QtWidgets.QLabel('Vulkan supports Motion Blur, Film Grain, Vignette, Color Range Mask, Lens Distortion, and Bloom legacy mode. Bloom diffusion, Focus Blur, and color matching currently use CPU; Background Removal has separate ggml settings. GPU requests fall back to CPU when unavailable.')
         backend_note.setWordWrap(True)
         settings_layout.addWidget(backend_note)
         self.backend_status = QtWidgets.QLabel()

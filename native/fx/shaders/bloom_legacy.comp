@@ -1,0 +1,41 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { uint pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+    int sourceW,sourceH,outputX,outputY,outputW,outputH,radius,step;
+    float threshold,strength;
+} p;
+uint pixelAt(ivec2 q) {
+    q.x=clamp(q.x,0,p.sourceW-1); q.y=clamp(q.y,0,p.sourceH-1);
+    return src.pixels[q.y*p.sourceW+q.x];
+}
+vec4 unpackPixel(uint v) {
+    return vec4(float((v>>16u)&255u),float((v>>8u)&255u),float(v&255u),float((v>>24u)&255u));
+}
+uint packPixel(vec4 v) {
+    return (uint(clamp(v.a,0.,255.))<<24u)|(uint(clamp(v.r,0.,255.))<<16u)|(uint(clamp(v.g,0.,255.))<<8u)|uint(clamp(v.b,0.,255.));
+}
+void main() {
+    int x=int(gl_GlobalInvocationID.x),y=int(gl_GlobalInvocationID.y);
+    if(x>=p.outputW||y>=p.outputH)return;
+    int sx=x+p.outputX,sy=y+p.outputY;
+    vec4 base=unpackPixel(pixelAt(ivec2(sx,sy)));
+    float lum=(.2126*base.r+.7152*base.g+.0722*base.b)/255.;
+    vec4 result=base;
+    if(lum>p.threshold) {
+        int sr=0,sg=0,sb=0,n=0;
+        for(int oy=-p.radius;oy<=p.radius;oy+=p.step) for(int ox=-p.radius;ox<=p.radius;ox+=p.step) {
+            vec4 tap=unpackPixel(pixelAt(ivec2(sx+ox,sy+oy)));
+            float sampleLum=(.2126*tap.r+.7152*tap.g+.0722*tap.b)/255.;
+            if(sampleLum>p.threshold) { sr+=int(tap.r); sg+=int(tap.g); sb+=int(tap.b); n++; }
+        }
+        if(n>0) {
+            float a=clamp((lum-p.threshold)/max(.001,1.-p.threshold)*p.strength,0.,1.);
+            result.r=clamp(base.r+float(sr/n)*a,0.,255.);
+            result.g=clamp(base.g+float(sg/n)*a,0.,255.);
+            result.b=clamp(base.b+float(sb/n)*a,0.,255.);
+        }
+    }
+    dst.pixels[y*p.outputW+x]=packPixel(result);
+}
