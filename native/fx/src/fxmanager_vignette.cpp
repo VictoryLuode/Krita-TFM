@@ -1,6 +1,7 @@
 #include "fxmanager_vignette.h"
 #include "fxmanager_vignette_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_pointwise_gpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,6 +66,24 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
     // centre and aspect ratio still come from the complete frame.
     const QImage source = fxmanager::readImage(d, outputRect);
     if (source.isNull()) return;
+    if (fxmanager::gpuRequested()) {
+        tfm_pointwise_gpu::Parameters gpu;
+        gpu.operation = tfm_pointwise_gpu::Operation::Vignette;
+        gpu.outputRect = outputRect; gpu.frame = frame;
+        gpu.factor = float(factor); gpu.feather = float(feather); gpu.roundness = float(roundness);
+        gpu.scaleX = float(scaleX); gpu.scaleY = float(scaleY); gpu.offsetX = float(offsetX);
+        gpu.offsetY = float(offsetY); gpu.angle = float(angle);
+        QImage output; QString reason, device;
+        if (tfm_pointwise_gpu::render(source, gpu, output, reason, device)) {
+            fxmanager::writeImage(d, output, outputRect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+            if (u) u->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     QImage output(outputRect.size(), QImage::Format_ARGB32);
 
     const double width = std::max(1, frame.width());

@@ -2,6 +2,7 @@
 #include "fxmanager_color_range_mask_algorithm.h"
 #include "fxmanager_color_range_mask_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_pointwise_gpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -80,6 +81,25 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     image = image.convertToFormat(QImage::Format_ARGB32);
     image.detach(); // Detach before parallel scanLine writes.
 
+    if (fxmanager::gpuRequested()) {
+        tfm_pointwise_gpu::Parameters gpu;
+        gpu.operation = tfm_pointwise_gpu::Operation::ColorRangeMask;
+        gpu.outputRect = applyRect; gpu.channel = static_cast<int>(s.channel);
+        gpu.rangeMin = float(s.rangeMin); gpu.rangeMax = float(s.rangeMax);
+        gpu.softness = float(s.softness); gpu.invert = s.invert ? 1 : 0;
+        QImage output; QString reason, gpuDevice;
+        if (tfm_pointwise_gpu::render(image, gpu, output, reason, gpuDevice)) {
+            device->convertFromQImage(output, device->colorSpace()->profile(), applyRect.x(), applyRect.y());
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+            if (progressUpdater) progressUpdater->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
+
+    image.detach(); // Detach before parallel scanLine writes.
     const int height = image.height();
     const int width = image.width();
     fxmanager::parallelRows(height, [&](int y0, int y1) {

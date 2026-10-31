@@ -1,6 +1,7 @@
 #include "fxmanager_film_grain.h"
 #include "fxmanager_filter_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_pointwise_gpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -68,6 +69,22 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
     const int seed = isCustom ? (c ? c->getInt("seed", preset.seed) : preset.seed) : preset.seed;
     const bool mono = isCustom ? (c ? c->getBool("monochrome", preset.monochrome) : preset.monochrome) : preset.monochrome;
     QImage image = fxmanager::readImage(d, r); if (image.isNull()) return;
+    if (fxmanager::gpuRequested()) {
+        tfm_pointwise_gpu::Parameters gpu;
+        gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
+        gpu.outputRect = r; gpu.amount = float(amount); gpu.size = float(size);
+        gpu.seed = float(seed); gpu.monochrome = mono ? 1 : 0;
+        QImage output; QString reason, device;
+        if (tfm_pointwise_gpu::render(image, gpu, output, reason, device)) {
+            fxmanager::writeImage(d, output, r);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+            if (u) u->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     fxmanager::parallelRows(image.height(), [&](int y0, int y1) { grainBand(image, y0, y1, amount, size, seed, mono); });
     fxmanager::writeImage(d, image, r); if (u) u->setProgress(100);
 }
