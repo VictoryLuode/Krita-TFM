@@ -1,6 +1,7 @@
 #include "fxmanager_light_effects.h"
 #include "fxmanager_filter_widget.h"
 #include "fxmanager_processing.h"
+#include "tfm_pointwise_gpu.h"
 
 #include <algorithm>
 #include <cmath>
@@ -269,8 +270,30 @@ void KisFilterLightLeaks::processImpl(KisPaintDeviceSP d, const QRect &r,
 
     QImage output = fxmanager::readImage(d, outputRect);
     if (output.isNull()) return;
-    fxmanager::reportBackend(id().id(), QStringLiteral("cpu"),
-                             QStringLiteral("Canvas-space leaks: CPU path"));
+    if (fxmanager::gpuRequested()) {
+        tfm_pointwise_gpu::Parameters gpu;
+        gpu.operation = tfm_pointwise_gpu::Operation::LightLeaks;
+        gpu.outputRect = outputRect;
+        gpu.frame = frame;
+        gpu.channel = params.type;
+        gpu.angle = float(params.angle);
+        gpu.scaleX = float(params.scaleX);
+        gpu.scaleY = float(params.scaleY);
+        gpu.p0 = float(params.hue);
+        gpu.p1 = float(params.opacity);
+        gpu.mode = params.blend == QLatin1String("add") ? 1 : params.blend == QLatin1String("lighten") ? 2 : 0;
+        QImage gpuOutput;
+        QString reason, device;
+        if (tfm_pointwise_gpu::render(output, gpu, gpuOutput, reason, device)) {
+            fxmanager::writeImage(d, gpuOutput, outputRect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+            if (u) u->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     applyLeaks(output, params, frame, outputRect.topLeft() - frame.topLeft());
     fxmanager::writeImage(d, output, outputRect);
     if (u) u->setProgress(100);
@@ -321,8 +344,26 @@ void KisFilterLightPatch::processImpl(KisPaintDeviceSP d, const QRect &r,
 
     QImage output = fxmanager::readImage(d, outputRect);
     if (output.isNull()) return;
-    fxmanager::reportBackend(id().id(), QStringLiteral("cpu"),
-                             QStringLiteral("Canvas-space patches: CPU path"));
+    if (fxmanager::gpuRequested()) {
+        tfm_pointwise_gpu::Parameters gpu;
+        gpu.operation = tfm_pointwise_gpu::Operation::LightPatch;
+        gpu.outputRect = outputRect;
+        gpu.frame = frame;
+        gpu.p0 = float(params.darkness);
+        gpu.p1 = float(params.lightness);
+        gpu.mode = std::max(1, int(std::lround(params.density)));
+        QImage gpuOutput;
+        QString reason, device;
+        if (tfm_pointwise_gpu::render(output, gpu, gpuOutput, reason, device)) {
+            fxmanager::writeImage(d, gpuOutput, outputRect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+            if (u) u->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     applyPatch(output, params, frame, outputRect.topLeft() - frame.topLeft());
     fxmanager::writeImage(d, output, outputRect);
     if (u) u->setProgress(100);

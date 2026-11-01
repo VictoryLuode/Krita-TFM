@@ -8,16 +8,6 @@ from krita import Krita
 from .menus.version import __version__
 
 
-def _enum(group, name):
-    direct = getattr(group, name, None)
-    if direct is not None:
-        return direct
-    for scope in ('ItemFlag', 'CheckState', 'ItemDataRole'):
-        scoped = getattr(group, scope, None)
-        if scoped is not None and hasattr(scoped, name):
-            return getattr(scoped, name)
-    raise AttributeError(name)
-
 def color_range_enabled():
     return Krita.instance().readSetting('TFM', 'color_range_enabled', 'true').lower() == 'true'
 
@@ -58,63 +48,16 @@ class ManagerDialog(QtWidgets.QDialog):
         tool_layout = QtWidgets.QHBoxLayout(tools)
         tool_layout.setContentsMargins(16, 12, 16, 12)
         tool_layout.setSpacing(8)
-        left = QtWidgets.QVBoxLayout()
-        left.addWidget(QtWidgets.QLabel("Tools"))
         self.tools_list = QtWidgets.QListWidget()
-        item = QtWidgets.QListWidgetItem("Advance Selection")
-        item.setFlags(item.flags() | _enum(QtCore.Qt, 'ItemIsUserCheckable'))
-        item.setCheckState(_enum(QtCore.Qt, 'Checked') if color_range_enabled() else _enum(QtCore.Qt, 'Unchecked'))
-        self.tools_list.addItem(item)
-        item.setData(_enum(QtCore.Qt, 'UserRole'), 'selection')
-        self.tools_list.itemChanged.connect(lambda entry: set_color_range_enabled(entry.checkState() == _enum(QtCore.Qt, 'Checked')) if entry.data(_enum(QtCore.Qt, 'UserRole')) == 'selection' else None)
-        left.addWidget(self.tools_list)
-        right = QtWidgets.QVBoxLayout()
         self.tool_pages = QtWidgets.QStackedWidget()
-        selection_page = QtWidgets.QWidget()
-        selection_right = QtWidgets.QVBoxLayout(selection_page)
-        selection_right.addWidget(QtWidgets.QLabel("Tool Details"))
-        detail = QtWidgets.QTextBrowser()
-        detail.setPlainText("Advance Selection\n\nSelect image regions by luminance, color channel, or selected color.\n\nAccess: Select menu")
-        selection_right.addWidget(detail, 1)
-        selection_right.addWidget(QtWidgets.QLabel("Default Parameters"))
-        form = QtWidgets.QFormLayout()
-        self.tool_mode = QtWidgets.QComboBox()
-        for group in (
-            [('Sampled Color', 'color')],
-            [('Reds', 'hue_red'), ('Yellows', 'hue_yellow'),
-             ('Greens', 'hue_green'), ('Cyans', 'hue_cyan'),
-             ('Blues', 'hue_blue'), ('Magentas', 'hue_magenta'), ('Skin Tones', 'skin')],
-            [('Highlights', 'highlights'), ('Midtones', 'midtones'),
-             ('Shadows', 'shadows'), ('Brightness', 'luminance')],
-            [('Red Channel', 'red'), ('Green Channel', 'green'), ('Blue Channel', 'blue')],
-        ):
-            if self.tool_mode.count():
-                self.tool_mode.insertSeparator(self.tool_mode.count())
-            for label, key in group:
-                self.tool_mode.addItem(label, key)
-        self.tool_threshold = QtWidgets.QSpinBox()
-        self.tool_threshold.setRange(0, 255)
-        self.tool_invert = QtWidgets.QCheckBox()
-        app = Krita.instance()
-        self.tool_mode.setCurrentIndex(max(0, self.tool_mode.findData(app.readSetting('TFM', 'color_range_default_mode', 'luminance'))))
-        try:
-            self.tool_threshold.setValue(int(app.readSetting('TFM', 'color_range_default_threshold', '128')))
-        except ValueError:
-            self.tool_threshold.setValue(128)
-        self.tool_invert.setChecked(app.readSetting('TFM', 'color_range_default_invert', 'false').lower() == 'true')
-        form.addRow('Mode', self.tool_mode)
-        form.addRow('Threshold / Tolerance', self.tool_threshold)
-        form.addRow('Invert', self.tool_invert)
-        selection_right.addLayout(form)
-        save = QtWidgets.QPushButton('Save Tools')
-        save.clicked.connect(self.save_tool_defaults)
-        selection_right.addWidget(save)
-        self.tool_pages.addWidget(selection_page)
-        right.addWidget(self.tool_pages)
+        self._tool_enable = {}
+        self._add_tool('selection', 'Advance Selection', color_range_enabled(),
+                       set_color_range_enabled, self._advance_selection_page())
         self.tools_list.currentRowChanged.connect(self.tool_pages.setCurrentIndex)
-        tool_layout.addLayout(left, 1)
-        tool_layout.addLayout(right, 2)
+        self.tools_list.itemChanged.connect(self._tool_enabled_changed)
         self.tools_list.setCurrentRow(0)
+        tool_layout.addWidget(self.tools_list, 1)
+        tool_layout.addWidget(self.tool_pages, 2)
         tabs.addTab(tools, "Tools")
         self._saved_tool_defaults = self._tool_defaults()
         from .filters import settings as filter_settings
@@ -148,10 +91,8 @@ class ManagerDialog(QtWidgets.QDialog):
         settings_form.addRow('Filter backend', self.filter_backend)
         settings_layout.addLayout(settings_form)
         backend_note = QtWidgets.QLabel(
-            'Vulkan: Motion Blur, Vignette, Color Range Mask, Lens Distortion, Bloom without diffusion, '
-            'Guided Color Match, Color Temperature, Vibrance, Kuwahara, Halation, Lens Flare, Anamorphic Flare and Light Rays. '
-            'CPU: Film Grain, Bloom diffusion, Focus Blur, Light Leaks, Light Patch and Statistical Color Match. '
-            'Background Removal uses its own ggml backend. A GPU request uses CPU when that filter has no GPU path or the device is unavailable.')
+            'A GPU request uses CPU when that filter has no Vulkan path or the device is unavailable. '
+            'Background Removal uses its own backend.')
         backend_note.setWordWrap(True)
         settings_layout.addWidget(backend_note)
         self.backend_status = QtWidgets.QLabel()
@@ -215,6 +156,60 @@ class ManagerDialog(QtWidgets.QDialog):
         self._saved_general = self._general_settings()
         self.settings_status.setText('Settings saved. Reopen TFM for window size; restart Krita for CPU threads.')
         return True
+
+    def _add_tool(self, ident, label, enabled, on_enabled, page):
+        item = QtWidgets.QListWidgetItem(label)
+        item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, ident)
+        item.setCheckState(QtCore.Qt.CheckState.Checked if enabled else QtCore.Qt.CheckState.Unchecked)
+        self.tools_list.addItem(item)
+        self._tool_enable[ident] = on_enabled
+        self.tool_pages.addWidget(page)
+
+    def _tool_enabled_changed(self, item):
+        handler = self._tool_enable.get(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        if handler is not None:
+            handler(item.checkState() == QtCore.Qt.CheckState.Checked)
+
+    def _advance_selection_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.addWidget(QtWidgets.QLabel(
+            'Select image regions by luminance, color channel, or a sampled color. Open it from the Select menu.'))
+        form = QtWidgets.QFormLayout()
+        self.tool_mode = QtWidgets.QComboBox()
+        for group in (
+            [('Sampled Color', 'color')],
+            [('Reds', 'hue_red'), ('Yellows', 'hue_yellow'),
+             ('Greens', 'hue_green'), ('Cyans', 'hue_cyan'),
+             ('Blues', 'hue_blue'), ('Magentas', 'hue_magenta'), ('Skin Tones', 'skin')],
+            [('Highlights', 'highlights'), ('Midtones', 'midtones'),
+             ('Shadows', 'shadows'), ('Brightness', 'luminance')],
+            [('Red Channel', 'red'), ('Green Channel', 'green'), ('Blue Channel', 'blue')],
+        ):
+            if self.tool_mode.count():
+                self.tool_mode.insertSeparator(self.tool_mode.count())
+            for label, key in group:
+                self.tool_mode.addItem(label, key)
+        self.tool_threshold = QtWidgets.QSpinBox()
+        self.tool_threshold.setRange(0, 255)
+        self.tool_invert = QtWidgets.QCheckBox()
+        app = Krita.instance()
+        self.tool_mode.setCurrentIndex(max(0, self.tool_mode.findData(app.readSetting('TFM', 'color_range_default_mode', 'luminance'))))
+        try:
+            self.tool_threshold.setValue(int(app.readSetting('TFM', 'color_range_default_threshold', '128')))
+        except ValueError:
+            self.tool_threshold.setValue(128)
+        self.tool_invert.setChecked(app.readSetting('TFM', 'color_range_default_invert', 'false').lower() == 'true')
+        form.addRow('Mode', self.tool_mode)
+        form.addRow('Threshold / Tolerance', self.tool_threshold)
+        form.addRow('Invert', self.tool_invert)
+        layout.addLayout(form)
+        save = QtWidgets.QPushButton('Save Tools')
+        save.clicked.connect(self.save_tool_defaults)
+        layout.addWidget(save, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        return page
 
     def save_tool_defaults(self):
         app = Krita.instance()

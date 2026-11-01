@@ -173,7 +173,7 @@ FILTERS = [
     {
         "id": "tfm_light_leaks",
         "label": "Light Leaks",
-        "description": "Coloured light wash across the canvas. The shape is one of six plates; hue shifts its colour. CPU only.",
+        "description": "Coloured light wash across the canvas. The shape is one of six plates; hue shifts its colour.",
         "category": "Artistic",
         "settings": [
             {"key": "leak_type", "label": "Leak Type", "default": "wash_horizontal", "options": [
@@ -197,7 +197,7 @@ FILTERS = [
     {
         "id": "tfm_light_patch",
         "label": "Light Patch",
-        "description": "Darken the frame and punch warm patches back through it. Patch centres stay on the canvas. CPU only.",
+        "description": "Darken the frame and punch warm patches back through it. Patch centres stay on the canvas.",
         "category": "Artistic",
         "settings": [
             {"key": "density", "label": "Density", "type": "integer", "min": 1, "max": 60, "default": 20},

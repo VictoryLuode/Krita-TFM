@@ -12,9 +12,8 @@ enum class Operation {
     ColorRangeMask = 2,
     ColorTemperature = 3,
     Vibrance = 4,
-    // 5 is unused. The embedded pointwise shader's final branch is the retired
-    // Freaky B&W approximation. Do not assign 5 until that branch and
-    // tfm_pointwise_spv.h are regenerated together.
+    LightLeaks = 5,
+    LightPatch = 6,
 };
 
 struct Parameters {
@@ -39,7 +38,7 @@ struct Parameters {
     int invert = 0;
     int monochrome = 1;
 
-    // Generic slots used by Color Temperature and Vibrance so new
+    // Generic slots used by Color Temperature, Vibrance, Light Leaks and Light Patch so new
     // pointwise operations do not need another buffer-layout change.
     float p0 = 0.0f;
     float p1 = 0.0f;

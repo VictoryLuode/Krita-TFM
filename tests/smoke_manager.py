@@ -152,6 +152,7 @@ with mock.patch.object(instance, 'actions', return_value=[managed_action]), \
     assert settings['color_range_enabled'] == 'false'
     reopened = ManagerDialog()
     assert reopened.tools_list.item(0).checkState() == __import__('PyQt5.QtCore', fromlist=['Qt']).Qt.Unchecked
+    assert reopened.tool_pages.count() == reopened.tools_list.count()
     reopened.tools_list.item(0).setCheckState(__import__('PyQt5.QtCore', fromlist=['Qt']).Qt.Checked)
     assert managed_action.isVisible() and managed_action.isEnabled()
     assert settings['color_range_enabled'] == 'true'
