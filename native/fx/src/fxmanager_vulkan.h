@@ -39,6 +39,9 @@ public:
     bool initialize(std::string *error = nullptr);
     bool isInitialized() const;
     std::string deviceName() const;
+    // True only when the selected device advertises shaderFloat64 and the
+    // Vulkan core can enable the feature during device creation.
+    bool supportsShaderFloat64() const;
 
     // Executes a caller-provided SPIR-V compute shader. Input and output are
     // storage-buffer bytes; parameters may be empty. The result replaces

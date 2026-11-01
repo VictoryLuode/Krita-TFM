@@ -29,6 +29,15 @@ layout(std430, binding = 2) readonly buffer Parameters {
     float rangeMin;
     float rangeMax;
     float softness;
+    float p0;
+    float p1;
+    float p2;
+    float p3;
+    float p4;
+    float p5;
+    float p6;
+    float p7;
+    int mode;
 } p;
 
 uint hash32(uint x, uint y, uint seed, uint channel) {
@@ -53,6 +62,25 @@ vec3 hsv(vec3 c) {
 }
 float hueDistance(float a,float b) { float d=abs(a-b); return min(d,1.0-d); }
 float rangeDistance(float v,float lo,float hi) { if(lo>hi){float t=lo;lo=hi;hi=t;} if(v<lo)return lo-v; if(v>hi)return v-hi; return 0.0; }
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+// Tanner Helland's black-body approximation, normalised to 0..1.
+vec3 kelvin(float kelvinValue) {
+    float t = clamp(kelvinValue, 1000.0, 40000.0) / 100.0;
+    float rr, gg, bb;
+    if (t <= 66.0) {
+        rr = 255.0;
+        gg = 99.4708025861 * log(t) - 161.1195681661;
+        bb = t <= 19.0 ? 0.0 : 138.5177312231 * log(t - 10.0) - 305.0447927307;
+    } else {
+        rr = 329.698727446 * pow(t - 60.0, -0.1332047592);
+        gg = 288.1221695283 * pow(t - 60.0, -0.0755148492);
+        bb = 255.0;
+    }
+    return clamp(vec3(rr, gg, bb) / 255.0, 0.0, 1.0);
+}
+
 void main() {
     int x=int(gl_GlobalInvocationID.x), y=int(gl_GlobalInvocationID.y);
     if(x>=p.width || y>=p.height)return;
@@ -73,7 +101,7 @@ void main() {
         float d=max(abs(rx)*2.0,abs(ry)*2.0)*(1.0-p.roundness)+length(vec2(rx,ry))*2.0*p.roundness;
         float edge=p.feather<=1e-6?(d>=1.0?1.0:0.0):clamp((d-(1.0-p.feather))/p.feather,0.0,1.0);
         float f=1.0-edge*p.factor; r*=f;g*=f;b*=f;
-    } else {
+    } else if(p.operation==2) {
         vec3 c=vec3(r,g,b)/255.0; vec3 hv=hsv(c); float v;
         if(p.channel==0)v=0.2126*c.r+0.7152*c.g+0.0722*c.b;
         else if(p.channel==1)v=c.r; else if(p.channel==2)v=c.g; else if(p.channel==3)v=c.b; else if(p.channel==4)v=hv.x; else v=hv.y;
@@ -81,6 +109,58 @@ void main() {
         if(p.channel==4) { bool inRange=p.rangeMin<=p.rangeMax?(v>=p.rangeMin&&v<=p.rangeMax):(v>=p.rangeMin||v<=p.rangeMax); float dist=inRange?0.0:min(hueDistance(v,p.rangeMin),hueDistance(v,p.rangeMax)); inside=hv.y>0.0?1.0-smoothRange(0.0,max(1e-6,p.softness),dist):0.0; }
         else inside=1.0-smoothRange(0.0,max(1e-6,p.softness),rangeDistance(v,p.rangeMin,p.rangeMax));
         float f=p.invert!=0?1.0-inside:inside; a=clamp(a*f,0.0,255.0);
+    } else if(p.operation==3) {
+        // White-balance gain between the reference and the target black-body
+        // colour, with an optional green/magenta tint and luminance guard.
+        float blend=clamp(p.p2,0.0,1.0);
+        float tint=clamp(p.p1,-100.0,100.0)/100.0;
+        vec3 c=vec3(r,g,b)/255.0;
+        vec3 gain=kelvin(p.p0)/max(kelvin(6500.0),vec3(1e-4));
+        gain.g*=1.0+tint*0.2;
+        vec3 outC=c*gain;
+        if(p.p3>0.5) { float l0=dot(c,kLuma), l1=dot(outC,kLuma); if(l1>1e-5) outC*=l0/l1; }
+        outC=clamp(mix(c,outC,blend),0.0,1.0)*255.0;
+        r=outC.r; g=outC.g; b=outC.b;
+    } else if(p.operation==4) {
+        // Vibrance raises less-saturated pixels more; optional skin and
+        // highlight protection. p1 is a plain saturation offset.
+        float vib=clamp(p.p0,-100.0,100.0)/100.0;
+        float sat=clamp(p.p1,-100.0,100.0)/100.0;
+        float skin=clamp(p.p2,0.0,1.0);
+        float protect=clamp(p.p3,0.0,1.0);
+        float blend=clamp(p.p4,0.0,1.0);
+        vec3 c=vec3(r,g,b)/255.0;
+        float mx=max(c.r,max(c.g,c.b)), mn=min(c.r,min(c.g,c.b));
+        float chroma=mx-mn;
+        float lum=dot(c,kLuma);
+        float amt=vib*(1.0-chroma);
+        if(skin>0.0 && chroma>0.0) {
+            vec3 hv=hsv(c);
+            float skinMask=smoothRange(0.18,0.05,hueDistance(hv.x,0.07))*smoothRange(0.04,0.20,chroma);
+            amt*=mix(1.0,0.15,skinMask*skin);
+        }
+        if(protect>0.0) amt*=mix(1.0,0.0,smoothRange(0.70,1.0,lum)*protect);
+        float gain=max(0.0,1.0+amt+sat);
+        vec3 outC=clamp(mix(c,vec3(lum)+(c-vec3(lum))*gain,blend),0.0,1.0)*255.0;
+        r=outC.r; g=outC.g; b=outC.b;
+    } else {
+        // Retired Freaky B&W approximation. Nothing dispatches this branch.
+        // Keep it until this shader and tfm_pointwise_spv.h are regenerated together.
+        float strength=clamp(p.p0,0.0,100.0)/100.0;
+        float odd=clamp(p.p1,0.0,100.0)/100.0;
+        float bright=clamp(p.p2,-100.0,100.0)/100.0;
+        float contrast=clamp(p.p3,-100.0,100.0)/100.0;
+        float gammaValue=max(0.1,p.p4);
+        vec3 c=vec3(r,g,b)/255.0;
+        float wr=0.2126+odd*0.45;
+        float wb=0.0722+odd*0.25;
+        float wg=max(0.0,1.0-wr-wb);
+        float gray=dot(c,vec3(wr,wg,wb));
+        gray+=bright*0.5;
+        gray=clamp((gray-0.5)*(1.0+contrast)+0.5,0.0,1.0);
+        gray=pow(max(gray,1e-5),1.0/gammaValue);
+        float v=clamp(mix(dot(c,kLuma),gray,strength),0.0,1.0)*255.0;
+        r=v; g=v; b=v;
     }
     uint packedOut=(uint(round(a))<<24u)|(uint(round(r))<<16u)|(uint(round(g))<<8u)|uint(round(b)); dst.pixels[y*p.width+x]=packedOut;
 }

@@ -71,6 +71,5 @@ public:
         QSlider *m_rotationSlider = nullptr;
         QCheckBox *m_highQualityCheck = nullptr;
         QWidget *m_lensGroup = nullptr;
-        QLabel *m_statusLabel = nullptr;
     };
 };

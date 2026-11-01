@@ -51,7 +51,7 @@ struct FxManagerVulkan::Impl
     std::uint32_t memoryTypeCount = 0;
     VkMemoryType memoryTypes[32]{};
     std::string gpuName;
-
+    bool shaderFloat64 = false;
 #define FX_VK_PROC(name) decltype(&::vk##name) name = nullptr
     // Function pointer signatures are listed explicitly below; no Vulkan
     // declarations or symbols are imported from the SDK or loader.
@@ -59,6 +59,7 @@ struct FxManagerVulkan::Impl
     using DestroyInstanceFn = PFN_vkDestroyInstance;
     using EnumeratePhysicalDevicesFn = PFN_vkEnumeratePhysicalDevices;
     using GetPhysicalDevicePropertiesFn = PFN_vkGetPhysicalDeviceProperties;
+    using GetPhysicalDeviceFeaturesFn = PFN_vkGetPhysicalDeviceFeatures;
     using GetPhysicalDeviceQueueFamilyPropertiesFn = PFN_vkGetPhysicalDeviceQueueFamilyProperties;
     using GetPhysicalDeviceMemoryPropertiesFn = PFN_vkGetPhysicalDeviceMemoryProperties;
     using CreateDeviceFn = PFN_vkCreateDevice;
@@ -104,6 +105,7 @@ struct FxManagerVulkan::Impl
     DestroyInstanceFn destroyInstance = nullptr;
     EnumeratePhysicalDevicesFn enumeratePhysicalDevices = nullptr;
     GetPhysicalDevicePropertiesFn getPhysicalDeviceProperties = nullptr;
+    GetPhysicalDeviceFeaturesFn getPhysicalDeviceFeatures = nullptr;
     GetPhysicalDeviceQueueFamilyPropertiesFn getQueueFamilies = nullptr;
     GetPhysicalDeviceMemoryPropertiesFn getMemoryProperties = nullptr;
     CreateDeviceFn createDevice = nullptr;
@@ -198,6 +200,7 @@ struct FxManagerVulkan::Impl
         LOAD_INSTANCE(destroyInstance, "vkDestroyInstance");
         LOAD_INSTANCE(enumeratePhysicalDevices, "vkEnumeratePhysicalDevices");
         LOAD_INSTANCE(getPhysicalDeviceProperties, "vkGetPhysicalDeviceProperties");
+        LOAD_INSTANCE(getPhysicalDeviceFeatures, "vkGetPhysicalDeviceFeatures");
         LOAD_INSTANCE(getQueueFamilies, "vkGetPhysicalDeviceQueueFamilyProperties");
         LOAD_INSTANCE(getMemoryProperties, "vkGetPhysicalDeviceMemoryProperties");
         LOAD_INSTANCE(createDevice, "vkCreateDevice");
@@ -356,9 +359,15 @@ bool FxManagerVulkan::initialize(std::string *errorOut)
     }
     if (!m_impl->physicalDevice) { m_impl->shutdown(); return fail("No Vulkan device with a compute queue found"); }
 
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    m_impl->getPhysicalDeviceFeatures(m_impl->physicalDevice, &supportedFeatures);
+    VkPhysicalDeviceFeatures enabledFeatures{};
+    enabledFeatures.shaderFloat64 = supportedFeatures.shaderFloat64;
+    m_impl->shaderFloat64 = enabledFeatures.shaderFloat64 == VK_TRUE;
+
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr, 0, m_impl->queueFamily, 1, &priority};
-    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, nullptr, 0, 1, &queueInfo, 0, nullptr, 0, nullptr, nullptr};
+    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, nullptr, 0, 1, &queueInfo, 0, nullptr, 0, nullptr, &enabledFeatures};
     r = m_impl->createDevice(m_impl->physicalDevice, &deviceInfo, nullptr, &m_impl->device);
     if (r != VK_SUCCESS) { m_impl->shutdown(); return fail(resultMessage("vkCreateDevice", r)); }
     m_impl->getDeviceQueue(m_impl->device, m_impl->queueFamily, 0, &m_impl->queue);
@@ -385,6 +394,12 @@ std::string FxManagerVulkan::deviceName() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_impl->gpuName;
+}
+
+bool FxManagerVulkan::supportsShaderFloat64() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_impl->device != VK_NULL_HANDLE && m_impl->shaderFloat64;
 }
 
 bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,

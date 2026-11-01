@@ -1,0 +1,131 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Source { uint pixels[]; } src;
+layout(std430, binding = 1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430, binding = 2) readonly buffer Parameters {
+    int width;
+    int height;
+    int mode;          // 0 = ghost flare, 1 = anamorphic streak, 2 = light rays
+    int sourceCount;
+    float threshold;
+    float span;
+    float intensity;
+    float tintShift;
+    float decay;
+    float aspect;
+    float blend;
+    float padding;
+    vec4 sources[8];   // xy = normalised position, z = strength, w = radius
+} p;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+vec3 fetchPixel(ivec2 c) {
+    c = clamp(c, ivec2(0), ivec2(p.width - 1, p.height - 1));
+    uint v = src.pixels[c.y * p.width + c.x];
+    return vec3(float((v >> 16u) & 255u), float((v >> 8u) & 255u), float(v & 255u));
+}
+
+
+// Ascending-edge smoothstep. Reversed edges are undefined in GLSL, so every
+// soft edge here is written low->high to keep CPU and GPU comparable.
+float ramp(float lowEdge, float highEdge, float x) {
+    float t = clamp((x - lowEdge) / max(highEdge - lowEdge, 1e-6), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Warm-to-cool dispersion ramp used by all three effects.
+vec3 dispersion(float t) {
+    t = clamp(t, 0.0, 1.0);
+    vec3 cool = vec3(0.25, 0.45, 1.0);
+    vec3 warm = vec3(1.0, 0.55, 0.25);
+    vec3 tinted = mix(warm, cool, t);
+    // tintShift 0 keeps the glow neutral, 1 applies full dispersion colour.
+    return mix(vec3(1.0), tinted, clamp(p.tintShift, 0.0, 1.0));
+}
+
+vec3 ghostFlare(vec2 uv) {
+    vec3 acc = vec3(0.0);
+    int count = clamp(p.sourceCount, 1, 8);
+    vec2 centre = vec2(0.5, 0.5);
+    for (int s = 0; s < count; ++s) {
+        vec4 source = p.sources[s];
+        vec2 sourcePos = source.xy;
+        vec2 axis = centre - sourcePos;
+        // Ghosts march along the source->centre axis and out the other side,
+        // which is how a real lens reflects a bright point.
+        int ghosts = clamp(int(p.decay), 1, 6);
+        for (int g = 1; g <= ghosts; ++g) {
+            float t = float(g) / float(ghosts);
+            vec2 ghostPos = sourcePos + axis * (1.0 + t) * 2.0;
+            float radius = max(0.004, source.w * (0.10 + 0.18 * t));
+            float d = length(uv - ghostPos) / radius;
+            float disc = (1.0 - ramp(0.35, 1.0, d)) * (1.0 - t * 0.55);
+            acc += dispersion(t) * disc * source.z;
+        }
+        // Central halo.
+        float haloRadius = max(0.01, source.w * 1.6);
+        float halo = 1.0 - ramp(haloRadius * 0.15, haloRadius, length(uv - sourcePos));
+        acc += vec3(1.0, 0.85, 0.7) * halo * source.z * 0.6;
+    }
+    return acc * clamp(p.intensity, 0.0, 4.0);
+}
+
+vec3 anamorphicStreak(vec2 uv) {
+    vec3 acc = vec3(0.0);
+    int count = clamp(p.sourceCount, 1, 8);
+    float aspect = max(0.002, p.aspect);
+    float falloff = max(0.05, p.decay);
+    for (int s = 0; s < count; ++s) {
+        vec4 source = p.sources[s];
+        vec2 d = uv - source.xy;
+        // Horizontal bar: exponential falloff along x, tight Gaussian along y.
+        float along = abs(d.x) / max(0.001, p.span);
+        float across = abs(d.y) / aspect;
+        float bar = exp(-along / falloff) * exp(-across * across);
+        acc += dispersion(clamp(along, 0.0, 1.0)) * bar * source.z;
+    }
+    return acc * clamp(p.intensity, 0.0, 4.0);
+}
+
+vec3 lightRays(vec2 uv) {
+    vec4 primary = p.sources[0];
+    vec2 centre = primary.xy;
+    vec2 toCentre = centre - uv;
+    float distance = length(toCentre);
+    if (distance <= 0.0001) return vec3(0.0);
+    vec2 dir = toCentre / distance;
+    const int taps = 32;
+    float falloff = max(0.1, p.decay);
+    float span = clamp(p.span, 0.01, 1.0);
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < taps; ++i) {
+        float t = float(i) / float(taps);
+        vec2 samplePos = uv + dir * (t * span * distance);
+        float luminance = dot(fetchPixel(ivec2(samplePos * vec2(p.width, p.height))), kLuma) / 255.0;
+        acc += vec3(1.0, 0.92, 0.78) * max(0.0, luminance - p.threshold) * exp(-t * falloff);
+    }
+    acc /= float(taps);
+    return acc * clamp(p.intensity, 0.0, 4.0) * primary.z;
+}
+
+void main() {
+    ivec2 centre = ivec2(gl_GlobalInvocationID.xy);
+    if (centre.x >= p.width || centre.y >= p.height) return;
+    uint packed = src.pixels[centre.y * p.width + centre.x];
+    float alpha = float((packed >> 24u) & 255u);
+    vec3 base = fetchPixel(centre);
+    vec2 uv = (vec2(centre) + 0.5) / vec2(float(p.width), float(p.height));
+
+    vec3 glow = vec3(0.0);
+    if (p.mode == 0) glow = ghostFlare(uv);
+    else if (p.mode == 1) glow = anamorphicStreak(uv);
+    else glow = lightRays(uv);
+
+    vec3 capped = clamp(glow * 255.0, 0.0, 255.0);
+    vec3 combined = 255.0 - (255.0 - base) * (255.0 - capped) / 255.0;
+    vec3 outC = clamp(mix(base, combined, clamp(p.blend, 0.0, 1.0)), 0.0, 255.0);
+    dst.pixels[centre.y * p.width + centre.x] =
+        (uint(round(alpha)) << 24u) | (uint(round(outC.r)) << 16u)
+        | (uint(round(outC.g)) << 8u) | uint(round(outC.b));
+}

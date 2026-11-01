@@ -1,0 +1,26 @@
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { uint pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+    int sourceW,sourceH,outputW,outputH;
+    float lut[];
+} p;
+const int SIZE=33;
+int lutIndex(int r,int g,int b,int channel){return (((r*SIZE)+g)*SIZE+b)*3+channel;}
+float lutAt(int r,int g,int b,int channel){return p.lut[lutIndex(r,g,b,channel)];}
+vec3 lutSample(vec3 color){
+    vec3 q=clamp(color,vec3(0.),vec3(1.))*float(SIZE-1);
+    int r0=min(int(q.r),SIZE-2),g0=min(int(q.g),SIZE-2),b0=min(int(q.b),SIZE-2);
+    vec3 f=q-vec3(r0,g0,b0); vec3 outValue=vec3(0.);
+    ivec3 c0=ivec3(r0,g0,b0),c1; vec4 weights;
+    if(f.r>=f.g){
+        if(f.g>=f.b){c1=ivec3(r0+1,g0+1,b0+1);outValue=vec3(1.-f.r)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2));outValue+= (f.r-f.g)*vec3(lutAt(r0+1,g0,b0,0),lutAt(r0+1,g0,b0,1),lutAt(r0+1,g0,b0,2));outValue+= (f.g-f.b)*vec3(lutAt(r0+1,g0+1,b0,0),lutAt(r0+1,g0+1,b0,1),lutAt(r0+1,g0+1,b0,2));outValue+=f.b*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+        else if(f.r>=f.b){outValue=(1.-f.r)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2))+(f.r-f.b)*vec3(lutAt(r0+1,g0,b0,0),lutAt(r0+1,g0,b0,1),lutAt(r0+1,g0,b0,2))+(f.b-f.g)*vec3(lutAt(r0+1,g0,b0+1,0),lutAt(r0+1,g0,b0+1,1),lutAt(r0+1,g0,b0+1,2))+f.g*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+        else{outValue=(1.-f.b)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2))+(f.b-f.r)*vec3(lutAt(r0,g0,b0+1,0),lutAt(r0,g0,b0+1,1),lutAt(r0,g0,b0+1,2))+(f.r-f.g)*vec3(lutAt(r0+1,g0,b0+1,0),lutAt(r0+1,g0,b0+1,1),lutAt(r0+1,g0,b0+1,2))+f.g*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+    } else if(f.r>=f.b){outValue=(1.-f.g)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2))+(f.g-f.r)*vec3(lutAt(r0,g0+1,b0,0),lutAt(r0,g0+1,b0,1),lutAt(r0,g0+1,b0,2))+(f.r-f.b)*vec3(lutAt(r0+1,g0+1,b0,0),lutAt(r0+1,g0+1,b0,1),lutAt(r0+1,g0+1,b0,2))+f.b*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+    else if(f.g>=f.b){outValue=(1.-f.g)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2))+(f.g-f.b)*vec3(lutAt(r0,g0+1,b0,0),lutAt(r0,g0+1,b0,1),lutAt(r0,g0+1,b0,2))+(f.b-f.r)*vec3(lutAt(r0,g0+1,b0+1,0),lutAt(r0,g0+1,b0+1,1),lutAt(r0,g0+1,b0+1,2))+f.r*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+    else{outValue=(1.-f.b)*vec3(lutAt(r0,g0,b0,0),lutAt(r0,g0,b0,1),lutAt(r0,g0,b0,2))+(f.b-f.g)*vec3(lutAt(r0,g0,b0+1,0),lutAt(r0,g0,b0+1,1),lutAt(r0,g0,b0+1,2))+(f.g-f.r)*vec3(lutAt(r0,g0+1,b0+1,0),lutAt(r0,g0+1,b0+1,1),lutAt(r0,g0+1,b0+1,2))+f.r*vec3(lutAt(r0+1,g0+1,b0+1,0),lutAt(r0+1,g0+1,b0+1,1),lutAt(r0+1,g0+1,b0+1,2));}
+    return clamp(outValue,vec3(0.),vec3(1.));
+}
+void main(){int x=int(gl_GlobalInvocationID.x),y=int(gl_GlobalInvocationID.y);if(x>=p.outputW||y>=p.outputH)return;uint packed=src.pixels[y*p.sourceW+x];vec4 pixel=vec4(float((packed>>16u)&255u),float((packed>>8u)&255u),float(packed&255u),float((packed>>24u)&255u));if(pixel.a>0.){vec3 mapped=lutSample(pixel.rgb/255.);pixel.rgb=round(mapped*255.);}dst.pixels[y*p.outputW+x]=(uint(clamp(pixel.a,0.,255.))<<24u)|(uint(clamp(pixel.r,0.,255.))<<16u)|(uint(clamp(pixel.g,0.,255.))<<8u)|uint(clamp(pixel.b,0.,255.));}

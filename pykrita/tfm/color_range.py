@@ -5,12 +5,11 @@ from .menus.qtcompat import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSlider, QSpinBox, QVBoxLayout, QImage, QPixmap, QColor, QtWidgets,
 )
+from .color_range_native import channel_mask as native_channel_mask
 from .color_range_native import combine as native_combine
 from .color_range_native import mask as native_mask
 from .color_range_native import perceptual as native_perceptual
 from .color_range_overlay import ColorRangeOverlay
-import colorsys
-import hashlib
 
 
 def _enum(group, name):
@@ -38,23 +37,7 @@ class ColorRangeDialog(QDialog):
         super().__init__(parent)
         self.document = document
         self.setWindowTitle('Advance Selection')
-        self.source = document.projection(0, 0, document.width(), document.height()).convertToFormat(_image_format('Format_ARGB32'))
-        if self.source.isNull():
-            raise ValueError('Unable to read the image projection.')
-        gray = self.source.convertToFormat(QImage.Format.Format_Grayscale8)
-        ptr = gray.constBits()
-        ptr.setsize(gray.sizeInBytes())
-        raw = bytes(ptr)
-        width, height = self.source.width(), self.source.height()
-        self.luminance = b''.join(raw[y * gray.bytesPerLine():y * gray.bytesPerLine() + width] for y in range(height))
-        ptr = self.source.constBits()
-        ptr.setsize(self.source.sizeInBytes())
-        raw = bytes(ptr)
-        self.alpha = raw[3::4]
-        self.channels = {'luminance': self.luminance, 'red': raw[2::4],
-                         'green': raw[1::4], 'blue': raw[0::4]}
-        self.rgb = tuple(bytes(channel) for channel in (raw[2::4], raw[1::4], raw[0::4]))
-        self.source_signature = hashlib.sha256(bytes(raw)).digest()
+        self._capture_source()
         self.target_color = QColor(255, 255, 255)
         self.mask_mode = QComboBox()
         for group in (
@@ -125,7 +108,6 @@ class ColorRangeDialog(QDialog):
         layout.setSpacing(10)
         layout.addWidget(self.mask_mode)
         layout.addWidget(self.color_button)
-        self.parameter_label = QLabel('Threshold')
         row = QHBoxLayout(); row.addWidget(self.threshold_enabled); row.addWidget(self.slider, 1); row.addWidget(self.threshold); layout.addLayout(row)
         row = QHBoxLayout(); row.addWidget(self.tolerance_enabled); row.addWidget(self.tolerance_slider, 1); row.addWidget(self.tolerance); layout.addLayout(row)
         row = QHBoxLayout(); row.addWidget(self.softness_enabled); row.addWidget(self.softness_slider, 1); row.addWidget(self.softness); layout.addLayout(row)
@@ -137,16 +119,20 @@ class ColorRangeDialog(QDialog):
         self.deselect_button = QPushButton('Deselect')
         self.clean_button = QPushButton('Clean')
         self.reselect_button = QPushButton('Reselect')
+        self.refresh_source_button = QPushButton('刷新源图')
+        self.refresh_source_button.setToolTip('画布改动后点此重新读取投影，避免选区基于过期图像。')
         self.clean_button.clicked.connect(self.clean_selection)
         self.reselect_button.clicked.connect(lambda: self.apply_mode('replace', close=False))
         self.select_button.clicked.connect(lambda: self.apply_mode('add', close=False))
         self.deselect_button.clicked.connect(lambda: self.apply_mode('subtract', close=False))
+        self.refresh_source_button.clicked.connect(self.refresh_source_from_canvas)
         buttons.addWidget(self.select_button)
         buttons.addWidget(self.deselect_button)
         buttons.addWidget(self.clean_button)
         buttons.addWidget(self.reselect_button)
+        buttons.addWidget(self.refresh_source_button)
         layout.addLayout(buttons)
-        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box = QDialogButtonBox(_enum(QDialogButtonBox, 'Ok') | _enum(QDialogButtonBox, 'Cancel'))
         box.accepted.connect(self.apply); box.rejected.connect(self.reject); layout.addWidget(box)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(self.refresh)
         for signal in (self.threshold.valueChanged, self.threshold_enabled.toggled,
@@ -168,6 +154,43 @@ class ColorRangeDialog(QDialog):
         layout.insertWidget(1, self.preview_mode)
         self.change_mode()
         self.refresh()
+
+    def _capture_source(self, source=None):
+        if source is None:
+            source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
+                _image_format('Format_ARGB32'))
+        if source.isNull():
+            raise ValueError('Unable to read the image projection.')
+        gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
+        ptr = gray.constBits()
+        ptr.setsize(gray.sizeInBytes())
+        raw = bytes(ptr)
+        width, height = source.width(), source.height()
+        luminance = bytearray(width * height)
+        for y in range(height):
+            luminance[y * width:(y + 1) * width] = raw[y * gray.bytesPerLine():y * gray.bytesPerLine() + width]
+        self.source = source
+        self.luminance = luminance
+        self._mask_cache_key = None
+        self._mask_cache = None
+
+    def _refresh_source(self):
+        source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
+            _image_format('Format_ARGB32'))
+        self._capture_source(source)
+        return True
+
+    def refresh_source_from_canvas(self):
+        """Re-read document projection while the non-modal dialog stays open."""
+        if Krita.instance().activeDocument() != self.document:
+            QMessageBox.warning(self, 'Advance Selection', 'The active document has changed.')
+            return
+        try:
+            self._refresh_source()
+        except (RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, 'Advance Selection', str(error))
+            return
+        self.schedule_refresh()
 
     def _set_threshold_controls(self, enabled):
         self.slider.setEnabled(enabled)
@@ -194,6 +217,7 @@ class ColorRangeDialog(QDialog):
         self._remove_canvas_preview()
         mode = self.preview_mode.currentData()
         try:
+            self._refresh_source()
             window = Krita.instance().activeWindow()
             view = window.activeView() if window else None
             if view is None or view.document() != self.document:
@@ -265,109 +289,12 @@ class ColorRangeDialog(QDialog):
                 tolerance=(self.tolerance.value() if self.tolerance_enabled.isChecked() else None),
                 softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
         if mode in ('red', 'green', 'blue', 'luminance'):
-            threshold_active = self.threshold_enabled.isChecked()
-            tolerance_active = self.tolerance_enabled.isChecked()
-            softness_active = self.softness_enabled.isChecked()
-            if threshold_active or tolerance_active or softness_active:
-                cutoff = self.threshold.value() if threshold_active else 128
-                if tolerance_active:
-                    cutoff = max(0, cutoff - self.tolerance.value())
-                feather = self.softness.value() if softness_active else 0
-                result = bytearray(len(self.channels[mode]))
-                for index, (value, alpha) in enumerate(zip(self.channels[mode], self.alpha)):
-                    if feather:
-                        t = max(0.0, min(1.0, (value - (cutoff - feather)) / (2.0 * feather)))
-                        weight = round(255 * t * t * (3.0 - 2.0 * t))
-                    else:
-                        weight = 255 if value >= cutoff else 0
-                    if inverted:
-                        weight = 255 - weight
-                    result[index] = round(weight * alpha / 255)
-                return bytes(result)
-            channel = self.channels[mode]
-            return bytes(round((255 - value if inverted else value) * alpha / 255)
-                         for value, alpha in zip(channel, self.alpha))
-        if self.threshold_enabled.isChecked():
-            table = bytes(255 if ((value >= threshold) != inverted) else 0 for value in range(256))
-            binary = self.channels[mode].translate(table)
-            return bytes(value & alpha for value, alpha in zip(binary, self.alpha))
-        channel = self.channels[mode]
-        return bytes(round((255 - value if inverted else value) * alpha / 255)
-                     for value, alpha in zip(channel, self.alpha))
-
-    @staticmethod
-    def _smooth_weight(distance, tolerance, softness):
-        if softness <= 0:
-            return 255 if distance <= tolerance else 0
-        edge = max(1e-6, softness)
-        t = max(0.0, min(1.0, (tolerance + edge - distance) / (2.0 * edge)))
-        return round(255 * t * t * (3.0 - 2.0 * t))
-
-    def _perceptual_mask(self, mode, threshold, inverted):
-        width, height = self.source.width(), self.source.height()
-        result = bytearray(width * height)
-        r, g, b = self.rgb
-        if mode.startswith('hue_'):
-            centers = {'hue_red': 0.0, 'hue_yellow': 60.0, 'hue_green': 120.0,
-                       'hue_cyan': 180.0, 'hue_blue': 240.0, 'hue_magenta': 300.0}
-            center = centers[mode]
-            tolerance = max(2.0, threshold * 0.65)
-            softness = max(1.0, tolerance * 0.35)
-            for index, (red, green, blue, alpha) in enumerate(zip(r, g, b, self.alpha)):
-                color = QColor(red, green, blue)
-                saturation = color.saturationF()
-                hue = color.hueF() * 360.0 if color.hueF() >= 0 else -1.0
-                if hue < 0 or saturation <= 0.04:
-                    weight = 0
-                else:
-                    distance = abs(hue - center)
-                    distance = min(distance, 360.0 - distance)
-                    distance *= max(0.05, saturation)
-                    weight = self._smooth_weight(distance, tolerance, softness)
-                if inverted:
-                    weight = 255 - weight
-                result[index] = round(weight * alpha / 255)
-            return bytes(result)
-        if mode == 'skin':
-            hue_tolerance = 19.0 + threshold * 0.12
-            for index, (red, green, blue, alpha) in enumerate(zip(r, g, b, self.alpha)):
-                color = QColor(red, green, blue)
-                hue = color.hueF() * 360.0 if color.hueF() >= 0 else -1.0
-                saturation = color.saturationF()
-                value = color.valueF()
-                if hue < 0 or saturation < 0.08:
-                    weight = 0
-                else:
-                    hue_distance = abs(hue - 27.0)
-                    hue_distance = min(hue_distance, 360.0 - hue_distance)
-                    hue_weight = self._smooth_weight(hue_distance, hue_tolerance, 8.0)
-                    sat_weight = self._smooth_weight(abs(saturation - 0.42), 0.36, 0.22)
-                    value_weight = self._smooth_weight(abs(value - 0.72), 0.58, 0.34)
-                    weight = round(hue_weight * sat_weight * value_weight / (255 * 255))
-                if inverted:
-                    weight = 255 - weight
-                result[index] = round(weight * alpha / 255)
-            return bytes(result)
-        softness = max(3.0, threshold * 0.24)
-        for index, alpha in enumerate(self.alpha):
-            lum = self.luminance[index]
-            if mode == 'highlights':
-                weight = self._smooth_weight(255 - lum, 60.0, softness)
-            elif mode == 'shadows':
-                weight = self._smooth_weight(lum, 60.0, softness)
-            else:
-                weight = self._smooth_weight(abs(lum - 128.0), 56.0, softness)
-            if inverted:
-                weight = 255 - weight
-            result[index] = round(weight * alpha / 255)
-        return bytes(result)
-
-    def preview_image(self):
-        mask = self.combined_mask()
-        image = QImage(bytes(mask), self.source.width(), self.source.height(),
-                       self.source.width(), _image_format('Format_Indexed8')).copy()
-        image.setColorTable([0xff000000 | v << 16 | v << 8 | v for v in range(256)])
-        return image
+            return native_channel_mask(
+                self.source, self.luminance, mode, self.threshold.value(), inverted,
+                threshold_enabled=self.threshold_enabled.isChecked(),
+                tolerance=(self.tolerance.value() if self.tolerance_enabled.isChecked() else None),
+                softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
+        raise ValueError('Unknown color range selection mode.')
 
     def refresh(self):
         try:
@@ -384,24 +311,6 @@ class ColorRangeDialog(QDialog):
             self.preview.clear()
             self.preview.setText(str(error))
 
-    def _refresh_quick_mask(self, mask):
-        node = self.quick_mask_node
-        if node is None:
-            return
-        signature = (self.mask_mode.currentData(), self.threshold.value(), self.threshold_enabled.isChecked(),
-                     self.tolerance.value(), self.tolerance_enabled.isChecked(),
-                     self.softness.value(), self.softness_enabled.isChecked(),
-                     self.invert.isChecked(), self.target_color.name(), hashlib.sha256(mask).digest())
-        if signature == self.quick_mask_signature:
-            return
-        rgba = bytearray(len(mask) * 4)
-        for index, coverage in enumerate(mask):
-            alpha = coverage
-            offset = index * 4
-            rgba[offset:offset + 4] = bytes((255, 0, 0, alpha))
-        node.setPixelData(QByteArray(bytes(rgba)), 0, 0, self.source.width(), self.source.height())
-        self.document.waitForDone()
-        self.quick_mask_signature = signature
 
     def combined_mask(self, mode=None):
         result = self.mask()
@@ -438,9 +347,11 @@ class ColorRangeDialog(QDialog):
         if Krita.instance().activeDocument() != self.document:
             QMessageBox.warning(self, 'Advance Selection', 'The active document has changed.')
             return
-        width, height = self.source.width(), self.source.height()
         QApplication.setOverrideCursor(_enum(Qt, 'WaitCursor'))
+        holder = None
         try:
+            self._refresh_source()
+            width, height = self.source.width(), self.source.height()
             combined = self.combined_mask(mode)
             selection = Selection()
             # Binding the detached mask supplies finite image bounds. Invert
@@ -461,6 +372,14 @@ class ColorRangeDialog(QDialog):
             QMessageBox.warning(self, 'Advance Selection', str(error))
             return
         finally:
+            if holder is not None:
+                try:
+                    remove = getattr(holder, 'remove', None)
+                    if remove is not None:
+                        remove()
+                        self.document.waitForDone()
+                except (RuntimeError, AttributeError):
+                    pass
             QApplication.restoreOverrideCursor()
         if close:
             self.accept()

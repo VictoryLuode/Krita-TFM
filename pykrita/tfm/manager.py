@@ -8,6 +8,16 @@ from krita import Krita
 from .menus.version import __version__
 
 
+def _enum(group, name):
+    direct = getattr(group, name, None)
+    if direct is not None:
+        return direct
+    for scope in ('ItemFlag', 'CheckState', 'ItemDataRole'):
+        scoped = getattr(group, scope, None)
+        if scoped is not None and hasattr(scoped, name):
+            return getattr(scoped, name)
+    raise AttributeError(name)
+
 def color_range_enabled():
     return Krita.instance().readSetting('TFM', 'color_range_enabled', 'true').lower() == 'true'
 
@@ -52,11 +62,11 @@ class ManagerDialog(QtWidgets.QDialog):
         left.addWidget(QtWidgets.QLabel("Tools"))
         self.tools_list = QtWidgets.QListWidget()
         item = QtWidgets.QListWidgetItem("Advance Selection")
-        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-        item.setCheckState(QtCore.Qt.Checked if color_range_enabled() else QtCore.Qt.Unchecked)
+        item.setFlags(item.flags() | _enum(QtCore.Qt, 'ItemIsUserCheckable'))
+        item.setCheckState(_enum(QtCore.Qt, 'Checked') if color_range_enabled() else _enum(QtCore.Qt, 'Unchecked'))
         self.tools_list.addItem(item)
-        item.setData(QtCore.Qt.UserRole, 'selection')
-        self.tools_list.itemChanged.connect(lambda entry: set_color_range_enabled(entry.checkState() == QtCore.Qt.Checked) if entry.data(QtCore.Qt.UserRole) == 'selection' else None)
+        item.setData(_enum(QtCore.Qt, 'UserRole'), 'selection')
+        self.tools_list.itemChanged.connect(lambda entry: set_color_range_enabled(entry.checkState() == _enum(QtCore.Qt, 'Checked')) if entry.data(_enum(QtCore.Qt, 'UserRole')) == 'selection' else None)
         left.addWidget(self.tools_list)
         right = QtWidgets.QVBoxLayout()
         self.tool_pages = QtWidgets.QStackedWidget()
@@ -137,7 +147,11 @@ class ManagerDialog(QtWidgets.QDialog):
         settings_form.addRow('Plugin filters CPU threads', self.cpu_threads)
         settings_form.addRow('Filter backend', self.filter_backend)
         settings_layout.addLayout(settings_form)
-        backend_note = QtWidgets.QLabel('Vulkan supports Motion Blur, Film Grain, Vignette, Color Range Mask, Lens Distortion, and Bloom legacy mode. Bloom diffusion, Focus Blur, and color matching currently use CPU; Background Removal has separate ggml settings. GPU requests fall back to CPU when unavailable.')
+        backend_note = QtWidgets.QLabel(
+            'Vulkan: Motion Blur, Vignette, Color Range Mask, Lens Distortion, Bloom without diffusion, '
+            'Guided Color Match, Color Temperature, Vibrance, Kuwahara, Halation, Lens Flare, Anamorphic Flare and Light Rays. '
+            'CPU: Film Grain, Bloom diffusion, Focus Blur, Light Leaks, Light Patch and Statistical Color Match. '
+            'Background Removal uses its own ggml backend. A GPU request uses CPU when that filter has no GPU path or the device is unavailable.')
         backend_note.setWordWrap(True)
         settings_layout.addWidget(backend_note)
         self.backend_status = QtWidgets.QLabel()

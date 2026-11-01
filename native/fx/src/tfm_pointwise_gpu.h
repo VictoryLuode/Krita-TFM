@@ -10,6 +10,11 @@ enum class Operation {
     FilmGrain = 0,
     Vignette = 1,
     ColorRangeMask = 2,
+    ColorTemperature = 3,
+    Vibrance = 4,
+    // 5 is unused. The embedded pointwise shader's final branch is the retired
+    // Freaky B&W approximation. Do not assign 5 until that branch and
+    // tfm_pointwise_spv.h are regenerated together.
 };
 
 struct Parameters {
@@ -33,6 +38,18 @@ struct Parameters {
     int channel = 0;
     int invert = 0;
     int monochrome = 1;
+
+    // Generic slots used by Color Temperature and Vibrance so new
+    // pointwise operations do not need another buffer-layout change.
+    float p0 = 0.0f;
+    float p1 = 0.0f;
+    float p2 = 0.0f;
+    float p3 = 0.0f;
+    float p4 = 0.0f;
+    float p5 = 0.0f;
+    float p6 = 0.0f;
+    float p7 = 0.0f;
+    int mode = 0;
 };
 
 // Processes an ARGB32 QImage without changing its alpha for Film Grain/Vignette.

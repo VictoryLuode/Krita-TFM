@@ -9,6 +9,7 @@
 #include <filter/kis_filter_category_ids.h>
 #include <filter/kis_filter_configuration.h>
 #include <kis_paint_device.h>
+#include <kis_painter.h>
 #include <KisGlobalResourcesInterface.h>
 #include <KoUpdater.h>
 #include <klocalizedstring.h>
@@ -134,7 +135,14 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
     const QRect outputRect = rect.intersected(frame);
     if (outputRect.isEmpty()) return;
 
-    const QImage source = fxmanager::readImage(device, frame);
+    // Filter layers call processImpl once per region and write each result back
+    // into the device, so a later region would sample the pixels an earlier
+    // region already distorted and bend the frame more than once. Read the
+    // transaction baseline instead of the live device.
+    KisPaintDeviceSP pristine = new KisPaintDevice(device->colorSpace());
+    pristine->prepareClone(device);
+    KisPainter::copyAreaOptimizedOldData(frame.topLeft(), device, pristine, frame);
+    const QImage source = fxmanager::readImage(pristine, frame);
     if (source.isNull()) return;
     if (fxmanager::gpuRequested()) {
         QImage gpuOutput;

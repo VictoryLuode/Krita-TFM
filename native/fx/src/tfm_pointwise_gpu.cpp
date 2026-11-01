@@ -15,9 +15,13 @@ struct ShaderParameters {
     int channel, invert, monochrome, seed;
     float amount, size, factor, feather, roundness, scaleX, scaleY;
     float offsetX, offsetY, angle, rangeMin, rangeMax, softness;
+    float p0, p1, p2, p3, p4, p5, p6, p7;
+    int mode;
 };
-static_assert(sizeof(ShaderParameters) == 104, "Pointwise shader parameter layout mismatch");
+static_assert(sizeof(ShaderParameters) == 140, "Pointwise shader parameter layout mismatch");
 static_assert(offsetof(ShaderParameters, amount) == 52, "Pointwise shader float layout mismatch");
+static_assert(offsetof(ShaderParameters, p0) == 104, "Pointwise shader generic slot layout mismatch");
+static_assert(offsetof(ShaderParameters, mode) == 136, "Pointwise shader mode layout mismatch");
 
 int channelCode(const Parameters &p)
 {
@@ -61,6 +65,9 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
     params.scaleX = p.scaleX; params.scaleY = p.scaleY;
     params.offsetX = p.offsetX; params.offsetY = p.offsetY; params.angle = p.angle;
     params.rangeMin = p.rangeMin; params.rangeMax = p.rangeMax; params.softness = p.softness;
+    params.p0 = p.p0; params.p1 = p.p1; params.p2 = p.p2; params.p3 = p.p3;
+    params.p4 = p.p4; params.p5 = p.p5; params.p6 = p.p6; params.p7 = p.p7;
+    params.mode = p.mode;
     const std::size_t bytes = std::size_t(source.width()) * source.height() * sizeof(std::uint32_t);
     try {
         static FxManagerVulkan *instance = new FxManagerVulkan();

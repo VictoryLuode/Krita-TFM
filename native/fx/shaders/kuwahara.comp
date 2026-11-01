@@ -1,0 +1,58 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Source { uint pixels[]; } src;
+layout(std430, binding = 1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430, binding = 2) readonly buffer Parameters {
+    int width;
+    int height;
+    int radius;
+    int padding;
+} p;
+
+vec3 fetchPixel(ivec2 c) {
+    c = clamp(c, ivec2(0), ivec2(p.width - 1, p.height - 1));
+    uint v = src.pixels[c.y * p.width + c.x];
+    return vec3(float((v >> 16u) & 255u), float((v >> 8u) & 255u), float(v & 255u));
+}
+
+// Classic Kuwahara: pick the quadrant with the smallest variance and use its
+// mean. Each quadrant includes the centre pixel, matching the reference filter.
+vec3 classicKuwahara(ivec2 centre, int radius) {
+    vec3 best = fetchPixel(centre);
+    int bestKey = 2147483647;
+    for (int q = 0; q < 4; ++q) {
+        int sx = (q & 1) == 0 ? -1 : 1;
+        int sy = (q & 2) == 0 ? -1 : 1;
+        vec3 sum = vec3(0.0);
+        vec3 sumSquares = vec3(0.0);
+        int count = 0;
+        for (int dy = 0; dy <= radius; ++dy) {
+            for (int dx = 0; dx <= radius; ++dx) {
+                vec3 sampleValue = fetchPixel(centre + ivec2(dx * sx, dy * sy));
+                sum += sampleValue;
+                sumSquares += sampleValue * sampleValue;
+                ++count;
+            }
+        }
+        vec3 mean = sum / float(count);
+        vec3 variance = sumSquares / float(count) - mean * mean;
+        float total = variance.r + variance.g + variance.b;
+        // Quantise so float rounding cannot flip the argmin on a tie; both the
+        // CPU and GPU path then pick the first quadrant.
+        int key = int(floor(total * 64.0 + 0.5));
+        if (key < bestKey) { bestKey = key; best = mean; }
+    }
+    return best;
+}
+
+void main() {
+    ivec2 centre = ivec2(gl_GlobalInvocationID.xy);
+    if (centre.x >= p.width || centre.y >= p.height) return;
+    uint packed = src.pixels[centre.y * p.width + centre.x];
+    float alpha = float((packed >> 24u) & 255u);
+    int radius = clamp(p.radius, 1, 16);
+    vec3 result = classicKuwahara(centre, radius);
+    dst.pixels[centre.y * p.width + centre.x] =
+        (uint(round(alpha)) << 24u) | (uint(round(clamp(result.r, 0.0, 255.0))) << 16u)
+        | (uint(round(clamp(result.g, 0.0, 255.0))) << 8u) | uint(round(clamp(result.b, 0.0, 255.0)));
+}

@@ -1,6 +1,7 @@
 #include "fxmanager_guided_color_match_filter.h"
 #include "fxmanager_guided_color_match.h"
 #include "fxmanager_processing.h"
+#include "tfm_guided_gpu.h"
 #include <KoUpdater.h>
 #include <filter/kis_filter_category_ids.h>
 #include <filter/kis_filter_configuration.h>
@@ -54,6 +55,20 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
     // The current host returns native ARGB32; undo the legacy helper swap.
     const QImage source=fxmanager::readImage(device,rect).rgbSwapped();
     if(source.isNull()) return;
+    if (fxmanager::gpuRequested()) {
+        QImage gpuOutput;
+        QString reason;
+        QString gpuDevice;
+        if (tfm_guided_gpu::render(source, lut, gpuOutput, reason, gpuDevice)) {
+            fxmanager::writeImage(device, gpuOutput.rgbSwapped(), rect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+            if (updater) updater->setProgress(100);
+            return;
+        }
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
     QImage output=source.copy();
     uchar *bits=output.bits();
     const qsizetype stride=output.bytesPerLine();

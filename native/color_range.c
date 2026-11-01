@@ -90,6 +90,44 @@ EXPORT int tfm_perceptual(const uint8_t *pixels, const uint8_t *luminance,
                                   threshold, invert, threshold_enabled, -1.0, -1.0, output);
 }
 
+EXPORT int tfm_channel_mask(const uint8_t *pixels, const uint8_t *luminance,
+                            int width, int height, int stride, int channel,
+                            int threshold, int invert, int threshold_enabled,
+                            double tolerance, double softness, uint8_t *output) {
+    if (!pixels || !output || width <= 0 || height <= 0 ||
+        stride < 0 || (size_t)stride < (size_t)width * 4 || channel < 0 || channel > 3 ||
+        threshold < 0 || threshold > 255 || !isfinite(tolerance) || !isfinite(softness) ||
+        (tolerance < 0.0 && tolerance != -1.0) ||
+        (softness < 0.0 && softness != -1.0) || (channel == 3 && !luminance)) return -1;
+    const int has_options = threshold_enabled || tolerance >= 0.0 || softness >= 0.0;
+    const int cutoff = threshold_enabled ? threshold : 128;
+    const int adjusted_cutoff = tolerance >= 0.0 ?
+        (cutoff > (int)tolerance ? cutoff - (int)tolerance : 0) : cutoff;
+    const double edge = softness >= 0.0 ? softness : 0.0;
+    for (int y = 0; y < height; ++y) {
+        const uint8_t *row = pixels + (size_t)y * stride;
+        for (int x = 0; x < width; ++x) {
+            const size_t i = (size_t)y * width + x;
+            const uint8_t *pixel = row + (size_t)x * 4;
+            const int value = channel == 0 ? pixel[2] : channel == 1 ? pixel[1] :
+                              channel == 2 ? pixel[0] : luminance[i];
+            int weight;
+            if (!has_options) {
+                weight = invert ? 255 - value : value;
+            } else if (edge > 0.0) {
+                weight = smooth_weight((double)adjusted_cutoff - value,
+                                       0.0, edge);
+                if (invert) weight = 255 - weight;
+            } else {
+                weight = value >= adjusted_cutoff ? 255 : 0;
+                if (invert) weight = 255 - weight;
+            }
+            output[i] = (uint8_t)nearbyint(weight * pixel[3] / 255.0);
+        }
+    }
+    return 0;
+}
+
 /* Indexed outline: 0 transparent, 1..8 animated black/white dash phases.
  * The 50% boundary matches selection-outline semantics for soft masks. */
 EXPORT int tfm_color_range_outline(const uint8_t *mask, int width, int height,

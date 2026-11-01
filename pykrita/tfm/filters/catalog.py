@@ -15,6 +15,8 @@ FILTERS = [
             {"key": "threshold", "label": "Threshold", "min": 0.0, "max": 1.0, "default": 0.7},
             {"key": "radius", "label": "Radius", "min": 1.0, "max": 64.0, "default": 12.0},
             {"key": "strength", "label": "Strength", "min": 0.0, "max": 2.0, "default": 0.65},
+            {"key": "diffusion", "label": "Diffusion", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "softness", "label": "Softness", "min": 0.0, "max": 1.0, "default": 0.0},
         ],
     },
     {
@@ -67,6 +69,140 @@ FILTERS = [
             {"key": "offset_x", "label": "Offset X", "min": -2.0, "max": 2.0, "default": 0.0},
             {"key": "offset_y", "label": "Offset Y", "min": -2.0, "max": 2.0, "default": 0.0},
             {"key": "angle", "label": "Angle", "min": -180.0, "max": 180.0, "default": 0.0},
+        ],
+    },
+    {
+        "id": "tfm_color_temperature",
+        "label": "Color Temperature",
+        "description": "Shift white balance by black-body temperature, with a green/magenta tint.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "temperature", "label": "Temperature (K)", "min": 2000.0, "max": 12000.0, "default": 6500.0},
+            {"key": "tint", "label": "Tint (green/magenta)", "min": -100.0, "max": 100.0, "default": 0.0},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "preserve_luminance", "label": "Preserve Luminance", "min": 0.0, "max": 1.0, "default": 1.0},
+        ],
+    },
+    {
+        "id": "tfm_vibrance",
+        "label": "Vibrance",
+        "description": "Raise muted colour before saturated colour, with skin and highlight protection.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "vibrance", "label": "Vibrance", "min": -100.0, "max": 100.0, "default": 30.0},
+            {"key": "saturation", "label": "Saturation", "min": -100.0, "max": 100.0, "default": 0.0},
+            {"key": "skin_protect", "label": "Skin Protection", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "protect_highlights", "label": "Protect Highlights", "min": 0.0, "max": 1.0, "default": 0.5},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+        ],
+    },
+    {
+        "id": "tfm_kuwahara",
+        "label": "Kuwahara",
+        "description": "Edge-preserving paint filter. Each pixel takes the lowest-variance quadrant mean.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "size", "label": "Size", "type": "integer", "min": 1, "max": 12, "default": 2},
+            {"key": "iterations", "label": "Iterations", "type": "integer", "min": 1, "max": 4, "default": 1},
+        ],
+    },
+    {
+        "id": "tfm_halation",
+        "label": "Halation",
+        "description": "Film-style red glow gathered from highlights around bright edges.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "threshold", "label": "Threshold", "min": 0.0, "max": 1.0, "default": 0.75},
+            {"key": "radius", "label": "Radius", "min": 1.0, "max": 200.0, "default": 24.0},
+            {"key": "intensity", "label": "Intensity", "min": 0.0, "max": 4.0, "default": 1.0},
+            {"key": "tint", "label": "Tint", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "quality", "label": "Quality", "type": "integer", "min": 8, "max": 64, "default": 32},
+            {"key": "glow_mode", "label": "Mode", "default": "color", "options": [
+                ["color", "Custom Color"], ["channels", "Channel Mix"],
+            ]},
+            {"key": "channel_r", "label": "Red channel", "default": True},
+            {"key": "channel_g", "label": "Green channel", "default": True},
+            {"key": "channel_b", "label": "Blue channel", "default": True},
+        ],
+    },
+    {
+        "id": "tfm_lens_flare",
+        "label": "Lens Flare",
+        "description": "Ghost flare from the brightest highlights, with dispersion along the flare axis.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "threshold", "label": "Threshold", "min": 0.0, "max": 1.0, "default": 0.85},
+            {"key": "length", "label": "Spread", "min": 0.01, "max": 1.0, "default": 0.35},
+            {"key": "decay", "label": "Ghost Count", "min": 1.0, "max": 6.0, "default": 3.0},
+            {"key": "intensity", "label": "Intensity", "min": 0.0, "max": 4.0, "default": 1.0},
+            {"key": "tint", "label": "Dispersion", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "sources", "label": "Light Sources", "type": "integer", "min": 1, "max": 8, "default": 1},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+        ],
+    },
+    {
+        "id": "tfm_anamorphic_flare",
+        "label": "Anamorphic Flare",
+        "description": "Horizontal anamorphic streak from the brightest highlights.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "threshold", "label": "Threshold", "min": 0.0, "max": 1.0, "default": 0.85},
+            {"key": "length", "label": "Streak Length", "min": 0.01, "max": 1.0, "default": 0.45},
+            {"key": "decay", "label": "Falloff", "min": 0.05, "max": 2.0, "default": 0.35},
+            {"key": "aspect", "label": "Thickness", "min": 0.002, "max": 0.2, "default": 0.012},
+            {"key": "intensity", "label": "Intensity", "min": 0.0, "max": 4.0, "default": 1.0},
+            {"key": "tint", "label": "Tint", "min": 0.0, "max": 1.0, "default": 1.0},
+            {"key": "sources", "label": "Light Sources", "type": "integer", "min": 1, "max": 8, "default": 2},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+        ],
+    },
+    {
+        "id": "tfm_light_rays",
+        "label": "Light Rays",
+        "description": "Rays cast from the brightest highlights across the frame.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "threshold", "label": "Threshold", "min": 0.0, "max": 1.0, "default": 0.7},
+            {"key": "length", "label": "Length", "min": 0.01, "max": 1.0, "default": 0.6},
+            {"key": "decay", "label": "Falloff", "min": 0.1, "max": 6.0, "default": 2.0},
+            {"key": "intensity", "label": "Intensity", "min": 0.0, "max": 4.0, "default": 1.0},
+            {"key": "blend", "label": "Blend", "min": 0.0, "max": 1.0, "default": 1.0},
+        ],
+    },
+    {
+        "id": "tfm_light_leaks",
+        "label": "Light Leaks",
+        "description": "Coloured light wash across the canvas. The shape is one of six plates; hue shifts its colour. CPU only.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "leak_type", "label": "Leak Type", "default": "wash_horizontal", "options": [
+                ["wash_horizontal", "Horizontal Wash"],
+                ["wash_vertical", "Vertical Wash"],
+                ["glow_top_left", "Top-Left Glow"],
+                ["glow_bottom_right", "Bottom-Right Glow"],
+                ["edge_ring", "Edge Ring"],
+                ["diagonal", "Diagonal Wash"],
+            ]},
+            {"key": "angle", "label": "Angle", "min": -180.0, "max": 180.0, "default": 0.0},
+            {"key": "scale_x", "label": "X-Scale", "min": 0.1, "max": 4.0, "default": 1.0},
+            {"key": "scale_y", "label": "Y-Scale", "min": 0.1, "max": 4.0, "default": 1.0},
+            {"key": "hue", "label": "Hue", "min": -180.0, "max": 180.0, "default": 0.0},
+            {"key": "opacity", "label": "Opacity (%)", "min": 0.0, "max": 100.0, "default": 85.0},
+            {"key": "blend", "label": "Blend Mode", "default": "screen", "options": [
+                ["screen", "Screen"], ["add", "Add"], ["lighten", "Lighten"],
+            ]},
+        ],
+    },
+    {
+        "id": "tfm_light_patch",
+        "label": "Light Patch",
+        "description": "Darken the frame and punch warm patches back through it. Patch centres stay on the canvas. CPU only.",
+        "category": "Artistic",
+        "settings": [
+            {"key": "density", "label": "Density", "type": "integer", "min": 1, "max": 60, "default": 20},
+            {"key": "darkness", "label": "Darkness", "min": 0.0, "max": 1.0, "default": 0.951},
+            {"key": "lightness", "label": "Lightness", "min": 0.0, "max": 4.0, "default": 1.015},
         ],
     },
     {
@@ -138,7 +274,10 @@ FILTERS = [
         "description": "Alpha-only mask driven by a selected grayscale or RGB channel range; it changes alpha while preserving RGB when enabled.",
         "category": "Artistic",
         "settings": [
-            {"key": "channel", "label": "Channel", "default": "gray"},
+            {"key": "channel", "label": "Channel", "default": "gray", "options": [
+                ["gray", "Gray"], ["r", "Red"], ["g", "Green"], ["b", "Blue"],
+                ["hue", "Hue"], ["saturation", "Saturation"],
+            ]},
             {"key": "range_min", "label": "Range Min", "min": 0.0, "max": 1.0, "default": 0.0},
             {"key": "range_max", "label": "Range Max", "min": 0.0, "max": 1.0, "default": 1.0},
             {"key": "softness", "label": "Softness", "min": 0.0, "max": 0.5, "default": 0.05},
@@ -210,10 +349,3 @@ for _entry in FILTERS:
               and ("options" in spec or ("min" in spec and "max" in spec)
                    or isinstance(spec.get("default"), bool))]
     FILTER_DEFAULT_SPECS[_entry["id"]] = _specs
-FILTER_DEFAULT_SPECS["tfm_bloom"].extend([
-    {"key": "diffusion", "label": "Diffusion", "min": 0.0, "max": 1.0, "default": 1.0},
-    {"key": "softness", "label": "Softness", "min": 0.0, "max": 1.0, "default": 0.0},
-])
-FILTER_DEFAULT_SPECS["tfm_color_range_mask"].insert(0, {
-    "key": "channel", "label": "Channel", "default": "gray",
-    "options": ["gray", "r", "g", "b", "hue", "saturation"]})

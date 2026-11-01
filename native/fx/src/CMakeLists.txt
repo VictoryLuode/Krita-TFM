@@ -8,12 +8,22 @@ set(KRITA_FXMANAGER_SOURCES
     tfm_pointwise_gpu.cpp
     tfm_lens_gpu.cpp
     tfm_bloom_gpu.cpp
+    tfm_guided_gpu.cpp
+    tfm_kuwahara_gpu.cpp
+    tfm_halation_gpu.cpp
+    tfm_flare_gpu.cpp
     fxmanager_bloom.cpp
     fxmanager_film_grain.cpp
     fxmanager_lens_distortion.cpp
     fxmanager_lens_distortion_widget.cpp
     fxmanager_vignette.cpp
     fxmanager_vignette_widget.cpp
+    fxmanager_color_temperature.cpp
+    fxmanager_vibrance.cpp
+    fxmanager_kuwahara.cpp
+    fxmanager_halation.cpp
+    fxmanager_flare.cpp
+    fxmanager_light_effects.cpp
     fxmanager_filter_widget.cpp
     fxmanager_drag_spinbox.cpp
     fxmanager_color_range_mask.cpp
@@ -44,6 +54,15 @@ set(KRITA_FXMANAGER_SOURCES
     fxmanager_lens_distortion_widget.h
     fxmanager_vignette.h
     fxmanager_vignette_widget.h
+    fxmanager_color_temperature.h
+    fxmanager_vibrance.h
+    fxmanager_kuwahara.h
+    tfm_kuwahara_gpu.h
+    fxmanager_halation.h
+    tfm_halation_gpu.h
+    fxmanager_flare.h
+    tfm_flare_gpu.h
+    fxmanager_light_effects.h
     fxmanager_filter_widget.h
     fxmanager_color_range_mask.h
     fxmanager_color_range_mask_widget.h

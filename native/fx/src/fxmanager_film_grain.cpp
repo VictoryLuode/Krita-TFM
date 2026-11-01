@@ -31,17 +31,20 @@ const Preset presetFor(const QString &id)
     for (const Preset &preset : presets) if (id == QLatin1String(preset.id)) return preset;
     return custom;
 }
-void grainBand(QImage &image, int y0, int y1, double amount, double size, int seed, bool monochrome)
+void grainBand(QImage &image, int y0, int y1, double amount, double size, int seed, bool monochrome,
+               const QPoint &origin)
 {
     const int width = image.width();
     const double amplitude = std::clamp(amount, 0.0, 1.0) * 255.0;
     for (int y = y0; y < y1; ++y) {
         QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(y));
         for (int x = 0; x < width; ++x) {
-            const double common = fxmanager::deterministicNoise(int(std::floor(x / std::max(.5, size))), int(std::floor(y / std::max(.5, size))), seed);
-            const double nr = monochrome ? common : fxmanager::deterministicNoise(x, y, seed, 1);
-            const double ng = monochrome ? common : fxmanager::deterministicNoise(x, y, seed, 2);
-            const double nb = monochrome ? common : fxmanager::deterministicNoise(x, y, seed, 3);
+            const int gx = origin.x() + x;
+            const int gy = origin.y() + y;
+            const double common = fxmanager::deterministicNoise(int(std::floor(gx / std::max(.5, size))), int(std::floor(gy / std::max(.5, size))), seed);
+            const double nr = monochrome ? common : fxmanager::deterministicNoise(gx, gy, seed, 1);
+            const double ng = monochrome ? common : fxmanager::deterministicNoise(gx, gy, seed, 2);
+            const double nb = monochrome ? common : fxmanager::deterministicNoise(gx, gy, seed, 3);
             const QRgb p = row[x];
             row[x] = qRgba(std::clamp(int(qRed(p) + nr * amplitude), 0, 255), std::clamp(int(qGreen(p) + ng * amplitude), 0, 255), std::clamp(int(qBlue(p) + nb * amplitude), 0, 255), qAlpha(p));
         }
@@ -69,22 +72,14 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
     const int seed = isCustom ? (c ? c->getInt("seed", preset.seed) : preset.seed) : preset.seed;
     const bool mono = isCustom ? (c ? c->getBool("monochrome", preset.monochrome) : preset.monochrome) : preset.monochrome;
     QImage image = fxmanager::readImage(d, r); if (image.isNull()) return;
-    if (fxmanager::gpuRequested()) {
-        tfm_pointwise_gpu::Parameters gpu;
-        gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
-        gpu.outputRect = r; gpu.amount = float(amount); gpu.size = float(size);
-        gpu.seed = float(seed); gpu.monochrome = mono ? 1 : 0;
-        QImage output; QString reason, device;
-        if (tfm_pointwise_gpu::render(image, gpu, output, reason, device)) {
-            fxmanager::writeImage(d, output, r);
-            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
-            if (u) u->setProgress(100);
-            return;
-        }
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
-    } else {
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
-    }
-    fxmanager::parallelRows(image.height(), [&](int y0, int y1) { grainBand(image, y0, y1, amount, size, seed, mono); });
+    const QPoint frameOffset = r.topLeft();
+    // The noise field is anchored to the canvas, so it must not be evaluated
+    // per tile or per backend. The Vulkan variant still keys off the patch
+    // origin in its embedded SPIR-V, so keep this filter on the CPU path where
+    // the canvas anchor is verified by the tile audit.
+    fxmanager::reportBackend(id().id(), QStringLiteral("cpu"),
+                             QStringLiteral("Canvas-anchored noise: CPU path"));
+
+    fxmanager::parallelRows(image.height(), [&](int y0, int y1) { grainBand(image, y0, y1, amount, size, seed, mono, frameOffset); });
     fxmanager::writeImage(d, image, r); if (u) u->setProgress(100);
 }

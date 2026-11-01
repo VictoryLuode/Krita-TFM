@@ -524,9 +524,6 @@ FxmGeglMotionBlur::Widget::Widget(Variant variant, const QRect &deviceFrame, con
 
     root->addLayout(form);
 
-    m_statusLabel = new QLabel(i18n("Auto Vulkan / CPU fallback."), this);
-    m_statusLabel->setWordWrap(true);
-    root->addWidget(m_statusLabel);
     root->addStretch(1);
 
     auto notify = [this]() { emit sigConfigurationItemChanged(); };

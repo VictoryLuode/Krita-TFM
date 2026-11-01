@@ -203,6 +203,11 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
         number("match_strength",0,1); number("luminance",0,1); number("chroma",0,2); number("shadow_color",0,1); number("highlight_warmth",0,2); number("neutral_protection",0,1); number("smoothness",0,1);
     } else if (filterId == QLatin1String("tfm_background_removal") || filterId == QLatin1String("fxmanager_background_removal")) {
         choice("model",{"BiRefNet-lite-F16.gguf","BiRefNet-dynamic-F16.gguf"}); choice("backend",{"cpu","gpu"}); choice("output_mode",{"cutout","grayscale_mask"}); choice("foreground_mode",{"fast_mask","refined_foreground"}); number("preserve_foreground",0,100,true); number("mask_contrast",-100,100,true);
+    } else if (filterId == QLatin1String("tfm_halation") || filterId == QLatin1String("fxmanager_halation")) {
+        number("threshold",0,1); number("radius",1,200); number("intensity",0,4);
+        number("tint",0,1); number("blend",0,1); number("quality",8,64);
+        boolean("channel_r"); boolean("channel_g"); boolean("channel_b");
+        choice("glow_mode",{"color","channels"});
     } else if (filterId == QLatin1String("tfm_color_range_mask") || filterId == QLatin1String("fxmanager_color_range_mask")) {
         choice("channel",{"gray","r","g","b","hue","saturation"}); number("range_min",0,1); number("range_max",0,1); number("softness",0,0.5); boolean("invert");
     } else if (filterId == QLatin1String("tfm_motion_blur_circular") || filterId == QLatin1String("fxmanager_motion_blur_circular")) {
@@ -223,6 +228,24 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
         number("aspect_ratio",-1,1);
         number("rotation",-180,180);
         boolean("high_quality");
+    } else if (filterId == QLatin1String("tfm_color_temperature") || filterId == QLatin1String("fxmanager_color_temperature")) {
+        number("temperature", 2000, 12000); number("tint", -100, 100); number("blend", 0, 1); number("preserve_luminance", 0, 1);
+    } else if (filterId == QLatin1String("tfm_vibrance") || filterId == QLatin1String("fxmanager_vibrance")) {
+        number("vibrance", -100, 100); number("saturation", -100, 100); number("skin_protect", 0, 1); number("protect_highlights", 0, 1); number("blend", 0, 1);
+    } else if (filterId == QLatin1String("tfm_kuwahara") || filterId == QLatin1String("fxmanager_kuwahara")) {
+        number("size", 1, 12, true); number("iterations", 1, 4, true);
+    } else if (filterId == QLatin1String("tfm_lens_flare") || filterId == QLatin1String("fxmanager_lens_flare")) {
+        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 1, 6); number("intensity", 0, 4); number("tint", 0, 1); number("sources", 1, 8, true); number("blend", 0, 1);
+    } else if (filterId == QLatin1String("tfm_anamorphic_flare") || filterId == QLatin1String("fxmanager_anamorphic_flare")) {
+        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 0.05, 2); number("aspect", 0.002, 0.2); number("intensity", 0, 4); number("tint", 0, 1); number("sources", 1, 8, true); number("blend", 0, 1);
+    } else if (filterId == QLatin1String("tfm_light_rays") || filterId == QLatin1String("fxmanager_light_rays")) {
+        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 0.1, 6); number("intensity", 0, 4); number("blend", 0, 1);
+    } else if (filterId == QLatin1String("tfm_light_leaks") || filterId == QLatin1String("fxmanager_light_leaks")) {
+        choice("leak_type", {"wash_horizontal", "wash_vertical", "glow_top_left", "glow_bottom_right", "edge_ring", "diagonal"});
+        choice("blend", {"screen", "add", "lighten"});
+        number("angle", -180, 180); number("scale_x", 0.1, 4); number("scale_y", 0.1, 4); number("hue", -180, 180); number("opacity", 0, 100);
+    } else if (filterId == QLatin1String("tfm_light_patch") || filterId == QLatin1String("fxmanager_light_patch")) {
+        number("density", 1, 60, true); number("darkness", 0, 1); number("lightness", 0, 4);
     }
 }
 

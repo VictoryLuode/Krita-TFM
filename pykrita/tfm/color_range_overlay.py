@@ -1,5 +1,5 @@
 """Temporary QWidget overlay for a single Krita canvas; never edits a document."""
-from .menus.qtcompat import Qt, QImage, QTimer, QWidget, QPainter, QRectF
+from .menus.qtcompat import QEvent, Qt, QImage, QTimer, QWidget, QPainter, QRectF
 from .color_range_native import outline as native_outline
 
 
@@ -18,15 +18,17 @@ class ColorRangeOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(canvas.rect())
+        self.view.installEventFilter(self)
         self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.sync_geometry)
-        self.timer.start(100)
 
     def set_mask(self, mask, width, height, mode):
         if mode not in ('selection', 'black_white', 'quick_mask') or len(mask) != width * height:
             raise ValueError('Invalid canvas preview mask.')
         state = (bytes(mask), width, height, mode)
         if state == self._mask_state:
+            self.sync_geometry()
             return
         self._mask_state = state
         pixels = native_outline(mask, width, height) if mode == 'selection' else bytes(mask)
@@ -40,11 +42,12 @@ class ColorRangeOverlay(QWidget):
             image.setColorTable([((255 - i) * 128 // 255 << 24) | 0x00ff0000 for i in range(256)])
         self.image = image
         self.mode = mode
-        self.update()
+        self.sync_geometry()
 
     def sync_geometry(self):
         try:
             if self.canvas is None or self.view.document() != self.document or not self.canvas.isVisible() or not self.is_active():
+                self.timer.stop()
                 self.hide()
                 return
             transform = self.view.flakeToCanvasTransform()
@@ -64,9 +67,22 @@ class ColorRangeOverlay(QWidget):
                 changed = True
             if changed:
                 self.update()
+            if self.mode == 'selection' and self.isVisible():
+                self.timer.start(100)
         except RuntimeError:
             self.timer.stop()
             self.hide()
+
+    def eventFilter(self, watched, event):
+        if watched is self.canvas or watched is self.view:
+            event_type = event.type()
+            resize = getattr(QEvent, 'Resize', None) or getattr(QEvent.Type, 'Resize', None)
+            move = getattr(QEvent, 'Move', None) or getattr(QEvent.Type, 'Move', None)
+            show = getattr(QEvent, 'Show', None) or getattr(QEvent.Type, 'Show', None)
+            hide = getattr(QEvent, 'Hide', None) or getattr(QEvent.Type, 'Hide', None)
+            if event_type in (resize, move, show, hide):
+                self.sync_geometry()
+        return super().eventFilter(watched, event)
 
     def paintEvent(self, event):
         if self.image.isNull():
@@ -85,5 +101,9 @@ class ColorRangeOverlay(QWidget):
             self.hide()
 
     def closeEvent(self, event):
-        self.timer.stop()
+        try:
+            self.canvas.removeEventFilter(self)
+            self.view.removeEventFilter(self)
+        except RuntimeError:
+            pass
         super().closeEvent(event)

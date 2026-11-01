@@ -54,7 +54,6 @@ public:
         QSlider *m_centerYSlider = nullptr;
         QDoubleSpinBox *m_primarySpin = nullptr;
         QSlider *m_primarySlider = nullptr;
-        QLabel *m_statusLabel = nullptr;
     };
 
 private:

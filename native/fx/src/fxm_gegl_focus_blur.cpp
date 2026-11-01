@@ -414,9 +414,6 @@ FxmGeglFocusBlur::Widget::Widget(const QRect &deviceFrame, const KisPaintDeviceS
 
     root->addWidget(m_lensGroup);
 
-    m_statusLabel = new QLabel(this);
-    m_statusLabel->setWordWrap(true);
-    root->addWidget(m_statusLabel);
     root->addStretch(1);
 
     updateModeVisibility();
@@ -439,9 +436,6 @@ FxmGeglFocusBlur::Widget::Widget(const QRect &deviceFrame, const KisPaintDeviceS
 void FxmGeglFocusBlur::Widget::updateModeVisibility()
 {
     const bool isLens = (m_blurTypeCombo->currentData().toString() == QLatin1String("lens"));
-    if (m_statusLabel) {
-        m_statusLabel->setText(i18n("Native CPU processing. F32 filter masks may show small boundary differences; use a paint layer or adjustment layer for F32 documents."));
-    }
     if (m_lensGroup) m_lensGroup->setVisible(isLens);
     if (m_highQualityCheck) m_highQualityCheck->setVisible(!isLens);
 }

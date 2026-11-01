@@ -20,6 +20,26 @@ HOST = WORKSPACE / 'Krita-Master-5.3.4.1/build-fxm-5.3'
 STAGE = REPO / 'build' / 'native-5.3' / 'stage'
 OUT = REPO / 'build' / 'native-5.3'
 DEPS = WORKSPACE / 'deps'
+# The reference Krita graph may retain an absolute dependency prefix from the
+# former workspace name. Normalize only that dependency prefix in generated
+# compiler/link arguments; never rewrite source or host build files.
+LEGACY_WORKSPACE = Path(str(WORKSPACE).replace('KritaAddon', 'Krita Addon'))
+LEGACY_HOST = LEGACY_WORKSPACE / 'Krita-Master-5.3.4.1'
+LEGACY_DEPS = LEGACY_WORKSPACE / 'deps'
+
+
+def normalize_dep_arg(value):
+    text = str(value).replace('\\', '/')
+    # Reference graphs keep the old "Krita Addon" tree, sometimes on another drive.
+    workspace = str(WORKSPACE).replace('\\', '/')
+    text = re.sub(r'[A-Za-z]:/Dev/Krita Addon', workspace, text)
+    for old_path, new_path in ((LEGACY_HOST, WORKSPACE / 'Krita-Master-5.3.4.1'),
+                               (LEGACY_DEPS, DEPS)):
+        text = text.replace(str(old_path).replace('\\', '/'),
+                            str(new_path).replace('\\', '/'))
+    return text
+
+
 def _find_compiler():
     if os.environ.get('CXX'):
         return Path(os.environ['CXX'])
@@ -79,13 +99,18 @@ def main():
         target = STAGE / p.name
         if not target.is_file() or digest(target) != before[p.name]:
             shutil.copy2(p, target)
+        if p.name == 'fxmanager_plugin.cpp':
+            text = target.read_text(encoding='utf-8')
+            text = text.replace('FxManagerPluginFactory', 'FilterManagerFactory')
+            target.write_text(text, encoding='utf-8')
     OUT.mkdir(parents=True, exist_ok=True)
     auto = OUT / 'autogen'
     auto.mkdir(exist_ok=True)
     info = json.loads((HOST / 'plugins/filters/filtermanager/CMakeFiles/kritafiltermanager_autogen.dir/AutogenInfo.json').read_text())
     flags = ['-D' + d for d in info['MOC_DEFINITIONS']]
     flags += ['-I' + str(STAGE), '-I' + str(auto)]
-    flags += ['-I' + p for p in info['MOC_INCLUDES'] if Path(p).is_dir() and 'plugins/filters/filtermanager' not in p.replace(chr(92), '/')]
+    flags += ['-I' + normalize_dep_arg(p) for p in info['MOC_INCLUDES']
+              if Path(normalize_dep_arg(p)).is_dir() and 'plugins/filters/filtermanager' not in p.replace(chr(92), '/')]
     flags = [f.replace('kritafiltermanager_EXPORTS', 'kritatfm_EXPORTS') for f in flags]
     includes = []
     for p in files:
@@ -96,7 +121,20 @@ def main():
             includes.append('#include "' + name + '"')
         if p.suffix == '.cpp':
             for name in re.findall(r'#include\s+"([^"\n]+\.moc)"', text):
-                subprocess.run([str(DEPS / 'bin/moc.exe'), *flags, str(STAGE / p.name), '-o', str(auto / name)], env=env, check=True)
+                output = auto / name
+                if p.name == 'fxmanager_plugin.cpp' and name == 'fxmanager_plugin.moc':
+                    host_moc = HOST / 'plugins/filters/filtermanager/kritafiltermanager_autogen/include/filtermanager_plugin.moc'
+                    if not host_moc.is_file():
+                        raise SystemExit('Missing reference plugin moc: ' + str(host_moc))
+                    moc_text = host_moc.read_text(encoding='utf-8', errors='replace')
+                    moc_text = moc_text.replace('FilterManagerFactory', 'FilterManagerFactory')
+                    moc_text = moc_text.replace('filtermanager_plugin.cpp', 'fxmanager_plugin.cpp')
+                    output.write_text(moc_text, encoding='utf-8')
+                else:
+                    subprocess.run([str(DEPS / 'bin/moc.exe'), *flags, str(STAGE / p.name), '-o', str(output)], env=env, check=True)
+            # Explicit .moc files are included by their originating .cpp.
+            # They must not be added to mocs_compilation.cpp.
+            continue
     (auto / 'mocs_compilation.cpp').write_text('\n'.join(includes) + '\n')
     entries = [e for e in json.loads((HOST / 'compile_commands.json').read_text()) if 'kritafiltermanager.dir' in e.get('output', '')]
     cmaketext = (PROJECT / 'src/CMakeLists.txt').read_text()
@@ -116,8 +154,11 @@ def main():
         entries.append(synth)
     graph = ['rule compile', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = COMPILE $out', 'rule link', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = LINK $out']
     objects, database = [], []
+    plugin_cpp = (PROJECT / 'src/fxmanager_plugin.cpp').read_text()
+    moc_outputs = [auto / name for name in re.findall(r'#include\s+"([^"\n]+\.moc)"', plugin_cpp)]
     for e in entries:
         args = split(e['command'])[1:]
+        args = [normalize_dep_arg(a) for a in args]
         # CommandLineToArgvW preserves quoted pkgconfig include/library paths;
         # never use whitespace splitting on generated flags.
         source = Path(e['file'])
@@ -133,13 +174,24 @@ def main():
         args[args.index('-c') + 1] = str(source)
         args = [a.replace('kritafiltermanager_EXPORTS', 'kritatfm_EXPORTS') for a in args]
         args = [a.replace('Krita-FilterManager', 'Krita-TFM/native/fx') for a in args]
-        args = [a for a in args if 'plugins/filters/filtermanager' not in a.replace(chr(92), '/')]
+        args = [a for a in args if
+                'plugins/filters/filtermanager' not in a.replace(chr(92), '/') or
+                'third_party/visioncpp' in a.replace(chr(92), '/') or
+                'third_party/ggml' in a.replace(chr(92), '/')]
         args[0:0] = ['-I' + str(STAGE), '-I' + str(auto), '-I' + str(PROJECT / 'src'),
-                      '-I' + str(PROJECT / 'third_party/vulkan-headers/include')]
+                      '-I' + str(PROJECT / 'third_party/vulkan-headers/include'),
+                      '-I' + str(PROJECT / 'third_party/visioncpp/include'),
+                      '-I' + str(PROJECT / 'third_party/visioncpp/src'),
+                      '-I' + str(PROJECT / 'third_party/visioncpp/depend/stb'),
+                      '-I' + str(PROJECT / 'third_party/ggml/include'),
+                      '-I' + str(PROJECT / 'third_party/ggml/src')]
         rsp = obj.with_suffix('.rsp')
         args = [a.replace('\\', '/') if not a.startswith('-D') else a for a in args]
         rsp.write_text(subprocess.list2cmdline(args), encoding='utf-8')
-        graph += ['build ' + escape(obj) + ': compile ' + escape(source) + ' | ' + ' '.join(escape(STAGE / p.name) for p in files), '  rsp = ' + subprocess.list2cmdline([str(rsp)])]
+        deps = [STAGE / p.name for p in files]
+        if source.name == 'fxmanager_plugin.cpp':
+            deps += moc_outputs
+        graph += ['build ' + escape(obj) + ': compile ' + escape(source) + ' | ' + ' '.join(escape(p) for p in deps), '  rsp = ' + subprocess.list2cmdline([str(rsp)])]
         objects.append(obj)
         database.append({'directory': str(HOST), 'file': str(source), 'arguments': [str(COMPILER), *args], 'output': str(obj)})
     text = (HOST / 'build.ninja').read_text()
@@ -148,14 +200,14 @@ def main():
         raise SystemExit('Missing FXM link rule in reference build.ninja')
     block = link_match.group()
     values = dict(re.findall(r'^  (\w+) = (.*)$', block, re.M))
-    libs = split(values['LINK_LIBRARIES'])
+    libs = [normalize_dep_arg(lib) for lib in split(values['LINK_LIBRARIES'])]
     for lib in libs:
-        if not lib.startswith('-') and not (HOST / lib).is_file():
+        if not lib.startswith('-') and not (HOST / lib).is_file() and not Path(lib).is_file():
             raise SystemExit('Missing existing library: ' + lib)
     dll = OUT / 'bin/kritatfm.dll'
     candidate = OUT / 'bin/kritatfm.candidate.dll'
     dll.parent.mkdir(exist_ok=True)
-    args = split(values['LANGUAGE_COMPILE_FLAGS']) + split(values['LINK_FLAGS'])
+    args = [normalize_dep_arg(a) for a in split(values['LANGUAGE_COMPILE_FLAGS']) + split(values['LINK_FLAGS'])]
     args += ['-shared', '-o', str(candidate), '-Wl,--major-image-version,0,--minor-image-version,0']
     args += [str(p) for p in objects] + libs
     rsp = OUT / 'link.rsp'

@@ -28,6 +28,7 @@ from .qtcompat import (
     QTextBrowser,
     QVBoxLayout,
     Qt,
+    QtCore,
     PYQT6,
     checked_state,
     exec_,
@@ -86,10 +87,12 @@ class _CategoryList(QListWidget):
         if source_category == target_category:
             event.ignore()
             return
-        if self.owner._move_filter(source.data(_ROLE), target_category):
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+        ident = source.data(_ROLE)
+        # The list is rebuilt after the drag. Accepting the proposed Move
+        # makes Qt delete the dragged row from that rebuilt model and Krita hangs.
+        event.setDropAction(Qt.DropAction.IgnoreAction if PYQT6 else Qt.IgnoreAction)
+        event.accept()
+        QtCore.QTimer.singleShot(0, lambda: self.owner._move_filter(ident, target_category))
 
 
 class FxManagerDialog(QWidget):
@@ -125,25 +128,38 @@ class FxManagerDialog(QWidget):
                     if ident not in seen:
                         self._categories[name].append(ident)
                         seen.add(ident)
+        previously_known = {ident for ids in self._categories.values() for ident in ids}
+        previously_known.update(ident for ident in self._pending.get("managed_filters", []) if isinstance(ident, str))
+
+        def place(entry):
+            name = aliases.get(entry.get("category", "Other"), entry.get("category", "Other"))
+            category = self._categories.get(name, self._categories["Other"])
+            if entry.get("category") == "Segmentation":
+                category = self._categories["Enhance"]
+            if entry["id"] not in category:
+                category.append(entry["id"])
+
+        if raw:
+            for entry in FILTERS:
+                if entry["id"] not in previously_known:
+                    place(entry)
         else:
             for entry in FILTERS:
-                name = aliases.get(entry.get("category", "Other"), entry.get("category", "Other"))
-                category = self._categories.get(name, self._categories["Other"])
-                if entry.get("category") == "Segmentation":
-                    category = self._categories["Enhance"]
-                category.append(entry["id"])
+                place(entry)
         assigned = {ident for ids in self._categories.values() for ident in ids}
-        for entry in FILTERS:
-            ident = entry["id"]
-            if ident not in assigned:
-                name = aliases.get(entry.get("category", "Other"), entry.get("category", "Other"))
-                self._categories.get(name, self._categories["Other"]).append(ident)
-                assigned.add(ident)
         self._categories["Other"].extend(ident for ident in self._pending.get("managed_filters", []) if ident not in assigned)
         if "managed_filters" not in self._pending:
             self._managed = {entry["id"] for entry in FILTERS}
         if "enabled_filters" not in self._pending:
             self._enabled = set(self._managed)
+        elif "managed_filters" in self._pending:
+            # A filter the saved file has never mentioned is new, not one the
+            # user removed. Removed filters stay in the saved category lists.
+            for entry in FILTERS:
+                ident = entry["id"]
+                if ident not in previously_known:
+                    self._managed.add(ident)
+                    self._enabled.add(ident)
         self._collapsed_categories = set()
         self._build_ui()
         self._reload()
