@@ -4,4 +4,4 @@ ServiceTypes=Krita/PythonPlugin
 X-KDE-Library=tfm
 X-Python-2-Compatible=false
 Name=TFM
-Comment=Manage custom menus, filters and tools.
+Comment=Manage custom menus, filters, tools, and an asset library.

@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QDataStream>
+#include <QImage>
 #include <QIODevice>
 #include <algorithm>
 #include <array>
@@ -110,17 +111,478 @@ struct Lut {
     }
 };
 
+struct LightnessStats {
+    double mean = 0.5;
+    double stdev = 0.2;
+    bool valid = false;
+};
+
+inline LightnessStats imageLightnessStats(const QImage &image)
+{
+    LightnessStats stats;
+    if (image.isNull()) return stats;
+    double sum = 0.0;
+    double sumSq = 0.0;
+    int count = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor color = image.pixelColor(x, y);
+            if (color.alpha() <= 0) continue;
+            const double lightness = rgbToOklab(color).l;
+            sum += lightness;
+            sumSq += lightness * lightness;
+            ++count;
+        }
+    }
+    if (count < 16) return stats;
+    stats.mean = sum / double(count);
+    stats.stdev = std::sqrt(std::max(0.0, sumSq / double(count) - stats.mean * stats.mean));
+    stats.stdev = std::max(stats.stdev, 0.02);
+    stats.valid = true;
+    return stats;
+}
+
+inline double alignLightness(double lightness, const LightnessStats &source, const LightnessStats &reference)
+{
+    if (!source.valid || !reference.valid) return lightness;
+    return (lightness - source.mean) * (reference.stdev / source.stdev) + reference.mean;
+}
+
+// Grade from the two preview images, not from four swatches.
+// 1. Map source OKLab L through histogram matching so a high-key photo lands
+//    in the reference's actual lightness distribution (mean/std leaves it high-key).
+// 2. At that lightness, the reference's chroma-weighted a/b is the main tone.
+// 3. Colours that sit away from the source's own main tone pick a reference
+//    accent of the same lightness and the same direction away from its main tone.
+//    A one-colour reference has no accent, so the result stays the main tone.
+struct LookTransfer {
+    static constexpr int Bins = 48;
+    static constexpr int HueBins = 8;
+    bool valid = false;
+    double align = 1.0;
+    double strength = 1.0;
+    double chromaAmount = 1.0;
+    double luminance = 0.0;
+    double neutral = 0.0;
+    double shadowColor = 1.0;
+    double highlightWarmth = 1.0;
+    double keepLocal = 1.0;
+    double matchLocal = 0.0;
+    double srcCdf[Bins]{};
+    double refCdf[Bins]{};
+    double chromaA[Bins]{};
+    double chromaB[Bins]{};
+    double srcMeanA[Bins]{};
+    double srcMeanB[Bins]{};
+    double accentA[HueBins][Bins]{};
+    double accentB[HueBins][Bins]{};
+    double accentW[HueBins][Bins]{};
+
+    static LookTransfer fromImages(const QImage &sourceImage, const QImage &referenceImage,
+                                   double alignBrightness, double luminanceValue, double chromaValue,
+                                   double strengthValue, double neutralProtection, double smoothness,
+                                   double shadowColorValue, double highlightWarmthValue,
+                                   double keepLocalValue = 1.0, double matchLocalValue = 0.0)
+    {
+        LookTransfer look;
+        look.align = std::clamp(alignBrightness, 0.0, 1.0);
+        look.strength = std::clamp(strengthValue, 0.0, 1.0);
+        look.chromaAmount = std::clamp(chromaValue, 0.0, 2.0);
+        look.luminance = std::clamp(luminanceValue, 0.0, 2.0);
+        look.neutral = std::clamp(neutralProtection, 0.0, 1.0);
+        look.shadowColor = std::clamp(shadowColorValue, 0.0, 1.0);
+        look.highlightWarmth = std::clamp(highlightWarmthValue, 0.0, 2.0);
+        look.keepLocal = std::clamp(keepLocalValue, 0.0, 1.0);
+        look.matchLocal = std::clamp(matchLocalValue, 0.0, 1.0);
+        if (sourceImage.isNull() || referenceImage.isNull()) return look;
+
+        double srcHist[Bins]{};
+        double refHist[Bins]{};
+        double srcSumA[Bins]{};
+        double srcSumB[Bins]{};
+        double srcCount[Bins]{};
+        const auto accumulate = [](const QImage &image, double *hist, double *sumA, double *sumB, double *weight, bool weightedChroma, double *plainA, double *plainB, double *plainW) {
+            if (image.isNull() || image.width() < 2 || image.height() < 2) return;
+            const int stride = std::max(1, std::max(image.width(), image.height()) / 320);
+            for (int y = 0; y < image.height(); y += stride) {
+                for (int x = 0; x < image.width(); x += stride) {
+                    const QColor color = image.pixelColor(x, y);
+                    if (color.alpha() <= 0) continue;
+                    const Lab lab = rgbToOklab(color);
+                    const int bin = std::clamp(int(std::clamp(lab.l, 0.0, 1.0) * (Bins - 1) + 0.5), 0, Bins - 1);
+                    hist[bin] += 1.0;
+                    if (plainA) {
+                        plainA[bin] += lab.a;
+                        plainB[bin] += lab.b;
+                        plainW[bin] += 1.0;
+                    }
+                    if (!weightedChroma) continue;
+                    const double chroma = std::hypot(lab.a, lab.b);
+                    // Deepest pixels keep their own colour. Chroma weighting only
+                    // takes over once lightness leaves the shadow tail, so a black
+                    // crevice is not replaced by a brighter red beside it.
+                    const double tone = std::clamp(lab.l / 0.22, 0.0, 1.0);
+                    const double vivid = 0.015 + chroma * chroma;
+                    const double w = (1.0 - tone) + tone * vivid;
+                    sumA[bin] += lab.a * w;
+                    sumB[bin] += lab.b * w;
+                    weight[bin] += w;
+                }
+            }
+        };
+        accumulate(sourceImage, srcHist, nullptr, nullptr, nullptr, false, srcSumA, srcSumB, srcCount);
+        accumulate(referenceImage, refHist, nullptr, nullptr, nullptr, false, nullptr, nullptr, nullptr);
+
+        const auto blur = [](double *values) {
+            double copy[Bins];
+            for (int i = 0; i < Bins; ++i) copy[i] = values[i];
+            for (int i = 0; i < Bins; ++i) {
+                const double left = copy[std::max(0, i - 1)];
+                const double right = copy[std::min(Bins - 1, i + 1)];
+                values[i] = left * 0.25 + copy[i] * 0.5 + right * 0.25;
+            }
+        };
+        const int passes = std::clamp(int(std::lround(1.0 + smoothness * 4.0)), 1, 5);
+        for (int pass = 0; pass < passes; ++pass) {
+            blur(srcHist);
+            blur(refHist);
+        }
+
+        double srcSum = 0.0;
+        double refSum = 0.0;
+        for (int i = 0; i < Bins; ++i) {
+            srcSum += srcHist[i];
+            refSum += refHist[i];
+            look.srcCdf[i] = srcSum;
+            look.refCdf[i] = refSum;
+        }
+        blur(srcSumA);
+        blur(srcSumB);
+        blur(srcCount);
+        for (int i = 0; i < Bins; ++i) {
+            if (srcCount[i] > 1e-8) {
+                look.srcMeanA[i] = srcSumA[i] / srcCount[i];
+                look.srcMeanB[i] = srcSumB[i] / srcCount[i];
+            }
+        }
+        int srcLast = -1;
+        for (int i = 0; i < Bins; ++i) {
+            if (srcCount[i] > 1e-8) srcLast = i;
+            else if (srcLast >= 0) {
+                look.srcMeanA[i] = look.srcMeanA[srcLast];
+                look.srcMeanB[i] = look.srcMeanB[srcLast];
+            }
+        }
+        int srcFirst = -1;
+        for (int i = 0; i < Bins; ++i) if (srcCount[i] > 1e-8) { srcFirst = i; break; }
+        if (srcFirst > 0) {
+            for (int i = 0; i < srcFirst; ++i) {
+                look.srcMeanA[i] = look.srcMeanA[srcFirst];
+                look.srcMeanB[i] = look.srcMeanB[srcFirst];
+            }
+        }
+
+        bool hasTone[Bins]{};
+        if (!referenceImage.isNull() && referenceImage.width() >= 2 && referenceImage.height() >= 2) {
+            double hueA[HueBins][Bins]{};
+            double hueB[HueBins][Bins]{};
+            double hueN[HueBins][Bins]{};
+            const int stride = std::max(1, std::max(referenceImage.width(), referenceImage.height()) / 320);
+            for (int y = 0; y < referenceImage.height(); y += stride) {
+                for (int x = 0; x < referenceImage.width(); x += stride) {
+                    const QColor color = referenceImage.pixelColor(x, y);
+                    if (color.alpha() <= 0) continue;
+                    const Lab lab = rgbToOklab(color);
+                    if (std::hypot(lab.a, lab.b) < 0.02) continue;
+                    const int bin = std::clamp(int(std::clamp(lab.l, 0.0, 1.0) * (Bins - 1) + 0.5), 0, Bins - 1);
+                    const int hue = hueIndex(lab.a, lab.b);
+                    hueA[hue][bin] += lab.a;
+                    hueB[hue][bin] += lab.b;
+                    hueN[hue][bin] += 1.0;
+                }
+            }
+            for (int bin = 0; bin < Bins; ++bin) {
+                int bestHue = -1;
+                double bestN = 0.0;
+                for (int hue = 0; hue < HueBins; ++hue) {
+                    if (hueN[hue][bin] > bestN) {
+                        bestN = hueN[hue][bin];
+                        bestHue = hue;
+                    }
+                }
+                if (bestHue < 0 || bestN < 2.0) continue;
+                hasTone[bin] = true;
+                look.chromaA[bin] = hueA[bestHue][bin] / bestN;
+                look.chromaB[bin] = hueB[bestHue][bin] / bestN;
+                for (int hue = 0; hue < HueBins; ++hue) {
+                    // A sub colour only has to be a few percent of this lightness.
+                    // The old fifth-of-the-winner gate dropped the foliage in a blue scene.
+                    if (hue == bestHue || hueN[hue][bin] < 3.0 || hueN[hue][bin] * 25.0 < bestN) continue;
+                    look.accentA[hue][bin] = hueA[hue][bin] / hueN[hue][bin];
+                    look.accentB[hue][bin] = hueB[hue][bin] / hueN[hue][bin];
+                    look.accentW[hue][bin] = hueN[hue][bin];
+                }
+            }
+        }
+        int prevTone = -1;
+        for (int bin = 0; bin < Bins; ++bin) {
+            if (!hasTone[bin]) continue;
+            if (prevTone >= 0) {
+                for (int gap = prevTone + 1; gap < bin; ++gap) {
+                    const double f = double(gap - prevTone) / double(bin - prevTone);
+                    look.chromaA[gap] = look.chromaA[prevTone] * (1.0 - f) + look.chromaA[bin] * f;
+                    look.chromaB[gap] = look.chromaB[prevTone] * (1.0 - f) + look.chromaB[bin] * f;
+                }
+            }
+            prevTone = bin;
+        }
+        if (prevTone >= 0) {
+            int firstTone = 0;
+            while (firstTone < Bins && !hasTone[firstTone]) ++firstTone;
+            for (int bin = 0; bin < firstTone; ++bin) {
+                look.chromaA[bin] = look.chromaA[firstTone];
+                look.chromaB[bin] = look.chromaB[firstTone];
+            }
+            for (int bin = prevTone + 1; bin < Bins; ++bin) {
+                look.chromaA[bin] = look.chromaA[prevTone];
+                look.chromaB[bin] = look.chromaB[prevTone];
+            }
+        }
+
+        look.valid = srcSum > 16.0 && refSum > 16.0;
+        return look;
+    }
+
+    static int hueIndex(double a, double b)
+    {
+        const double turns = (std::atan2(b, a) + 3.14159265358979323846) / (2.0 * 3.14159265358979323846);
+        int index = int(turns * HueBins);
+        if (index < 0) index = 0;
+        if (index >= HueBins) index = HueBins - 1;
+        return index;
+    }
+
+    static double cdfAt(const double *cdf, double lightness)
+    {
+        const double pos = std::clamp(lightness, 0.0, 1.0) * (Bins - 1);
+        const int i = std::min(int(pos), Bins - 2);
+        const double f = pos - i;
+        return cdf[i] * (1.0 - f) + cdf[i + 1] * f;
+    }
+
+    static double invertCdf(const double *cdf, double p)
+    {
+        if (cdf[Bins - 1] <= 1e-8) return std::clamp(p, 0.0, 1.0);
+        p = std::clamp(p, 0.0, cdf[Bins - 1]);
+        int i = 0;
+        while (i < Bins - 2 && cdf[i + 1] < p) ++i;
+        const double span = cdf[i + 1] - cdf[i];
+        const double f = span > 1e-8 ? (p - cdf[i]) / span : 0.0;
+        return std::clamp((i + f) / double(Bins - 1), 0.0, 1.0);
+    }
+
+    double matchLightness(double lightness) const
+    {
+        if (align <= 0.0 || srcCdf[Bins - 1] <= 1e-8 || refCdf[Bins - 1] <= 1e-8) return lightness;
+        const double percentile = cdfAt(srcCdf, lightness) / srcCdf[Bins - 1];
+        const double matched = invertCdf(refCdf, percentile * refCdf[Bins - 1]);
+        const double aligned = lightness + (matched - lightness) * align;
+        // Luminance is an extra exposure on top of the histogram match. 0 leaves it alone.
+        return std::clamp(aligned + (luminance * 0.12), 0.0, 1.0);
+    }
+
+    Lab chromaAt(double lightness) const
+    {
+        const double pos = std::clamp(lightness, 0.0, 1.0) * (Bins - 1);
+        const int i = std::min(int(pos), Bins - 2);
+        const double f = pos - i;
+        return {lightness, chromaA[i] * (1.0 - f) + chromaA[i + 1] * f, chromaB[i] * (1.0 - f) + chromaB[i + 1] * f};
+    }
+
+    Lab sourceMeanAt(double lightness) const
+    {
+        const double pos = std::clamp(lightness, 0.0, 1.0) * (Bins - 1);
+        const int i = std::min(int(pos), Bins - 2);
+        const double f = pos - i;
+        return {lightness, srcMeanA[i] * (1.0 - f) + srcMeanA[i + 1] * f, srcMeanB[i] * (1.0 - f) + srcMeanB[i + 1] * f};
+    }
+
+    Lab gradeAt(double mappedL, const Lab &value) const
+    {
+        const Lab main = chromaAt(mappedL);
+        const Lab srcMean = sourceMeanAt(value.l);
+        const double dev = std::hypot(value.a - srcMean.a, value.b - srcMean.b);
+        const double t = std::clamp((dev - 0.035) / 0.05, 0.0, 1.0);
+        const double mix = t * t * (3.0 - 2.0 * t);
+        if (mix <= 0.0 || std::hypot(value.a, value.b) < 0.03) return main;
+        const int hue = hueIndex(value.a, value.b);
+        const int center = std::clamp(int(std::clamp(mappedL, 0.0, 1.0) * (Bins - 1) + 0.5), 0, Bins - 1);
+        double best = 1.0e9;
+        double accentAFound = main.a;
+        double accentBFound = main.b;
+        bool found = false;
+        for (int dl = -4; dl <= 4; ++dl) {
+            const int bin = center + dl;
+            if (bin < 0 || bin >= Bins) continue;
+            for (int dh = -1; dh <= 1; ++dh) {
+                const int h = (hue + dh + HueBins) % HueBins;
+                if (accentW[h][bin] < 2.0) continue;
+                const double score = std::abs(dh) + std::abs(dl) * 0.35;
+                if (score < best) {
+                    best = score;
+                    accentAFound = accentA[h][bin];
+                    accentBFound = accentB[h][bin];
+                    found = true;
+                }
+            }
+        }
+        if (!found) return main;
+        return {mappedL, main.a + (accentAFound - main.a) * mix, main.b + (accentBFound - main.b) * mix};
+    }
+
+    bool accentNear(double mappedL, double da, double db, double &outA, double &outB) const
+    {
+        const int center = std::clamp(int(std::clamp(mappedL, 0.0, 1.0) * (Bins - 1) + 0.5), 0, Bins - 1);
+        const bool hasDir = std::hypot(da, db) > 1e-4;
+        const int hue = hasDir ? hueIndex(da, db) : 0;
+        double strongScore = -1.0;
+        double strongA = 0.0;
+        double strongB = 0.0;
+        bool haveStrong = false;
+        double hueScore = 1.0e9;
+        double hueA = 0.0;
+        double hueB = 0.0;
+        bool haveHue = false;
+        for (int dl = -10; dl <= 10; ++dl) {
+            const int bin = center + dl;
+            if (bin < 0 || bin >= Bins) continue;
+            for (int h = 0; h < HueBins; ++h) {
+                const double w = accentW[h][bin];
+                if (w < 3.0) continue;
+                const double near = w / (1.0 + std::abs(dl) * 0.35);
+                if (near > strongScore) {
+                    strongScore = near;
+                    strongA = accentA[h][bin];
+                    strongB = accentB[h][bin];
+                    haveStrong = true;
+                }
+                if (!hasDir) continue;
+                int dh = std::abs(h - hue);
+                if (dh > HueBins / 2) dh = HueBins - dh;
+                // Only a genuinely similar hue wins. Otherwise the strongest
+                // reference sub colour is used, so a warm source colour can
+                // still land on green foliage.
+                if (dh > 1) continue;
+                const double score = dh + std::abs(dl) * 0.3;
+                if (score < hueScore) {
+                    hueScore = score;
+                    hueA = accentA[h][bin];
+                    hueB = accentB[h][bin];
+                    haveHue = true;
+                }
+            }
+        }
+        if (haveHue) {
+            outA = hueA;
+            outB = hueB;
+            return true;
+        }
+        if (haveStrong) {
+            outA = strongA;
+            outB = strongB;
+            return true;
+        }
+        return false;
+    }
+
+    Lab map(Lab value) const
+    {
+        const double mappedL = matchLightness(value.l);
+        const Lab main = chromaAt(mappedL);
+        const Lab srcMean = sourceMeanAt(value.l);
+        const double keep = std::clamp(keepLocal, 0.0, 1.0);
+        const double match = std::clamp(matchLocal, 0.0, 1.0);
+        const double shadowT = std::clamp(mappedL / 0.4, 0.0, 1.0);
+        const double shadow = shadowColor + (1.0 - shadowColor) * shadowT * shadowT * (3.0 - 2.0 * shadowT);
+        const double highlight = std::clamp((mappedL - 0.6) / 0.35, 0.0, 1.0);
+        const double warmth = main.b > 0 ? 1.0 + highlight * (highlightWarmth - 1.0) : 1.0;
+        const double sourceChroma = std::hypot(value.a, value.b);
+        const double protect = 1.0 - neutral * std::clamp((0.075 - sourceChroma) / 0.075, 0.0, 1.0);
+        const double amount = std::clamp(chromaAmount * strength * protect * shadow, 0.0, 2.0);
+        const double da = value.a - srcMean.a;
+        const double db = value.b - srcMean.b;
+        const double dev = std::hypot(da, db);
+        // Source sub colours in a flat photo sit only a little way off the mean.
+        // Full strength by ~0.02 OKLab, which is the top of that spread.
+        const double depart = std::clamp((dev - 0.008) / 0.012, 0.0, 1.0);
+        const double presence = depart * depart * (3.0 - 2.0 * depart);
+        constexpr double gain = 2.0;
+        double srcA = da * gain;
+        double srcB = db * gain;
+        double srcMag = std::hypot(srcA, srcB);
+        if (srcMag > 0.22) {
+            srcA *= 0.22 / srcMag;
+            srcB *= 0.22 / srcMag;
+        }
+        double offA = srcA * keep;
+        double offB = srcB * keep;
+        double accentAValue = 0.0;
+        double accentBValue = 0.0;
+        if (match > 0.0 && presence > 0.0 && accentNear(mappedL, da, db, accentAValue, accentBValue)) {
+            double refA = accentAValue - main.a;
+            double refB = accentBValue - main.b;
+            const double refMag = std::hypot(refA, refB);
+            if (refMag > 0.008) {
+                const double take = match * presence;
+                offA += (refA - offA) * take;
+                offB += (refB - offB) * take;
+            }
+        }
+        return {mappedL,
+                value.a + (main.a * warmth - value.a) * amount + offA,
+                value.b + (main.b * warmth - value.b) * amount + offB};
+    }
+};
+
+inline Lut buildLookLut(const LookTransfer &look)
+{
+    Lut lut;
+    if (!look.valid) return lut;
+    for (int r = 0; r < Lut::Size; ++r) {
+        for (int g = 0; g < Lut::Size; ++g) {
+            for (int b = 0; b < Lut::Size; ++b) {
+                const QColor input = QColor::fromRgbF(double(r) / (Lut::Size - 1), double(g) / (Lut::Size - 1), double(b) / (Lut::Size - 1));
+                const Lab mapped = look.map(rgbToOklab(input));
+                const QColor output = oklabToRgb(mapped);
+                lut.values[Lut::index(r, g, b, 0)] = float(output.redF());
+                lut.values[Lut::index(r, g, b, 1)] = float(output.greenF());
+                lut.values[Lut::index(r, g, b, 2)] = float(output.blueF());
+            }
+        }
+    }
+    lut.valid = true;
+    return lut;
+}
+
 inline Lut buildLut(const std::array<Pair, 4> &pairs, double luminance,
                     double chroma, double strength, double neutralProtection,
                     double smoothness, double shadowColor = 1.0,
-                    double highlightWarmth = 1.0)
+                    double highlightWarmth = 1.0,
+                    bool alignBrightness = true,
+                    const LightnessStats &sourceLightness = {},
+                    const LightnessStats &referenceLightness = {})
 {
     Lut lut;
+    const bool useAlign = alignBrightness && sourceLightness.valid && referenceLightness.valid;
     std::array<Lab, 4> source{}, delta{};
     int count = 0;
     for (int i = 0; i < 4; ++i) {
         if (!pairs[i].valid) continue;
         source[count] = rgbToOklab(pairs[i].source);
+        if (useAlign) {
+            // Match overall brightness first so sample deltas mostly carry colour.
+            source[count].l = alignLightness(source[count].l, sourceLightness, referenceLightness);
+        }
         const Lab target = rgbToOklab(pairs[i].target);
         delta[count] = {target.l - source[count].l, target.a - source[count].a, target.b - source[count].b};
         ++count;
@@ -128,13 +590,22 @@ inline Lut buildLut(const std::array<Pair, 4> &pairs, double luminance,
     if (count < 2) return lut;
     const double sigma = std::clamp(0.025 + smoothness * 0.28, 0.025, 0.5);
     const double sigma2 = 2.0 * sigma * sigma;
+    // Grade transfer is tonal: weight mainly by lightness so green/blue source
+    // pixels still pick up the matching tonal pair (full Lab distance left them
+    // under-weighted and produced a thin wash instead of the reference look).
+    constexpr double kChromaMetric = 0.22;
+    const auto pairDistance2 = [&](const Lab &lhs, const Lab &rhs) {
+        const double dl = lhs.l - rhs.l;
+        const double da = (lhs.a - rhs.a) * kChromaMetric;
+        const double db = (lhs.b - rhs.b) * kChromaMetric;
+        return dl * dl + da * da + db * db;
+    };
     // Solve the Gaussian RBF system so explicit samples are interpolation
     // constraints, rather than averaging different colour roles together.
     double system[4][7] = {};
     for (int i = 0; i < count; ++i) {
         for (int j = 0; j < count; ++j) {
-            const double dl=source[i].l-source[j].l, da=source[i].a-source[j].a, db=source[i].b-source[j].b;
-            system[i][j] = std::exp(-(dl*dl+da*da+db*db)/sigma2);
+            system[i][j] = std::exp(-pairDistance2(source[i], source[j]) / sigma2);
         }
         system[i][count]=delta[i].l;
         system[i][count+1]=delta[i].a;
@@ -163,12 +634,14 @@ inline Lut buildLut(const std::array<Pair, 4> &pairs, double luminance,
         for (int g = 0; g < Lut::Size; ++g) {
             for (int b = 0; b < Lut::Size; ++b) {
                 const QColor input = QColor::fromRgbF(double(r)/(Lut::Size-1), double(g)/(Lut::Size-1), double(b)/(Lut::Size-1));
-                const Lab x = rgbToOklab(input);
+                Lab x = rgbToOklab(input);
+                if (useAlign) {
+                    x.l = alignLightness(x.l, sourceLightness, referenceLightness);
+                }
                 Lab d{};
                 double nearest = 0.0;
                 for (int i = 0; i < count; ++i) {
-                    const double dl = x.l - source[i].l, da = x.a - source[i].a, db = x.b - source[i].b;
-                    const double weight = std::exp(-(dl*dl + da*da + db*db) / sigma2);
+                    const double weight = std::exp(-pairDistance2(x, source[i]) / sigma2);
                     d.l += weight * delta[i].l; d.a += weight * delta[i].a; d.b += weight * delta[i].b;
                     nearest = std::max(nearest, weight);
                 }

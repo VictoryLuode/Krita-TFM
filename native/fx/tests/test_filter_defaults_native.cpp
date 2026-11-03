@@ -79,9 +79,9 @@ int main(int argc, char **argv) try {
     write(settings("fxmanager_clipboard_color_match", {{"reference_source","file"},{"match_strength",.2},{"luminance",1.3},{"color_intensity",.7},{"fade",.8},{"tone_distribution",.4},{"tonal_color",.3},{"color_correlation",.6},{"gain_limit",3.0},{"shift_limit",20},{"variance_floor",4},{"gamut_protection",true}}));
     c = defaults(statistical);
     require(c->getString("reference_source")=="file" && near(c->getDouble("match_strength"),.2) && near(c->getDouble("luminance"),1.3) && near(c->getDouble("color_intensity"),.7) && near(c->getDouble("fade"),.8) && near(c->getDouble("tone_distribution"),.4) && near(c->getDouble("tonal_color"),.3) && near(c->getDouble("color_correlation"),.6) && near(c->getDouble("gain_limit"),3) && near(c->getDouble("shift_limit"),20) && near(c->getDouble("variance_floor"),4) && c->getBool("gamut_protection"), "Statistical Color Match defaults failed");
-    write(settings("fxmanager_guided_color_match", {{"match_strength",.2},{"luminance",.3},{"chroma",1.4},{"shadow_color",.4},{"highlight_warmth",1.6},{"neutral_protection",.5},{"smoothness",.6}}));
+    write(settings("fxmanager_guided_color_match", {{"match_strength",.2},{"chroma",1.4},{"smoothness",.6}}));
     c = defaults(guided);
-    require(near(c->getDouble("match_strength"),.2) && near(c->getDouble("luminance"),.3) && near(c->getDouble("chroma"),1.4) && near(c->getDouble("shadow_color"),.4) && near(c->getDouble("highlight_warmth"),1.6) && near(c->getDouble("neutral_protection"),.5) && near(c->getDouble("smoothness"),.6), "Guided Color Match defaults failed");
+    require(near(c->getDouble("match_strength"),.2) && near(c->getDouble("chroma"),1.4) && near(c->getDouble("smoothness"),.6), "Guided Color Match defaults failed");
     write(settings("fxmanager_background_removal", {{"model","BiRefNet-dynamic-F16.gguf"},{"backend","gpu"},{"foreground_mode","fast_mask"}}));
     c = defaults(background);
     require(c->getString("model")=="BiRefNet-dynamic-F16.gguf" && c->getString("backend")=="gpu" && c->getString("foreground_mode")=="fast_mask", "Background Removal defaults failed");

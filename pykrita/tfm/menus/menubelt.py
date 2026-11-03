@@ -29,6 +29,7 @@ from .qtcompat import (
     QKeySequenceEdit,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QObject,
     QPainter,
     QPalette,
@@ -38,6 +39,7 @@ from .qtcompat import (
     QSize,
     QTextEdit,
     Qt,
+    QtWidgets,
     QWidget,
     QWidgetAction,
     event_key_sequence,
@@ -265,10 +267,32 @@ class MenuBeltExtension(Extension):
         color_range_action = window.createAction(
             "tfm_color_range", "Advance Selection...", "Select")
         color_range_action.triggered.connect(self.open_color_range)
-        from ..manager import color_range_enabled
+        from ..manager import (
+            color_range_enabled, convert_color_space_enabled, assets_enabled, search_enabled)
         color_range_action.setVisible(color_range_enabled())
         color_range_action.setEnabled(color_range_enabled())
 
+        assets_action = window.createAction("tfm_assets", "Asset Library", "")
+        assets_action.triggered.connect(self.show_assets)
+        assets_action.setVisible(assets_enabled())
+        assets_action.setEnabled(assets_enabled())
+        save_asset_action = window.createAction("tfm_save_asset", "Save Asset", "")
+        save_asset_action.triggered.connect(self.save_asset)
+        save_asset_action.setVisible(assets_enabled())
+        save_asset_action.setEnabled(assets_enabled())
+        search_action = window.createAction("tfm_image_search", "Quick Image Search", "")
+        search_action.triggered.connect(self.show_image_search)
+        search_action.setVisible(search_enabled())
+        search_action.setEnabled(search_enabled())
+        convert_action = window.createAction(
+            "tfm_convert_color_space", "Convert All Layers to Default Color Space", "")
+        convert_action.triggered.connect(self.convert_layers_color_space)
+        convert_action.setVisible(convert_color_space_enabled())
+        convert_action.setEnabled(convert_color_space_enabled())
+        tools_menu.addAction(assets_action)
+        tools_menu.addAction(save_asset_action)
+        tools_menu.addAction(search_action)
+        tools_menu.addAction(convert_action)
         tools_menu.addAction(edit_action)
 
         self._windows.append({
@@ -606,7 +630,7 @@ class MenuBeltExtension(Extension):
         sep_act = QWidgetAction(menu)
         sep_act.setDefaultWidget(_SeparatorRow())
         menu.addAction(sep_act)
-        edit_act = menu.addAction("Configure MenuBelt…")
+        edit_act = menu.addAction("Configure TFM…")
         edit_act.triggered.connect(self.open_editor)
         self._force_close_on_trigger(menu)
         return menu
@@ -848,6 +872,57 @@ class MenuBeltExtension(Extension):
         except (IndexError, RuntimeError):
             return None
 
+    def show_assets(self, *_):
+        from ..manager import assets_enabled
+        self._show_docker("tfm_assets", "Asset Library", assets_enabled())
+
+    def save_asset(self, *_):
+        from ..manager import assets_enabled, _assets_docks
+        if not assets_enabled():
+            return
+        for dock in _assets_docks():
+            saver = getattr(dock, "_save_active_asset", None)
+            if saver is not None:
+                saver()
+                return
+        self.show_assets()
+        for dock in _assets_docks():
+            saver = getattr(dock, "_save_active_asset", None)
+            if saver is not None:
+                saver()
+                return
+
+    def show_image_search(self, *_):
+        from ..manager import search_enabled
+        self._show_docker("tfm_quick_image_search", "Quick Image Search", search_enabled())
+
+    def _show_docker(self, object_name, title, enabled):
+        window = Krita.instance().activeWindow()
+        if window is None:
+            return
+        host = window.qwindow()
+        if not enabled:
+            QMessageBox.information(
+                host,
+                title,
+                "{} is turned off. Enable it under Tools, TFM, Configure TFM, Tools.".format(title),
+            )
+            return
+        dock = host.findChild(QtWidgets.QDockWidget, object_name)
+        if dock is None:
+            QMessageBox.information(
+                host,
+                title,
+                "The {} panel is not available yet. Restart Krita, then use Tools, TFM, {}.".format(title, title),
+            )
+            return
+        toggle = dock.toggleViewAction()
+        if toggle is not None:
+            toggle.setVisible(True)
+            toggle.setEnabled(True)
+        dock.setVisible(True)
+        dock.raise_()
+
     def open_editor(self, *_):
         from ..manager import show_manager
         show_manager(QApplication.activeWindow())
@@ -855,4 +930,16 @@ class MenuBeltExtension(Extension):
     def open_color_range(self, *_):
         from ..color_range import open_color_range
         open_color_range()
+
+    def convert_layers_color_space(self, *_):
+        from ..color_space import run_convert
+        from ..manager import convert_color_space_enabled
+        if not convert_color_space_enabled():
+            QMessageBox.information(
+                self._active_window_widget(),
+                "Convert Layers",
+                "Layer Color Space is turned off. Enable it under Tools, TFM, Configure TFM, Tools.",
+            )
+            return
+        run_convert(self._active_window_widget())
 

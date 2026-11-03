@@ -181,7 +181,9 @@ class FxManagerDialog(QWidget):
         columns = QHBoxLayout()
         left = QVBoxLayout()
         filter_label = QLabel("Filters")
-        filter_label.setToolTip("Only catalog filters are listed. Use Add to Managed or Remove to manage entries.")
+        filter_label.setToolTip(
+            "Check a filter to register it in Krita's Filter menu (requires Save Filters, then restart Krita). "
+            "Uncheck to hide it after restart. Drag a filter onto another category header to move it.")
         left.addWidget(filter_label)
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search...")
@@ -195,18 +197,11 @@ class FxManagerDialog(QWidget):
         self._category_list.setDefaultDropAction((Qt.DropAction.MoveAction if PYQT6 else Qt.MoveAction))
         self._category_list.currentItemChanged.connect(self._category_selected)
         self._category_list.itemClicked.connect(self._toggle_category)
-        self._category_list.itemChanged.connect(self._managed_changed)
+        self._category_list.itemChanged.connect(self._enabled_changed)
         self._category_list.model().rowsMoved.connect(self._categories_moved)
         self._category_list.setContextMenuPolicy((Qt.ContextMenuPolicy.CustomContextMenu if PYQT6 else Qt.CustomContextMenu))
         self._category_list.customContextMenuRequested.connect(self._category_menu)
         left.addWidget(self._category_list, 1)
-        left_buttons = QHBoxLayout()
-        self._refresh = QPushButton("Refresh")
-        self._add = QPushButton("Add to Managed")
-        self._remove = QPushButton("Remove")
-        for button in (self._refresh, self._add, self._remove):
-            left_buttons.addWidget(button)
-        left.addLayout(left_buttons)
         middle = QVBoxLayout()
         middle.addWidget(QLabel("Filter Details"))
         self._detail = QTextBrowser()
@@ -236,15 +231,19 @@ class FxManagerDialog(QWidget):
         line.addWidget(self._save)
         root.addLayout(line)
 
-        self._refresh.clicked.connect(self._reload)
-        self._add.clicked.connect(self._add_selected)
-        self._remove.clicked.connect(self._remove_selected)
+    def _style_filter_item(self, item, enabled):
+        font = item.font()
+        font.setItalic(not enabled)
+        item.setFont(font)
+        item.setForeground(QColor("#9a9a9a") if not enabled else QColor("#eeeeee"))
 
     def _reload(self):
         selected_id = None
         current = self._category_list.currentItem()
         if current is not None and current.data(_ROLE) is not None:
             selected_id = current.data(_ROLE)
+        # Every catalog filter stays listed; the checkbox alone controls on/off.
+        self._managed = {entry["id"] for entry in FILTERS}
         try:
             self._rows = operations.inspect()
         except operations.RegistryQueryError as error:
@@ -256,7 +255,7 @@ class FxManagerDialog(QWidget):
                 self._category_list.blockSignals(blocked)
             self._show_selected()
             self._detail.setPlainText(
-                "{}\nRegistration status is unknown. Click Refresh to retry.".format(error)
+                "{}\nRegistration status is unknown. Reopen TFM to retry.".format(error)
             )
             return
         needle = self._search.text().strip().lower()
@@ -292,14 +291,20 @@ class FxManagerDialog(QWidget):
                 ident = row["id"]
                 if needle and needle not in name.lower() and needle not in row["label"].lower() and needle not in ident.lower():
                     continue
-                managed = ident in self._managed
-                item = QListWidgetItem("      " + (row["label"] if managed else "＋ " + row["label"]))
-                if not managed:
-                    item.setForeground(QColor("#9a9a9a"))
+                enabled = ident in self._enabled
+                item = QListWidgetItem(row["label"])
                 item.setData(_ROLE, ident)
                 item.setData(_ROLE + 1, name)
                 item.setToolTip(row["description"])
-                item.setFlags(item.flags() & ~item_is_user_checkable())
+                flags = item.flags() | item_is_user_checkable()
+                editable = getattr(Qt.ItemFlag, "ItemIsEditable", None)
+                if editable is None:
+                    editable = getattr(Qt, "ItemIsEditable", None)
+                if editable is not None:
+                    flags = flags & ~editable
+                item.setFlags(flags)
+                item.setCheckState(checked_state() if enabled else unchecked_state())
+                self._style_filter_item(item, enabled)
                 self._category_list.addItem(item)
                 item.setHidden(not expanded)
                 self._filter_items[ident] = item
@@ -385,41 +390,16 @@ class FxManagerDialog(QWidget):
             self._pending["filter_defaults"].pop(ident, None)
             self._show_parameters(ident)
 
-    def _managed_changed(self, item):
+    def _enabled_changed(self, item):
         ident = item.data(_ROLE)
-        if ident not in self._managed:
+        if ident is None:
             return
-        if item.checkState() == checked_state():
+        enabled = item.checkState() == checked_state()
+        if enabled:
             self._enabled.add(ident)
         else:
             self._enabled.discard(ident)
-
-    def _add_selected(self, _item=None):
-        item = self._category_list.currentItem()
-        if item is None or item.data(_ROLE) is None:
-            return
-        ident = item.data(_ROLE)
-        if ident in self._managed:
-            return
-        category = item.data(_ROLE + 1)
-        self._managed.add(ident)
-        self._enabled.add(ident)
-        if ident not in self._categories.setdefault(category, []):
-            self._categories[category].append(ident)
-        self._reload()
-        self._category_list.setCurrentItem(self._filter_items.get(ident))
-
-    def _remove_selected(self):
-        item = self._category_list.currentItem()
-        if item is None or item.data(_ROLE) not in self._managed:
-            return
-        ident = item.data(_ROLE)
-        target = item.data(_ROLE + 1)
-        self._managed.discard(ident)
-        self._enabled.discard(ident)
-        self._reload()
-        if target in self._category_items:
-            self._category_list.setCurrentItem(self._category_items[target])
+        self._style_filter_item(item, enabled)
 
     def _current_category(self):
         item = self._category_list.currentItem()
@@ -475,43 +455,37 @@ class FxManagerDialog(QWidget):
 
     def _category_menu(self, pos):
         item = self._category_list.itemAt(pos)
-        if item is None:
+        if item is None or item.data(_ROLE) is None:
             return
         self._category_list.setCurrentItem(item)
-        if item.data(_ROLE) is not None:
-            ident = item.data(_ROLE)
-            menu = QMenu(self)
-            if ident in self._managed:
-                remove = menu.addAction("Remove from Managed")
-                submenu = menu.addMenu("Move to category")
-                moves = {submenu.addAction(name): name for name in self._categories if name != item.data(_ROLE + 1)}
-                action = (menu.exec if PYQT6 else menu.exec_)(self._category_list.viewport().mapToGlobal(pos))
-                if action == remove:
-                    self._remove_selected()
-                elif action in moves:
-                    self._move_filter(ident, moves[action])
-            else:
-                add = menu.addAction("Add to Managed")
-                action = (menu.exec if PYQT6 else menu.exec_)(self._category_list.viewport().mapToGlobal(pos))
-                if action == add:
-                    self._add_selected()
+        ident = item.data(_ROLE)
+        menu = QMenu(self)
+        submenu = menu.addMenu("Move to category")
+        moves = {submenu.addAction(name): name for name in self._categories if name != item.data(_ROLE + 1)}
+        if not moves:
             return
-        return
+        action = (menu.exec if PYQT6 else menu.exec_)(self._category_list.viewport().mapToGlobal(pos))
+        if action in moves:
+            self._move_filter(ident, moves[action])
 
     def _filter_menu(self, pos):
         return self._category_menu(pos)
 
     def save_filters(self):
+        catalog_ids = {entry["id"] for entry in FILTERS}
+        self._managed = set(catalog_ids)
         self._pending.update({
-            "managed_filters": list(dict.fromkeys(ident for ids in self._categories.values() for ident in ids if ident in self._managed)),
+            "managed_filters": list(dict.fromkeys(
+                ident for ids in self._categories.values() for ident in ids if ident in catalog_ids)),
             "filter_categories": {name: list(ids) for name, ids in self._categories.items()},
-            "enabled_filters": list(self._enabled),
+            "enabled_filters": [ident for ident in self._enabled if ident in catalog_ids],
         })
         values = {key: self._pending[key] for key in
                   ("managed_filters", "filter_categories", "enabled_filters", "filter_defaults")}
         if settings.save(values):
             self._saved_filter_state = self._filter_state()
-            self._status.setText("Filter settings saved.")
+            self._status.setText(
+                "Filter settings saved. Restart Krita for enable/disable changes to apply in the Filter menu.")
         else:
             self._status.setText("Could not save TFM filter settings.")
 

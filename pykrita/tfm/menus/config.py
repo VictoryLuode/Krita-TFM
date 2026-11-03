@@ -16,7 +16,38 @@ import traceback
 from krita import Krita
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-_RESOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(PLUGIN_DIR)))
+
+
+def _kritarc_resource_directory():
+    """Same ResourceDirectory rule as filters/settings.py and kritatfm.dll."""
+    base = os.environ.get("KLOCALAPPDATA") or os.environ.get("LOCALAPPDATA") or ""
+    path = os.path.join(base, "kritarc") if base else ""
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                key, separator, value = line.partition("=")
+                if separator and key.strip() == "ResourceDirectory":
+                    return value.strip()
+    except OSError:
+        return ""
+    return ""
+
+
+def _plugin_resource_root():
+    # .../pykrita/tfm/menus -> resource root that contains pykrita/
+    return os.path.dirname(os.path.dirname(os.path.dirname(PLUGIN_DIR)))
+
+
+def _resource_root():
+    kritarc = _kritarc_resource_directory()
+    if kritarc:
+        return kritarc
+    return _plugin_resource_root()
+
+
+_RESOURCE_ROOT = _resource_root()
 _TFM_DATA_DIR = os.path.join(_RESOURCE_ROOT, "TFM")
 _LEGACY_MENU_DIR = os.path.join(_RESOURCE_ROOT, "pykrita", "menubelt")
 CONFIG_FILE = os.path.join(_TFM_DATA_DIR, "config.json")
@@ -47,25 +78,47 @@ def _normalise_action_id(aid):
     return aid
 
 
+def _rewrite_legacy_menu_text(raw_text):
+    for prefix in _LEGACY_ACTION_PREFIXES:
+        raw_text = raw_text.replace(prefix, "krita_filter_tfm_")
+    for old, new in _LEGACY_ACTION_EXACT.items():
+        raw_text = raw_text.replace('"%s"' % old, '"%s"' % new)
+    return raw_text
+
+
 def _migrate_legacy_config():
+    """Copy menubelt config into TFM/config.json. Never use os.link (fails on Windows)."""
     if os.path.exists(CONFIG_FILE) or not os.path.isfile(LEGACY_CONFIG_FILE):
         return
     temporary = None
     try:
         directory = os.path.dirname(CONFIG_FILE)
         os.makedirs(directory, exist_ok=True)
+        text = open(LEGACY_CONFIG_FILE, "r", encoding="utf-8").read()
+        text = _rewrite_legacy_menu_text(text)
+        json.loads(text)  # refuse corrupt legacy files
         fd, temporary = tempfile.mkstemp(prefix=".tfm-migrate-", suffix=".tmp", dir=directory)
-        with os.fdopen(fd, "wb") as target, open(LEGACY_CONFIG_FILE, "rb") as source:
-            target.write(source.read())
-        os.link(temporary, CONFIG_FILE)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            target.write(text)
+        os.replace(temporary, CONFIG_FILE)
+        temporary = None
+        print("tfm: migrated menu config from menubelt -> TFM/config.json")
+    except (OSError, ValueError, UnicodeError) as error:
+        print("tfm: menu config migrate failed: %s" % error)
     finally:
         if temporary:
             try:
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _load_menu_json_path(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("menu configuration must be an object")
+    return data
 
 # The authoritative LAYER blend-mode ids (from KoCompositeOpRegistry.h). These are
 # the values Node.setBlendingMode() accepts — NOT brush blend modes.
@@ -349,18 +402,21 @@ def _serialize_lists(lists):
 def load_config():
     """Return (popup_shortcut, lists). Lists items are [{"id","label"}]. Falls back to defaults."""
     _migrate_legacy_config()
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return DEFAULT_POPUP_SHORTCUT, [dict(lst) for lst in DEFAULT_LISTS]
+    for path in (CONFIG_FILE, LEGACY_CONFIG_FILE):
+        try:
+            data = _load_menu_json_path(path)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, UnicodeError) as error:
+            print("tfm: could not read menu config %s: %s" % (path, error))
+            continue
         raw_lists = data.get("lists")
         lists = _clean_lists(raw_lists)
         if isinstance(raw_lists, list) and (not raw_lists or lists):
             popup = data.get("popup_shortcut", "") or ""
+            if path == LEGACY_CONFIG_FILE:
+                print("tfm: using legacy menubelt config until TFM/config.json is created")
             return popup, lists
-    except (OSError, ValueError):
-        pass
     return DEFAULT_POPUP_SHORTCUT, [dict(lst) for lst in DEFAULT_LISTS]
 
 
@@ -398,18 +454,20 @@ def save_config(popup_shortcut, lists):
 # ---------- Shortcut overrides (Krita bindings MenuBelt took over) ----------
 def _read_raw(strict=False):
     _migrate_legacy_config()
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError("menu configuration must be an object")
-        return data
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError, UnicodeError):
-        if strict:
-            raise
-        return {}
+    errors = []
+    for path in (CONFIG_FILE, LEGACY_CONFIG_FILE):
+        try:
+            return _load_menu_json_path(path)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, UnicodeError) as error:
+            errors.append(error)
+            if strict and path == CONFIG_FILE and not os.path.isfile(LEGACY_CONFIG_FILE):
+                raise
+            continue
+    if strict and errors:
+        raise errors[0]
+    return {}
 
 
 def _write_raw(data):
@@ -819,7 +877,7 @@ def _report(title, text):
         from .qtcompat import QMessageBox, exec_
         box = QMessageBox()
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("MenuBelt")
+        box.setWindowTitle("TFM")
         box.setText(title)
         box.setInformativeText(text)
         exec_(box)

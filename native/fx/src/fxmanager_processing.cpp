@@ -7,8 +7,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QCoreApplication>
 #include <QSaveFile>
 #include <QDateTime>
@@ -154,6 +156,31 @@ void reportBackend(const QString &filter, const QString &actual, const QString &
     }
 }
 
+bool filterEnabled(const QString &filterId)
+{
+    if (filterId.isEmpty()) return true;
+    migrateLegacySettings();
+    QFile file(settingsReadPath());
+    if (!file.open(QIODevice::ReadOnly)) return true;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    const QJsonValue enabledValue = root.value(QStringLiteral("enabled_filters"));
+    if (!enabledValue.isArray()) return true; // missing key → all filters on (legacy)
+    QSet<QString> enabled;
+    const QJsonArray array = enabledValue.toArray();
+    for (const QJsonValue &entry : array) {
+        if (entry.isString()) enabled.insert(entry.toString());
+    }
+    if (enabled.contains(filterId)) return true;
+    if (filterId.startsWith(QLatin1String("tfm_"))) {
+        const QString legacy = QStringLiteral("fxmanager_") + filterId.mid(4);
+        if (enabled.contains(legacy)) return true;
+    } else if (filterId.startsWith(QLatin1String("fxmanager_"))) {
+        const QString tfm = QStringLiteral("tfm_") + filterId.mid(10);
+        if (enabled.contains(tfm)) return true;
+    }
+    return false;
+}
+
 void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP config)
 {
     if (!config) return;
@@ -200,7 +227,7 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
     } else if (filterId == QLatin1String("tfm_clipboard_color_match") || filterId == QLatin1String("fxmanager_clipboard_color_match")) {
         choice("reference_source",{"clipboard","file"}); number("match_strength",0,1); number("luminance",0,2); number("color_intensity",0,2); number("fade",0,1); number("tone_distribution",0,1); number("tonal_color",0,1); number("color_correlation",0,1); number("gain_limit",1,8); number("shift_limit",0,100); number("variance_floor",0.1,10); boolean("gamut_protection");
     } else if (filterId == QLatin1String("tfm_guided_color_match") || filterId == QLatin1String("fxmanager_guided_color_match")) {
-        number("match_strength",0,1); number("luminance",0,1); number("chroma",0,2); number("shadow_color",0,1); number("highlight_warmth",0,2); number("neutral_protection",0,1); number("smoothness",0,1);
+        number("align_brightness",0,1); number("match_strength",0,1); number("chroma",0,2); number("keep_local",0,1); number("match_local",0,1); number("smoothness",0,1);
     } else if (filterId == QLatin1String("tfm_background_removal") || filterId == QLatin1String("fxmanager_background_removal")) {
         choice("model",{"BiRefNet-lite-F16.gguf","BiRefNet-dynamic-F16.gguf"}); choice("backend",{"cpu","gpu"}); choice("output_mode",{"cutout","grayscale_mask"}); choice("foreground_mode",{"fast_mask","refined_foreground"}); number("preserve_foreground",0,100,true); number("mask_contrast",-100,100,true);
     } else if (filterId == QLatin1String("tfm_halation") || filterId == QLatin1String("fxmanager_halation")) {

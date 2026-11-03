@@ -62,6 +62,7 @@ QSpinBox = QtWidgets.QSpinBox
 QAbstractItemView = QtWidgets.QAbstractItemView
 QApplication = QtWidgets.QApplication
 QByteArray = QtCore.QByteArray
+QMimeData = QtCore.QMimeData
 QCheckBox = QtWidgets.QCheckBox
 QComboBox = QtWidgets.QComboBox
 QDialog = QtWidgets.QDialog

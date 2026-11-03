@@ -20,9 +20,12 @@ KisFilterConfigurationSP KisFilterGuidedColorMatch::defaultConfiguration(KisReso
 {
     auto config=factoryConfiguration(resources);
     config->setProperty("guided_version",1);
+    config->setProperty("align_brightness",1.0);
     config->setProperty("match_strength",1.0);
     config->setProperty("luminance",0.0);
     config->setProperty("chroma",1.0);
+    config->setProperty("keep_local",1.0);
+    config->setProperty("match_local",0.0);
     config->setProperty("shadow_color",1.0);
     config->setProperty("highlight_warmth",1.0);
     config->setProperty("neutral_protection",0.0);

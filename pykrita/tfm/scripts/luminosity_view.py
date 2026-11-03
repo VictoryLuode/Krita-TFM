@@ -5,7 +5,7 @@ desaturate filter layer (method = Luminosity, ITU-R BT.709) on top of the
 current document, click it again to remove that layer. Nothing is painted into
 your layers, so the effect can be dropped at any time by deleting the layer.
 
-Injected by MenuBelt: krita / app, document / doc, window, view, layer / node.
+Injected by TFM: krita / app, document / doc, window, view, layer / node.
 Copy this file before editing if you want to keep the original around.
 """
 from krita import Selection
@@ -74,4 +74,4 @@ def toggle(doc):
 
 
 state = toggle(document)
-print("MenuBelt: %s \"%s\"" % (state, LAYER_NAME))
+print("TFM: %s \"%s\"" % (state, LAYER_NAME))

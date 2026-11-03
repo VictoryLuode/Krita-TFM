@@ -31,10 +31,12 @@ from .qtcompat import (
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
+    QByteArray,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QMimeData,
     QPalette,
     QPixmap,
     QPlainTextEdit,
@@ -52,6 +54,18 @@ from .qtcompat import (
     Qt,
     exec_,
 )
+
+MIME_MENU_ITEM = "application/x-tfm-menu-item"
+
+
+def _event_pos(event):
+    position = getattr(event, "position", None)
+    if position is not None:
+        try:
+            return position().toPoint()
+        except (AttributeError, TypeError):
+            pass
+    return event.pos()
 
 from .version import __version__
 
@@ -386,12 +400,185 @@ class _MenuItemDelegate(QStyledItemDelegate):
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
 
 
+class _MenuItemsList(QListWidget):
+    """Current-menu list: reorder, drop onto a submenu to nest, expose mime for crumbs.
+
+    Drops must accept CopyAction (not MoveAction). We rewrite the menu data and
+    rebuild the list ourselves; MoveAction would make Qt delete the source row
+    again after startDrag returns, so the item vanishes until the next refresh.
+    """
+
+    def __init__(self, dialog, parent=None):
+        super().__init__(parent)
+        self._dialog = dialog
+        self._drag_row = -1
+        self._nest_highlight = None
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+    def mimeTypes(self):
+        return [MIME_MENU_ITEM]
+
+    def mimeData(self, items):
+        mime = QMimeData()
+        if items:
+            row = self.row(items[0])
+            self._drag_row = row
+            mime.setData(MIME_MENU_ITEM, QByteArray(str(row).encode("ascii")))
+        return mime
+
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if item is None:
+            return
+        self._drag_row = self.row(item)
+        # Copy only: Move makes QAbstractItemView remove the source row after drop.
+        super().startDrag(Qt.DropAction.CopyAction)
+
+    def supportedDropActions(self):
+        return Qt.DropAction.CopyAction
+
+    def _source_row(self, event):
+        if self._drag_row >= 0:
+            return self._drag_row
+        raw = bytes(event.mimeData().data(MIME_MENU_ITEM)).decode("ascii", "ignore").strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return -1
+
+    @staticmethod
+    def _nest_zone(list_widget, item, pos):
+        """True when the pointer is over the middle of a submenu row (not its edges)."""
+        if item is None or item.data(ROLE_TYPE) != TYPE_MENU:
+            return False
+        rect = list_widget.visualItemRect(item)
+        if not rect.isValid():
+            return False
+        margin = max(6, rect.height() // 5)
+        return rect.top() + margin <= pos.y() <= rect.bottom() - margin
+
+    def _accept_copy(self, event):
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def _set_nest_highlight(self, item):
+        if item is self._nest_highlight:
+            return
+        if self._nest_highlight is not None:
+            self._nest_highlight.setBackground(QBrush())
+        self._nest_highlight = item
+        if item is not None:
+            item.setBackground(QBrush(QColor(82, 122, 159)))
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(MIME_MENU_ITEM):
+            self._accept_copy(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if not event.mimeData().hasFormat(MIME_MENU_ITEM):
+            self._set_nest_highlight(None)
+            event.ignore()
+            return
+        super().dragMoveEvent(event)
+        pos = _event_pos(event)
+        target = self.itemAt(pos)
+        self._set_nest_highlight(target if self._nest_zone(self, target, pos) else None)
+        self._accept_copy(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_nest_highlight(None)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._set_nest_highlight(None)
+        if not event.mimeData().hasFormat(MIME_MENU_ITEM):
+            event.ignore()
+            return
+        src = self._source_row(event)
+        if src < 0:
+            event.ignore()
+            return
+        pos = _event_pos(event)
+        target = self.itemAt(pos)
+        # Any item (command, brush, submenu, …) can drop into a submenu row.
+        if (self._nest_zone(self, target, pos)
+                and self._dialog._nest_item_into_submenu(src, self.row(target))):
+            self._accept_copy(event)
+            self._drag_row = -1
+            return
+        indicator = self.dropIndicatorPosition()
+        if self._dialog._reorder_menu_item(src, target, indicator):
+            self._accept_copy(event)
+        else:
+            event.ignore()
+        self._drag_row = -1
+
+
+class _PathCrumb(QPushButton):
+    """Breadcrumb that accepts a Current Menu item drop to move it up to that level."""
+
+    def __init__(self, dialog, depth, label, parent=None):
+        super().__init__(label, parent)
+        self._dialog = dialog
+        self._depth = depth
+        self.setFlat(True)
+        self.setAcceptDrops(True)
+        self.setToolTip("Click to open. Drop an item here to move it into this menu.")
+        self.clicked.connect(lambda _=False: dialog._go_to_depth(depth))
+
+    def _accept_copy(self, event):
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def _set_drop_style(self, active):
+        self.setStyleSheet("font-weight: bold; text-decoration: underline;" if active else "")
+
+    def dragEnterEvent(self, event):
+        if (event.mimeData().hasFormat(MIME_MENU_ITEM)
+                and self._depth < len(self._dialog.path) - 1):
+            self._set_drop_style(True)
+            self._accept_copy(event)
+        else:
+            self._set_drop_style(False)
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_style(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._set_drop_style(False)
+        if not event.mimeData().hasFormat(MIME_MENU_ITEM):
+            event.ignore()
+            return
+        raw = bytes(event.mimeData().data(MIME_MENU_ITEM)).decode("ascii", "ignore").strip()
+        try:
+            src = int(raw)
+        except ValueError:
+            event.ignore()
+            return
+        if self._dialog._move_item_to_path_depth(src, self._depth):
+            self._accept_copy(event)
+        else:
+            event.ignore()
+
+
 class _ScriptEditorDialog(QDialog):
     """Editor for one library script: name + Python code (with Save & Run)."""
 
     def __init__(self, parent=None, filename="", code=""):
         super().__init__(parent)
-        self.setWindowTitle("MenuBelt Script")
+        self.setWindowTitle("TFM Script")
         self.resize(760, 520)
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -413,7 +600,7 @@ class _ScriptEditorDialog(QDialog):
 
         hint = QLabel("Injected into the script: krita / app (the Krita instance), "
                       "document / doc, window, view, layer / node (the active node).\n"
-                      "Stored as <name>.py in the MenuBelt script library folder.")
+                      "Stored as <name>.py in the TFM script library folder.")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -435,11 +622,11 @@ class _ScriptEditorDialog(QDialog):
     def _save(self):
         name = self.name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "MenuBelt", "Give the script a name first.")
+            QMessageBox.warning(self, "TFM", "Give the script a name first.")
             return ""
         fn = write_script(name, self.code_edit.toPlainText())
         if not fn:
-            QMessageBox.warning(self, "MenuBelt", "Could not write the script file.")
+            QMessageBox.warning(self, "TFM", "Could not write the script file.")
             return ""
         return fn
 
@@ -500,8 +687,12 @@ class ListMenuDialog(QWidget):
     # ---------- Size (remembered) ----------
     def _apply_default_size(self):
         try:
-            w = Krita.instance().readSetting("menubelt", "dialog_width", "")
-            h = Krita.instance().readSetting("menubelt", "dialog_height", "")
+            app = Krita.instance()
+            w = app.readSetting("TFM", "dialog_width", "")
+            h = app.readSetting("TFM", "dialog_height", "")
+            if not (w and h):
+                w = app.readSetting("menubelt", "dialog_width", "")
+                h = app.readSetting("menubelt", "dialog_height", "")
             if w and h:
                 self.resize(int(w), int(h))
                 return
@@ -516,8 +707,8 @@ class ListMenuDialog(QWidget):
     def _persist_size(self):
         try:
             app = Krita.instance()
-            app.writeSetting("menubelt", "dialog_width", str(self.width()))
-            app.writeSetting("menubelt", "dialog_height", str(self.height()))
+            app.writeSetting("TFM", "dialog_width", str(self.width()))
+            app.writeSetting("TFM", "dialog_height", str(self.height()))
         except Exception:
             pass
 
@@ -597,12 +788,12 @@ class ListMenuDialog(QWidget):
         return {r.get("id") for recs in self._pending_overrides.values() for r in recs}
 
     def _ask_override(self, key, conflicts):
-        """Ask whether MenuBelt may take `key` over. True = override."""
+        """Ask whether TFM may take `key` over. True = override."""
         pending = self._pending_action_ids()
         rows = []
         for kind, label, owner in conflicts:
             if kind == "list":
-                rows.append("    \u2022 %s   (another MenuBelt menu)" % label)
+                rows.append("    \u2022 %s   (another TFM menu)" % label)
             elif owner.objectName() in pending:
                 rows.append("    \u2022 %s   (already being unbound)" % label)
             else:
@@ -763,16 +954,12 @@ class ListMenuDialog(QWidget):
         header_row.addLayout(self.crumb_row)
         header_row.addStretch()
         cm.addLayout(header_row)
-        self.items_list = QListWidget()
+        self.items_list = _MenuItemsList(self)
         self.items_list.setObjectName("menuItems")
         self.items_list.itemDoubleClicked.connect(self._on_item_double_click)
-        self.items_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.items_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.items_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.items_list.setUniformItemSizes(False)
         self.items_list.setSpacing(0)
         self.items_list.setItemDelegate(_MenuItemDelegate(self.items_list))
-        self.items_list.model().rowsMoved.connect(self._sync_items_order)
         cm.addWidget(self.items_list)
 
         # Menu settings (per-list popup behaviour)
@@ -931,10 +1118,7 @@ class ListMenuDialog(QWidget):
             for i, node in enumerate(self.path):
                 if i > 0:
                     self.crumb_row.addWidget(QLabel("\u25b8"))
-                btn = QPushButton(node.get("name", "?"))
-                btn.setFlat(True)
-                btn.clicked.connect(lambda _=False, d=i: self._go_to_depth(d))
-                self.crumb_row.addWidget(btn)
+                self.crumb_row.addWidget(_PathCrumb(self, i, node.get("name", "?")))
 
     def _go_to_depth(self, depth):
         if 0 <= depth < len(self.path):
@@ -1442,7 +1626,12 @@ class ListMenuDialog(QWidget):
             entry.setData(ROLE_INDEX, idx)
             entry.setData(ROLE_TOKEN, token)
             entry.setData(ROLE_TYPE, typ)
-            entry.setToolTip(f"{text}  [{token}]")
+            if typ == TYPE_MENU:
+                entry.setToolTip(
+                    "%s  [%s]\nDrop items onto this row to move them into the submenu."
+                    % (text, token))
+            else:
+                entry.setToolTip(f"{text}  [{token}]")
             if typ == TYPE_TOGGLE:
                 checked = False
                 try:
@@ -1619,14 +1808,75 @@ class ListMenuDialog(QWidget):
                 self.add_tree.addTopLevelItem(leaf)
         self.add_tree.expandAll()
 
-    def _sync_items_order(self, *_):
+    def _nest_item_into_submenu(self, src_row, dest_row):
+        """Move the item at src_row into the submenu at dest_row. True on success."""
         items = self._cur_items()
-        indices = [self.items_list.item(i).data(ROLE_INDEX)
-                   for i in range(self.items_list.count())]
-        if sorted(indices) == list(range(len(items))):
-            items[:] = [items[i] for i in indices]
-            for i in range(self.items_list.count()):
-                self.items_list.item(i).setData(ROLE_INDEX, i)
+        if not (0 <= src_row < len(items) and 0 <= dest_row < len(items)):
+            return False
+        if src_row == dest_row:
+            return False
+        dest = items[dest_row]
+        if not isinstance(dest, dict) or dest.get("name") is None:
+            return False
+        item = items.pop(src_row)
+        if src_row < dest_row:
+            dest_row -= 1
+        dest = items[dest_row]
+        children = dest.setdefault("items", [])
+        if not isinstance(children, list):
+            dest["items"] = children = []
+        children.append(item)
+        self._render_items()
+        self._reload_available()
+        return True
+
+    def _reorder_menu_item(self, src_row, target_item, indicator):
+        """Reorder within the current menu from a custom drag drop. True on success."""
+        items = self._cur_items()
+        n = len(items)
+        if not 0 <= src_row < n:
+            return False
+        on_item = QAbstractItemView.DropIndicatorPosition.OnItem
+        above = QAbstractItemView.DropIndicatorPosition.AboveItem
+        below = QAbstractItemView.DropIndicatorPosition.BelowItem
+        if target_item is None:
+            dest = n
+        else:
+            dest = self.items_list.row(target_item)
+            if indicator == below or indicator == on_item:
+                dest += 1
+            elif indicator != above:
+                dest = n
+        if dest > src_row:
+            dest -= 1
+        if dest == src_row:
+            return True
+        item = items.pop(src_row)
+        items.insert(dest, item)
+        self._render_items()
+        self.items_list.setCurrentRow(dest)
+        return True
+
+    def _move_item_to_path_depth(self, src_row, depth):
+        """Move an item from the current submenu up into path[depth]. True on success."""
+        if not (0 <= depth < len(self.path) - 1):
+            return False
+        items = self._cur_items()
+        if not 0 <= src_row < len(items):
+            return False
+        item = items.pop(src_row)
+        parent_items = self.path[depth].setdefault("items", [])
+        if not isinstance(parent_items, list):
+            self.path[depth]["items"] = parent_items = []
+        child = self.path[depth + 1]
+        try:
+            insert_at = parent_items.index(child)
+        except ValueError:
+            insert_at = len(parent_items)
+        parent_items.insert(insert_at, item)
+        self._render_items()
+        self._reload_available()
+        return True
 
     def _on_item_double_click(self, *_):
         entry = self.items_list.currentItem()
@@ -1678,7 +1928,7 @@ class ListMenuDialog(QWidget):
     def _edit_script(self):
         fn = self._selected_script()
         if not fn:
-            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            QMessageBox.information(self, "TFM", "Select a script in the list first.")
             return
         if exec_(_ScriptEditorDialog(self, fn, read_script(fn))) == QDialog.DialogCode.Accepted:
             self._reload_available()
@@ -1686,7 +1936,7 @@ class ListMenuDialog(QWidget):
     def _rename_script_file(self):
         fn = self._selected_script()
         if not fn:
-            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            QMessageBox.information(self, "TFM", "Select a script in the list first.")
             return
         if os.path.normcase(script_path(fn)) != os.path.normcase(os.path.join(SCRIPTS_DIR, fn)):
             QMessageBox.information(self, "TFM", "This is a bundled example. Edit it first to create your own copy before renaming it.")
@@ -1698,7 +1948,7 @@ class ListMenuDialog(QWidget):
         new_fn = rename_script(fn, new_name)
         if not new_fn:
             QMessageBox.warning(
-                self, "MenuBelt",
+                self, "TFM",
                 "Could not rename the script (a script with that name may already exist).")
             return
         self._remap_script_items(fn, new_fn)
@@ -1708,7 +1958,7 @@ class ListMenuDialog(QWidget):
     def _delete_script_file(self):
         fn = self._selected_script()
         if not fn:
-            QMessageBox.information(self, "MenuBelt", "Select a script in the list first.")
+            QMessageBox.information(self, "TFM", "Select a script in the list first.")
             return
         if os.path.normcase(script_path(fn)) != os.path.normcase(os.path.join(SCRIPTS_DIR, fn)):
             QMessageBox.information(self, "TFM", "This is a bundled example and cannot be deleted.")
@@ -1731,7 +1981,7 @@ class ListMenuDialog(QWidget):
         try:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         except Exception:
-            QMessageBox.information(self, "MenuBelt", "Script folder:\n%s" % path)
+            QMessageBox.information(self, "TFM", "Script folder:\n%s" % path)
 
     def _remap_script_items(self, old_fn, new_fn):
         """Follow a renamed script file from every menu item that uses it."""
@@ -1857,7 +2107,7 @@ class ListMenuDialog(QWidget):
 
     # ---------- Export / import ----------
     def _export_config(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Config", "", "MenuBelt Config (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Config", "", "TFM Config (*.json)")
         if not path:
             return
         data = build_config_dict(self.popup_shortcut, self.lists)
@@ -1869,7 +2119,7 @@ class ListMenuDialog(QWidget):
             QMessageBox.warning(self, "Export failed", str(e))
 
     def _import_config(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import Config", "", "MenuBelt Config (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Import Config", "", "TFM Config (*.json)")
         if not path:
             return
         try:

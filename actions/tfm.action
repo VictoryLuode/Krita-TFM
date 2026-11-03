@@ -14,6 +14,30 @@
             <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
             <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
         </Action>
+        <Action name="tfm_assets">
+            <icon></icon><text>Asset Library</text><whatsThis></whatsThis>
+            <toolTip>Show the Asset Library</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+        <Action name="tfm_save_asset">
+            <icon></icon><text>Save Asset</text><whatsThis></whatsThis>
+            <toolTip>Save the active layer into the Asset Library</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+        <Action name="tfm_image_search">
+            <icon></icon><text>Quick Image Search</text><whatsThis></whatsThis>
+            <toolTip>Show Quick Image Search</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
+        <Action name="tfm_convert_color_space">
+            <icon></icon><text>Convert All Layers to Default Color Space</text><whatsThis></whatsThis>
+            <toolTip>Convert every layer to the default color space used for new images</toolTip><iconText></iconText>
+            <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
+            <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
+        </Action>
         <Action name="tfm_edit">
             <icon></icon><text>Configure TFM</text><whatsThis></whatsThis>
             <toolTip>Configure menus, filters and tools</toolTip><iconText></iconText>
