@@ -1,4 +1,4 @@
-"""MenuBelt - Krita custom-shortcut file layer (``kritashortcutsrc``).
+"""TFM menus - Krita custom-shortcut file layer (``kritashortcutsrc``).
 
 Krita keeps user shortcut overrides in a KConfig INI file named
 ``kritashortcutsrc``, sitting next to ``kritarc`` (Windows: ``%LOCALAPPDATA%``,
@@ -208,7 +208,7 @@ def write_text(path, text):
         temporary = None
         return True
     except OSError as e:
-        print("menubelt: cannot write %s: %s" % (path, e))
+        print("tfm: cannot write %s: %s" % (path, e))
         return False
     finally:
         if temporary:
@@ -231,7 +231,7 @@ def restore(path, previous):
     try:
         text = read_text(path, strict=True)
     except OSError as e:
-        print("menubelt: cannot read %s: %s" % (path, e))
+        print("tfm: cannot read %s: %s" % (path, e))
         return False
     original = text
     to_delete = [k for k, v in previous.items() if v is None]

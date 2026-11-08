@@ -1,4 +1,4 @@
-"""MenuBelt version - the single source of the number shown in the editor.
+"""TFM version - the single source of the number shown in the editor.
 
 `RELEASE_NOTES.md` and the release zip name are generated from this value at
 release time; `python verify.py` fails when it falls behind the newest git tag.

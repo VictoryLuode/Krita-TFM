@@ -200,9 +200,9 @@ class ManagerDialog(QtWidgets.QDialog):
         tabs = QtWidgets.QTabWidget(self)
         layout.addWidget(tabs)
         from .menus.dialog import ListMenuDialog
-        from .filters.dialog import FxManagerDialog
+        from .filters.dialog import FilterSettingsDialog
         self.menu_page = ListMenuDialog(tabs)
-        self.filter_page = FxManagerDialog(tabs)
+        self.filter_page = FilterSettingsDialog(tabs)
         tabs.addTab(self.menu_page, "Menus")
         tabs.addTab(self.filter_page, "Filters")
 

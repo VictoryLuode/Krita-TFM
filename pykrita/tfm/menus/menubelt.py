@@ -1,12 +1,9 @@
-"""MenuBelt - core: builds three synchronised multi-list entries
-plus configurable shortcuts.
+"""TFM menus extension: builds synchronised multi-list entries plus shortcuts.
 
-Shortcuts are implemented with a keyboard EVENT FILTER (not QShortcut), because
-Krita's canvas/shortcut handling consumes key events before Qt's QShortcut system
-sees them. The event-filter approach is the proven Krita pattern (used by the
-shortcut_composer plugin).
+Shortcuts use a keyboard event filter (not QShortcut), because Krita's canvas
+shortcut handling consumes key events before Qt's QShortcut system sees them.
 
-- Tools > MenuBelt submenu (lists -> items)
+- Tools > TFM submenu (lists -> items)
 - Cursor popup menu (reuses the same QMenu; bound to a shortcut)
 - A dynamic shortcut per list (each list can pop on its own hotkey)
 - Edit dialog (saving changes refreshes every entry + shortcuts automatically)
@@ -391,7 +388,7 @@ class MenuBeltExtension(Extension):
                 pass
             if path is not None:
                 unbind(path, oid)
-            print("menubelt: re-took %s from %s" % (rec.get("key"), oid))
+            print("tfm: re-took %s from %s" % (rec.get("key"), oid))
 
     def _list_index_by_name(self, name):
         for i, lst in enumerate(load_lists()):

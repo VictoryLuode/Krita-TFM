@@ -1,4 +1,4 @@
-"""MenuBelt - multi-list editor dialog.
+"""TFM multi-list menu editor dialog.
 
 Supports nested menus, custom-named commands. Provides
 a live Current Menu list, shortcut conflict detection, and config export/import.
@@ -771,7 +771,7 @@ class ListMenuDialog(QWidget):
         try:
             actions = Krita.instance().actions()
         except Exception as e:
-            print("menubelt: cannot list actions: %s" % e)
+            print("tfm: cannot list actions: %s" % e)
             actions = []
         for a in actions:
             try:
@@ -905,7 +905,7 @@ class ListMenuDialog(QWidget):
                 try:
                     act.setShortcuts(seqs)
                 except Exception as e:
-                    print("menubelt: cannot restore %s: %s" % (r.get("id"), e))
+                    print("tfm: cannot restore %s: %s" % (r.get("id"), e))
         if (self.lists[self.current].get("shortcut") or "") in keys:
             self.lists[self.current]["shortcut"] = ""
             self._update_left_shortcut()
@@ -2148,7 +2148,7 @@ class ListMenuDialog(QWidget):
                     if s not in pending_keys:
                         live.setdefault(s, label or action_id)
         except Exception as e:
-            print("menubelt: cannot list actions: %s" % e)
+            print("tfm: cannot list actions: %s" % e)
         used = {}
         for lst in self.lists:
             key = lst.get("shortcut", "")

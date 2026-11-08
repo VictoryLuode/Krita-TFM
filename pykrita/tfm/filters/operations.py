@@ -1,4 +1,4 @@
-"""Registry inspection for FxManager.
+"""Registry inspection for TFM filter settings.
 
 Only answers "is this filter present in the running Krita?" - no node creation,
 no applying, no masks. Usage belongs to Krita's own filter menu and layer stack.

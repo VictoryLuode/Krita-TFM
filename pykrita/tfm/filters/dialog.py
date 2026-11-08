@@ -1,4 +1,4 @@
-"""fxmanager settings dialog.
+"""TFM filter settings dialog.
 
 This dialog manages the filter registry and processing policy. It never applies
 filters or creates Krita nodes; those actions remain in Krita's native UI.
@@ -95,7 +95,7 @@ class _CategoryList(QListWidget):
         QtCore.QTimer.singleShot(0, lambda: self.owner._move_filter(ident, target_category))
 
 
-class FxManagerDialog(QWidget):
+class FilterSettingsDialog(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._registry = None
@@ -532,5 +532,5 @@ class FxManagerDialog(QWidget):
 
 
 def show_dialog(parent=None):
-    dialog = FxManagerDialog(parent)
+    dialog = FilterSettingsDialog(parent)
     return exec_(dialog)
