@@ -4,7 +4,7 @@ import json
 import os
 from contextlib import contextmanager
 
-from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, InfoObject, Krita
+from krita import DockWidget, InfoObject, Krita
 
 from ..menus.qtcompat import (
     QAbstractItemView,
@@ -2263,8 +2263,3 @@ class AssetLibraryDocker(DockWidget):
             if pending is not None:
                 self._reload(*pending)
 
-
-def register_assets(app):
-    app.addDockWidgetFactory(
-        DockWidgetFactory("tfm_assets", DockWidgetFactoryBase.DockRight, AssetLibraryDocker)
-    )
