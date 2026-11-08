@@ -19,6 +19,7 @@ __pycache__/
 # Local-only files (never commit machine paths or agent notes)
 /AGENTS.md
 /CLAUDE.md
+.cursor/
 .cursorrules
 /docs/handoffs/
 /deploy.py
