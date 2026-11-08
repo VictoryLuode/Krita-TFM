@@ -1,57 +1,86 @@
+[![License: GPL-3.0](https://img.shields.io/static/v1?label=License&message=GPL-3.0&color=blue)](LICENSE)
+[![Krita](https://img.shields.io/static/v1?label=Krita&message=5.3%20Windows&color=3aa5dc)](https://krita.org)
+[![YouTube](https://img.shields.io/static/v1?label=YouTube&message=@VictoryLuode&color=red&logo=youtube&logoColor=white)](https://www.youtube.com/@VictoryLuode)
+[![ArtStation](https://img.shields.io/static/v1?label=ArtStation&message=victoryluode&color=0077b5&logo=artstation&logoColor=white)](https://www.artstation.com/victoryluode)
+[![X](https://img.shields.io/static/v1?label=X&message=@victoryluode&color=black&logo=x&logoColor=white)](https://x.com/victoryluode)
+[![Website](https://img.shields.io/static/v1?label=Website&message=victoryluode.com&color=ff5200)](https://www.victoryluode.com)
+
 # TFM — Tool & Filter & Menu
 
-Krita plugin for custom menus, native filters, Advance Selection, an asset library, and related tools.
+![TFM](assets/tfm-hero.jpg)
 
-Requires **Krita 5.3** on Windows (Qt5 build). Restart Krita after installing or updating.
+Custom **menus**, **native filters**, **Advance Selection**, and an **asset library** for Krita — one plugin under **Tools → TFM**.
 
-## Features
+## Demo
 
-- **Custom menus** — build popup lists (Quick Tool and more), nest items, assign shortcuts, import/export configs. Open at the cursor with a hotkey.
-- **Native filters** (`kritatfm.dll`) — Bloom, Film Grain, Lens Distortion, Vignette, Color Temperature, Vibrance, Kuwahara, Halation, Lens Flare, Anamorphic Flare, Light Rays, Light Leaks, Light Patch, Statistical / Guided Color Match, Background Removal (BiRefNet), Color Range Mask, Circular / Zoom Motion Blur, Focus Blur.
-- **Vulkan backends** — GPU filter compute runs in `tfm_vulkan_worker.exe` (out of process). Global default in Settings, per-filter override under Filters → Compute backend (Auto / CPU / GPU).
-- **Advance Selection** — luminance / channel / sampled-color range selection with live preview (Select menu or Quick Tool).
-- **Asset Library** — categorized cutouts you can place onto the canvas; save the active layer as an asset.
-- **Quick Image Search** — search panel for reference images (optional tool).
-- **Layer Color Space** — convert all layers to the document default color space (optional tool).
+<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="assets/tfm-demo-1.gif" alt="TFM demo 1" width="720"></a>
 
-## Gallery
+*Quick Tool / popup actions while painting* — [Demo 1 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4)
 
-<p align="center">
-  <img src="docs/images/tfm-overview.jpg" alt="TFM Configure Menus, Filters, Tools" width="720"><br>
-  <em>Configure TFM — Menus (custom lists), Filters (catalog + per-filter backend), Tools (Advance Selection and panels)</em><br><br>
-  <img src="docs/images/tfm-quicktool.jpg" alt="TFM Quick Tool popup" width="720"><br>
-  <em>Quick Tool popup (shortcut Q) — Advance Selection, TFM filters, and nested Quick Filter items at the cursor</em><br><br>
-  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="docs/images/tfm-demo-1.gif" alt="TFM demo 1" width="720"></a><br>
-  <em>Demo — use custom Quick Tool / popup actions while painting</em><br>
-  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4">Demo 1 (mp4)</a><br><br>
-  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="docs/images/tfm-demo-2.gif" alt="TFM demo 2" width="720"></a><br>
-  <em>Demo — Asset Library: browse categories and place cutouts on the canvas</em><br>
-  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4">Demo 2 (mp4)</a>
-</p>
+<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="assets/tfm-demo-2.gif" alt="TFM demo 2" width="720"></a>
 
-Open **Tools → TFM → Configure TFM** for menus, filters, tools, and backends. **Select → Advance Selection…** (also on the Quick Tool popup) for luminance / color-range selections.
+*Asset Library — browse categories and place cutouts* — [Demo 2 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4)
 
-## Install (prebuilt)
+![Quick Tool](assets/tfm-quicktool.jpg)
 
-Close Krita first. From a release zip (`python package_release.py` builds `dist/TFM-<version>.zip`):
+*Quick Tool popup (shortcut **Q**) — nested filters and TFM actions at the cursor*
 
-1. Copy everything under `resource/` into your Krita **resource** directory.
-2. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder. Keep both files in the same directory.
-3. Start Krita and enable **TFM** under Settings → Manage Resources → Python Plugin Manager if needed.
+## Highlights
 
-Settings and menu lists live under `<ResourceDirectory>/TFM/`. BiRefNet models for Background Removal are optional and go under `TFM/background-removal/models/`.
+- **Custom menus** — multi-list popups (list or pie), nested items, per-list shortcuts, import / export.
+- **Native filters** — Bloom, Film Grain, flares, light leaks, Guided / Statistical Color Match, Background Removal, motion / focus blur, and more via `kritatfm.dll`.
+- **Vulkan compute** — GPU work runs in `tfm_vulkan_worker.exe` (out of process). Global default in Settings; per-filter **Compute backend** override.
+- **Advance Selection** — luminance / channel / sampled-color ranges with live preview.
+- **Asset Library** — categorized cutouts onto the canvas; save the active layer as an asset.
+- **Quick Image Search** · **Layer Color Space** — optional tools you can enable under Configure TFM → Tools.
 
-## Release helpers
+## What's new in 0.1.6
 
-- `python verify.py` — `__version__` must match the newest `X.Y.Z` git tag.
-- `python package_release.py` — zip resource files plus the current `build/native-5.3/bin` DLL and worker.
+- Out-of-process Vulkan worker so Krita itself does not load `vulkan-1.dll` for those filters.
+- Guided Color Match: compact grade storage, lighter preview, per-tile Vulkan when available.
+- Per-filter Auto / CPU / GPU backends, plus a global default.
+- Advance Selection preview and overlay polish.
 
-## Filter backends
+Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
-- **Settings → Default filter backend**: Auto / CPU / GPU (Vulkan) for filters that support it.
-- **Filters** tab → select a Vulkan-capable filter → **Compute backend** for a per-filter override.
-- Background Removal keeps its own backend control in the filter dialog.
+## Install
+
+> **Requires Krita 5.3 on Windows (Qt5 build).** Close Krita before installing or updating.
+
+**OS support:**
+
+- [x] Windows (10, 11) — Krita 5.3 Qt5
+- [ ] Linux
+- [ ] macOS
+- [ ] Android
+
+1. Download `TFM-0.1.6.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
+2. Copy everything under `resource/` into your Krita **resource** directory.
+3. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder (same directory).
+4. Start Krita and enable **TFM** under **Settings → Manage Resources → Python Plugin Manager** if needed.
+
+Settings and menu lists live under `<ResourceDirectory>/TFM/`. Optional BiRefNet models for Background Removal go under `TFM/background-removal/models/`.
+
+## Quick start
+
+**Tools → TFM → Configure TFM**
+
+- **Menus** — build Quick Tool (and other lists), add Krita actions / filters / scripts, bind shortcuts.
+- **Filters** — enable TFM filters, set defaults and **Compute backend**.
+- **Tools** — turn on Advance Selection, Asset Library, Quick Image Search, Layer Color Space.
+- **Settings** — window size, CPU threads, default filter backend.
+
+Open the cursor popup with your list shortcut (often **Q** for Quick Tool), or use **Select → Advance Selection…**.
+
+## Community
+
+- [Report a bug](../../issues)
+- [Latest release](../../releases)
 
 ## Build from source
 
-See `SOURCE-NOTES.md`. Filter plugin: `python native/fx/build.py`. License: GPL-3.0 (`LICENSE`).
+See [SOURCE-NOTES.md](SOURCE-NOTES.md). Filter plugin: `python native/fx/build.py`.
+
+## License
+
+[GPL-3.0](LICENSE).
