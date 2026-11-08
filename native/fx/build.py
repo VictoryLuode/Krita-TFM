@@ -15,28 +15,25 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent          # Krita-TFM/native/fx
 REPO = PROJECT.parents[1]                          # Krita-TFM
-WORKSPACE = REPO.parent
-HOST = WORKSPACE / 'Krita-Master-5.3.4.1/build-fxm-5.3'
+HOST = REPO / 'Krita-Master-5.3.4.1' / 'build-fxm-5.3'
 STAGE = REPO / 'build' / 'native-5.3' / 'stage'
 OUT = REPO / 'build' / 'native-5.3'
-DEPS = WORKSPACE / 'deps'
-# The reference Krita graph may retain an absolute dependency prefix from the
-# former workspace name. Normalize only that dependency prefix in generated
-# compiler/link arguments; never rewrite source or host build files.
-LEGACY_WORKSPACE = Path(str(WORKSPACE).replace('KritaAddon', 'Krita Addon'))
-LEGACY_HOST = LEGACY_WORKSPACE / 'Krita-Master-5.3.4.1'
-LEGACY_DEPS = LEGACY_WORKSPACE / 'deps'
+DEPS = REPO / 'deps'
+# Reference graphs may retain absolute prefixes from older layouts
+# ("Krita Addon", under KritaAddon/, or the previous KritaAddon/Krita-TFM path).
+# Rewrite only those prefixes in generated compiler/link args; never edit host files.
 
 
 def normalize_dep_arg(value):
     text = str(value).replace('\\', '/')
-    # Reference graphs keep the old "Krita Addon" tree, sometimes on another drive.
-    workspace = str(WORKSPACE).replace('\\', '/')
-    text = re.sub(r'[A-Za-z]:/Dev/Krita Addon', workspace, text)
-    for old_path, new_path in ((LEGACY_HOST, WORKSPACE / 'Krita-Master-5.3.4.1'),
-                               (LEGACY_DEPS, DEPS)):
-        text = text.replace(str(old_path).replace('\\', '/'),
-                            str(new_path).replace('\\', '/'))
+    repo = str(REPO).replace('\\', '/')
+    text = re.sub(r'[A-Za-z]:/Dev/Krita Addon(?:/Krita-TFM)?', repo, text)
+    text = re.sub(r'[A-Za-z]:/Dev/KritaAddon/Krita-TFM', repo, text)
+    text = re.sub(
+        r'[A-Za-z]:/Dev/KritaAddon(?=/(?:deps|Krita-Master-5\.3\.4\.1)(?:/|$))',
+        repo,
+        text,
+    )
     return text
 
 

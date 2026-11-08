@@ -13,6 +13,7 @@ from ..menus.qtcompat import (
     QByteArray,
     QColor,
     QEvent,
+    QHBoxLayout,
     QIcon,
     QImage,
     QListWidget,
@@ -46,6 +47,9 @@ _MASK_GUARD = 8
 ICON_MIN = 64
 ICON_MAX = 320
 ICON_DEFAULT = 88
+LIST_ICON = 28
+VIEW_THUMB = "thumb"
+VIEW_LIST = "list"
 THUMB_EDGE = 256
 
 QDrag = QtGui.QDrag
@@ -447,21 +451,15 @@ class ImageGrid(QListWidget):
     def __init__(self, panel):
         super().__init__()
         self.panel = panel
-        self.setViewMode(QListWidget.ViewMode.IconMode)
-        self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setMovement(QListWidget.Movement.Static)
+        self._view_mode = VIEW_THUMB
         self._icon_edge = ICON_DEFAULT
         self._zoom_remainder = 0
-        self.setSpacing(8)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setMovement(QListWidget.Movement.Static)
         self.setWordWrap(False)
         self.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.setUniformItemSizes(True)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self._apply_icon_edge(ICON_DEFAULT)
-        self.setToolTip(
-            "Double-click to place on the canvas. Ctrl+double-click to rename. "
-            "Hold Ctrl and scroll to resize the thumbnails."
-        )
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setDragEnabled(True)
@@ -475,6 +473,7 @@ class ImageGrid(QListWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(panel._image_menu)
         self.itemChanged.connect(panel._image_renamed)
+        self.set_view_mode(VIEW_THUMB)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -489,7 +488,10 @@ class ImageGrid(QListWidget):
         super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        if (
+            self._view_mode == VIEW_THUMB
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
             self._zoom_remainder += event.angleDelta().y()
             steps = int(self._zoom_remainder / 120)
             self._zoom_remainder -= steps * 120
@@ -500,13 +502,39 @@ class ImageGrid(QListWidget):
             return
         super().wheelEvent(event)
 
+    def set_view_mode(self, mode):
+        mode = VIEW_LIST if mode == VIEW_LIST else VIEW_THUMB
+        self._view_mode = mode
+        if mode == VIEW_LIST:
+            self.setViewMode(QListWidget.ViewMode.ListMode)
+            self.setFlow(QListWidget.Flow.TopToBottom)
+            self.setWrapping(False)
+            self.setSpacing(2)
+            self.setIconSize(QSize(LIST_ICON, LIST_ICON))
+            self.setGridSize(QSize())
+            self.setToolTip(
+                "Double-click to place on the canvas. Ctrl+double-click to rename."
+            )
+        else:
+            self.setViewMode(QListWidget.ViewMode.IconMode)
+            self.setFlow(QListWidget.Flow.LeftToRight)
+            self.setWrapping(True)
+            self.setSpacing(8)
+            self._apply_icon_edge(self._icon_edge)
+            self.setToolTip(
+                "Double-click to place on the canvas. Ctrl+double-click to rename. "
+                "Hold Ctrl and scroll to resize the thumbnails."
+            )
+        self._restyle_items()
+
     def set_icon_edge(self, edge):
         edge = max(ICON_MIN, min(ICON_MAX, int(edge)))
         if edge == self._icon_edge:
             return
         anchor = self.itemAt(QPoint(8, 8))
         self._icon_edge = edge
-        self._apply_icon_edge(edge)
+        if self._view_mode == VIEW_THUMB:
+            self._apply_icon_edge(edge)
         if anchor is not None:
             self.scrollToItem(anchor, QAbstractItemView.ScrollHint.PositionAtTop)
 
@@ -516,6 +544,26 @@ class ImageGrid(QListWidget):
         self.setGridSize(cell)
         for index in range(self.count()):
             self.item(index).setSizeHint(cell)
+        self.doItemsLayout()
+
+    def _item_size_hint(self):
+        if self._view_mode == VIEW_LIST:
+            return QSize(0, LIST_ICON + 10)
+        edge = self._icon_edge
+        return QSize(edge + 16, edge + 40)
+
+    def _item_alignment(self):
+        if self._view_mode == VIEW_LIST:
+            return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        return Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+
+    def _restyle_items(self):
+        hint = self._item_size_hint()
+        align = self._item_alignment()
+        for index in range(self.count()):
+            item = self.item(index)
+            item.setSizeHint(hint)
+            item.setTextAlignment(align)
         self.doItemsLayout()
 
     def startDrag(self, supportedActions):
@@ -552,7 +600,7 @@ class ImageGrid(QListWidget):
             self.panel._delete_images()
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.panel._insert_selected(False)
+            self.panel._insert_selected()
             return
         super().keyPressEvent(event)
 
@@ -621,18 +669,72 @@ class AssetLibraryDocker(DockWidget):
         self.tree = FolderTree(self)
         self.grid = ImageGrid(self)
         self.grid.set_icon_edge(self._saved_icon_edge())
+
+        left = QtWidgets.QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        left_layout.addWidget(self.tree, 1)
+        left_layout.addWidget(self._build_view_mode_bar())
+
         splitter = QSplitter()
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self.tree)
+        splitter.addWidget(left)
         splitter.addWidget(self.grid)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([150, 420])
         layout.addWidget(splitter, 1)
         self.setWidget(widget)
+        self._apply_view_mode(self._saved_view_mode(), persist=False)
         self._reload("")
         _install_drop_filter(self)
         QTimer.singleShot(0, self._hide_when_disabled)
+
+    def _build_view_mode_bar(self):
+        bar = QtWidgets.QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        self._view_thumb = QtWidgets.QToolButton()
+        self._view_thumb.setCheckable(True)
+        self._view_thumb.setAutoRaise(True)
+        self._view_thumb.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._view_thumb.setText("Thumbs")
+        self._view_thumb.setToolTip("Thumbnail view")
+        self._view_list = QtWidgets.QToolButton()
+        self._view_list.setCheckable(True)
+        self._view_list.setAutoRaise(True)
+        self._view_list.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._view_list.setText("List")
+        self._view_list.setToolTip("List view")
+        group = QtWidgets.QButtonGroup(bar)
+        group.setExclusive(True)
+        group.addButton(self._view_thumb)
+        group.addButton(self._view_list)
+        self._view_thumb.clicked.connect(lambda: self._apply_view_mode(VIEW_THUMB))
+        self._view_list.clicked.connect(lambda: self._apply_view_mode(VIEW_LIST))
+        row.addWidget(self._view_thumb, 1)
+        row.addWidget(self._view_list, 1)
+        return bar
+
+    def _apply_view_mode(self, mode, persist=True):
+        mode = VIEW_LIST if mode == VIEW_LIST else VIEW_THUMB
+        self._view_thumb.blockSignals(True)
+        self._view_list.blockSignals(True)
+        self._view_thumb.setChecked(mode == VIEW_THUMB)
+        self._view_list.setChecked(mode == VIEW_LIST)
+        self._view_thumb.blockSignals(False)
+        self._view_list.blockSignals(False)
+        self.grid.set_view_mode(mode)
+        if persist:
+            self._remember_view_mode(mode)
 
     def canvasChanged(self, canvas):
         del canvas
@@ -789,8 +891,8 @@ class AssetLibraryDocker(DockWidget):
             item.setData(Qt.ItemDataRole.UserRole, rel)
             item.setIcon(self._icon(path))
             item.setToolTip(self._tip(path, name))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-            item.setSizeHint(self.grid.gridSize())
+            item.setTextAlignment(self.grid._item_alignment())
+            item.setSizeHint(self.grid._item_size_hint())
             item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -832,6 +934,19 @@ class AssetLibraryDocker(DockWidget):
             return
         try:
             Krita.instance().writeSetting("TFM", "assets_icon_size", str(int(edge)))
+        except Exception:
+            pass
+
+    def _saved_view_mode(self):
+        try:
+            raw = Krita.instance().readSetting("TFM", "assets_view_mode", VIEW_THUMB)
+        except Exception:
+            return VIEW_THUMB
+        return VIEW_LIST if raw == VIEW_LIST else VIEW_THUMB
+
+    def _remember_view_mode(self, mode):
+        try:
+            Krita.instance().writeSetting("TFM", "assets_view_mode", mode)
         except Exception:
             pass
 

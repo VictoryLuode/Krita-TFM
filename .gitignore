@@ -28,3 +28,7 @@ __pycache__/
 *.bak-*
 /.hermes/
 /.serena/
+
+# Local native build host (not shipped; keep outside git)
+/deps/
+/Krita-Master-5.3.4.1/

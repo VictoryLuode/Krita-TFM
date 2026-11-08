@@ -38,12 +38,15 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
     """Return (absolute path, archive member path) pairs."""
     created: list[Path] = []
     package = ROOT / "pykrita" / "tfm"
+    search = ROOT / "pykrita" / "quick_image_search"
     color_range = package / "native" / "tfm_color_range.dll"
     dll = NATIVE_BIN / "kritatfm.dll"
     worker = NATIVE_BIN / "tfm_vulkan_worker.exe"
     required = [
         package / "__init__.py",
         package / "manager.py",
+        search / "__init__.py",
+        search / "docker.py",
         color_range,
         ROOT / "pykrita" / "tfm.desktop",
         ROOT / "actions" / "tfm.action",
@@ -70,6 +73,14 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
         relative = source.relative_to(package)
         copy_file(source, staging / "resource" / "pykrita" / "tfm" / relative, created)
 
+    for source in search.rglob("*"):
+        if not source.is_file() or "__pycache__" in source.parts:
+            continue
+        if source.suffix != ".py":
+            continue
+        relative = source.relative_to(search)
+        copy_file(source, staging / "resource" / "pykrita" / "quick_image_search" / relative, created)
+
     copy_file(ROOT / "pykrita" / "tfm.desktop", staging / "resource" / "pykrita" / "tfm.desktop", created)
     copy_file(ROOT / "actions" / "tfm.action", staging / "resource" / "actions" / "tfm.action", created)
     copy_file(dll, staging / "kritaplugins" / "kritatfm.dll", created)
@@ -83,7 +94,8 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
         "2. Copy everything under resource/ into your Krita resource directory.\n"
         "3. Copy kritaplugins/kritatfm.dll and kritaplugins/tfm_vulkan_worker.exe\n"
         "   into the Krita install lib/kritaplugins/ folder (same directory).\n"
-        "4. Start Krita and enable TFM in Python Plugin Manager if needed.\n",
+        "4. Start Krita and enable TFM in Python Plugin Manager if needed.\n"
+        "5. Optional tools (Quick Image Search, etc.): Tools → TFM → Configure TFM → Tools.\n",
         encoding="utf-8",
     )
     created.append(install)
