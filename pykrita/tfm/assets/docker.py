@@ -23,10 +23,13 @@ from ..menus.qtcompat import (
     QObject,
     QPainter,
     QPalette,
+    QPen,
     QPixmap,
     QPoint,
     QPointF,
     QSize,
+    QStyle,
+    QStyledItemDelegate,
     QTimer,
     QTreeWidget,
     QTreeWidgetItem,
@@ -47,7 +50,11 @@ _MASK_GUARD = 8
 ICON_MIN = 64
 ICON_MAX = 320
 ICON_DEFAULT = 88
-LIST_ICON = 28
+LIST_MIN = 16
+LIST_MAX = 128
+LIST_DEFAULT = 28
+LIST_STEP = 8
+LIST_PAD = 10
 VIEW_THUMB = "thumb"
 VIEW_LIST = "list"
 THUMB_EDGE = 256
@@ -129,12 +136,150 @@ def asset_paths(mime):
 
 
 def folder_rel_from_mime(mime):
+    rel = tree_payload(mime).get("path")
+    return rel if isinstance(rel, str) else ""
+
+
+def tree_payload(mime):
     try:
         payload = json.loads(bytes(mime.data(FOLDER_MIME)).decode("utf-8"))
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+
+
+def _item_kind(item):
+    if item is None:
         return ""
-    rel = payload.get("path") if isinstance(payload, dict) else ""
-    return rel if isinstance(rel, str) else ""
+    return item.data(0, _KIND_ROLE) or ""
+
+
+def _parent_rel(item):
+    parent = item.parent() if item is not None else None
+    if parent is None:
+        return ""
+    return parent.data(0, Qt.ItemDataRole.UserRole) or ""
+
+
+def _node_ref(item):
+    if item is None:
+        return None
+    kind = _item_kind(item)
+    if kind == "folder":
+        rel = item.data(0, Qt.ItemDataRole.UserRole) or ""
+        leaf = rel.rsplit("/", 1)[-1]
+        return {"type": "folder", "name": leaf} if leaf else None
+    marker_id = item.data(0, _ID_ROLE) or ""
+    if not marker_id:
+        return None
+    return {"type": kind, "id": marker_id}
+
+
+def _next_sibling(tree, item):
+    parent = item.parent()
+    if parent is None:
+        index = tree.indexOfTopLevelItem(item)
+        if index < 0 or index + 1 >= tree.topLevelItemCount():
+            return None
+        return tree.topLevelItem(index + 1)
+    index = parent.indexOfChild(item)
+    if index < 0 or index + 1 >= parent.childCount():
+        return None
+    return parent.child(index + 1)
+
+
+_SEPARATOR_INSET = 10
+_TITLE_BUMP_PT = 3
+
+
+def _title_font(font):
+    scaled = QtGui.QFont(font)
+    scaled.setBold(False)
+    if scaled.pointSizeF() > 0:
+        scaled.setPointSizeF(scaled.pointSizeF() + _TITLE_BUMP_PT)
+    elif scaled.pixelSize() > 0:
+        scaled.setPixelSize(scaled.pixelSize() + 4)
+    return scaled
+
+
+def _marker_gray(palette, selected=False):
+    """Quiet gray that stays visible on both light and dark themes."""
+    text = palette.color(QPalette.ColorRole.Text)
+    base = palette.color(QPalette.ColorRole.Base)
+    toward_base = 0.42 if selected else 0.7
+    def mix(text_channel, base_channel):
+        return int(text_channel * (1 - toward_base) + base_channel * toward_base)
+    return QColor(
+        mix(text.red(), base.red()),
+        mix(text.green(), base.green()),
+        mix(text.blue(), base.blue()),
+    )
+
+
+class FolderDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        kind = index.data(_KIND_ROLE)
+        if kind == "separator":
+            self._paint_separator(painter, option)
+            return
+        if kind == "title":
+            self._paint_title(painter, option, index)
+            return
+        super().paint(painter, option, index)
+
+    def _column_edges(self, option):
+        widget = option.widget
+        viewport = widget.viewport() if widget is not None else None
+        width = viewport.width() if viewport is not None else option.rect.right()
+        left = _SEPARATOR_INSET
+        right = max(left, width - _SEPARATOR_INSET)
+        return left, right
+
+    def _paint_separator(self, painter, option):
+        painter.save()
+        left, right = self._column_edges(option)
+        band = option.rect
+        band.setLeft(0)
+        band.setRight(max(right, band.right()))
+        painter.setClipRect(band, Qt.ClipOperation.ReplaceClip)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        pen = QPen(_marker_gray(option.palette, selected))
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawLine(left, band.center().y(), right, band.center().y())
+        painter.restore()
+
+    def _paint_title(self, painter, option, index):
+        styled = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        selected = bool(styled.state & QStyle.StateFlag.State_Selected)
+        gray = _marker_gray(styled.palette, selected)
+        styled.palette.setColor(QPalette.ColorRole.Text, gray)
+        styled.palette.setColor(QPalette.ColorRole.HighlightedText, gray)
+        styled.font = _title_font(styled.font)
+        widget = styled.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, widget)
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if editor is not None and index.data(_KIND_ROLE) == "title":
+            editor.setFont(_title_font(option.font))
+        return editor
+
+    def sizeHint(self, option, index):
+        kind = index.data(_KIND_ROLE)
+        if kind == "separator":
+            return QSize(max(1, option.rect.width()), 14)
+        if kind == "title":
+            height = QtGui.QFontMetrics(_title_font(option.font)).height() + 10
+            return QSize(max(1, option.rect.width()), height)
+        return super().sizeHint(option, index)
 
 
 def image_from_mime(mime):
@@ -342,15 +487,21 @@ class FolderTree(QTreeWidget):
         super().__init__()
         self.panel = panel
         self._drop_target = None
+        self._drop_line = None
         self.setHeaderHidden(True)
-        self.setToolTip("Right-click to create a folder. Double-click a name to rename it.")
+        self.setItemDelegate(FolderDelegate(self))
+        self.setToolTip(
+            "Drag a category to change its order. "
+            "Right-click to add a folder, separator, or title. "
+            "Double-click a name or title to edit it."
+        )
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.CopyAction)
         self.setAcceptDrops(True)
         # Set after the drag-drop mode. Qt resets the viewport when that mode changes.
         self.viewport().setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
+        self.setDropIndicatorShown(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setExpandsOnDoubleClick(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -366,34 +517,70 @@ class FolderTree(QTreeWidget):
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(_event_pos(event))
-            if item is not None:
+            if item is not None and _item_kind(item) != "separator":
                 self.editItem(item, 0)
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
 
-    def _rel_at(self, event):
+    def _slot_at(self, event):
         item = self.itemAt(_event_pos(event))
         if item is None:
-            return ""
-        return item.data(0, Qt.ItemDataRole.UserRole) or ""
+            return {"parent": "", "before": None, "into": ""}
+        rect = self.visualItemRect(item)
+        local = _event_pos(event).y() - rect.top()
+        height = max(1, rect.height())
+        kind = _item_kind(item)
+        if kind == "folder" and height * 0.25 < local < height * 0.75:
+            return {
+                "parent": item.data(0, Qt.ItemDataRole.UserRole) or "",
+                "before": None,
+                "into": item.data(0, Qt.ItemDataRole.UserRole) or "",
+            }
+        parent = _parent_rel(item)
+        if local < height / 2:
+            return {"parent": parent, "before": _node_ref(item), "into": ""}
+        nxt = _next_sibling(self, item)
+        return {
+            "parent": parent,
+            "before": _node_ref(nxt) if nxt is not None else None,
+            "into": "",
+        }
 
     def _drop_status(self, event):
-        rel = self._rel_at(event)
+        slot = self._slot_at(event)
         if drop_kind(event.mimeData()) == "folder":
-            if rel:
-                return "Release to move this folder here."
-            return "Release to move this folder to the top level."
-        if rel:
+            if slot["into"]:
+                return "Release to move this into the folder."
+            return "Release to change the order."
+        folder = slot["into"] or slot["parent"]
+        if folder:
             return "Release to store a copy in this folder."
         return "Release to store a copy at the top level."
+
+    def _show_slot(self, event):
+        slot = self._slot_at(event)
+        if slot["into"]:
+            self._drop_line = None
+            self._highlight(self.itemAt(_event_pos(event)))
+        else:
+            self._clear_highlight()
+            item = self.itemAt(_event_pos(event))
+            if item is None:
+                self._drop_line = None
+            else:
+                rect = self.visualItemRect(item)
+                local = _event_pos(event).y() - rect.top()
+                y = rect.top() if local < max(1, rect.height()) / 2 else rect.bottom()
+                self._drop_line = (rect.left() + 8, rect.right() - 4, y)
+        self.viewport().update()
 
     def dragEnterEvent(self, event):
         if drop_kind(event.mimeData()) is None:
             event.ignore()
             return
         self.panel._remember_status(self._drop_status(event))
-        self._highlight(self.itemAt(_event_pos(event)))
+        self._show_slot(event)
         _accept_copy(event)
 
     def dragMoveEvent(self, event):
@@ -401,11 +588,13 @@ class FolderTree(QTreeWidget):
             event.ignore()
             return
         self.panel._remember_status(self._drop_status(event))
-        self._highlight(self.itemAt(_event_pos(event)))
+        self._show_slot(event)
         _accept_copy(event)
 
     def dragLeaveEvent(self, event):
         self._clear_highlight()
+        self._drop_line = None
+        self.viewport().update()
         self.panel._restore_status()
         super().dragLeaveEvent(event)
 
@@ -413,10 +602,30 @@ class FolderTree(QTreeWidget):
         if drop_kind(event.mimeData()) is None:
             event.ignore()
             return
+        slot = self._slot_at(event)
         _accept_copy(event)
         self._clear_highlight()
+        self._drop_line = None
+        self.viewport().update()
         self.panel._restore_status()
-        self.panel._drop_on_folder(self._rel_at(event), event.mimeData())
+        if drop_kind(event.mimeData()) == "folder":
+            self.panel._reorder_dropped(tree_payload(event.mimeData()), slot)
+            return
+        self.panel._drop_on_folder(slot["into"] or slot["parent"], event.mimeData())
+
+    def viewportEvent(self, event):
+        result = super().viewportEvent(event)
+        if event.type() == QEvent.Type.Paint and self._drop_line:
+            painter = QPainter(self.viewport())
+            try:
+                pen = QPen(self.palette().color(QPalette.ColorRole.Highlight))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                x1, x2, y = self._drop_line
+                painter.drawLine(x1, y, x2, y)
+            finally:
+                painter.end()
+        return result
 
     def _highlight(self, item):
         if item is self._drop_target:
@@ -453,6 +662,7 @@ class ImageGrid(QListWidget):
         self.panel = panel
         self._view_mode = VIEW_THUMB
         self._icon_edge = ICON_DEFAULT
+        self._list_icon = LIST_DEFAULT
         self._zoom_remainder = 0
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setMovement(QListWidget.Movement.Static)
@@ -488,16 +698,17 @@ class ImageGrid(QListWidget):
         super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event):
-        if (
-            self._view_mode == VIEW_THUMB
-            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-        ):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self._zoom_remainder += event.angleDelta().y()
             steps = int(self._zoom_remainder / 120)
             self._zoom_remainder -= steps * 120
             if steps:
-                self.set_icon_edge(self._icon_edge + steps * 16)
-                self.panel._remember_icon_edge(self._icon_edge)
+                if self._view_mode == VIEW_LIST:
+                    self.set_list_icon(self._list_icon + steps * LIST_STEP)
+                    self.panel._remember_list_icon(self._list_icon)
+                else:
+                    self.set_icon_edge(self._icon_edge + steps * 16)
+                    self.panel._remember_icon_edge(self._icon_edge)
             event.accept()
             return
         super().wheelEvent(event)
@@ -510,10 +721,11 @@ class ImageGrid(QListWidget):
             self.setFlow(QListWidget.Flow.TopToBottom)
             self.setWrapping(False)
             self.setSpacing(2)
-            self.setIconSize(QSize(LIST_ICON, LIST_ICON))
+            self.setIconSize(QSize(self._list_icon, self._list_icon))
             self.setGridSize(QSize())
             self.setToolTip(
-                "Double-click to place on the canvas. Ctrl+double-click to rename."
+                "Double-click to place on the canvas. Ctrl+double-click to rename. "
+                "Hold Ctrl and scroll to resize the rows."
             )
         else:
             self.setViewMode(QListWidget.ViewMode.IconMode)
@@ -538,6 +750,18 @@ class ImageGrid(QListWidget):
         if anchor is not None:
             self.scrollToItem(anchor, QAbstractItemView.ScrollHint.PositionAtTop)
 
+    def set_list_icon(self, edge):
+        edge = max(LIST_MIN, min(LIST_MAX, int(edge)))
+        if edge == self._list_icon:
+            return
+        anchor = self.itemAt(QPoint(8, 8))
+        self._list_icon = edge
+        if self._view_mode == VIEW_LIST:
+            self.setIconSize(QSize(edge, edge))
+            self._restyle_items()
+        if anchor is not None:
+            self.scrollToItem(anchor, QAbstractItemView.ScrollHint.PositionAtTop)
+
     def _apply_icon_edge(self, edge):
         cell = QSize(edge + 16, edge + 40)
         self.setIconSize(QSize(edge, edge))
@@ -548,7 +772,7 @@ class ImageGrid(QListWidget):
 
     def _item_size_hint(self):
         if self._view_mode == VIEW_LIST:
-            return QSize(0, LIST_ICON + 10)
+            return QSize(0, self._list_icon + LIST_PAD)
         edge = self._icon_edge
         return QSize(edge + 16, edge + 40)
 
@@ -560,10 +784,14 @@ class ImageGrid(QListWidget):
     def _restyle_items(self):
         hint = self._item_size_hint()
         align = self._item_alignment()
+        if self._view_mode == VIEW_LIST:
+            self.setUniformItemSizes(False)
         for index in range(self.count()):
             item = self.item(index)
             item.setSizeHint(hint)
             item.setTextAlignment(align)
+        if self._view_mode == VIEW_LIST:
+            self.setUniformItemSizes(True)
         self.doItemsLayout()
 
     def startDrag(self, supportedActions):
@@ -652,6 +880,8 @@ class AssetLibraryDocker(DockWidget):
         self._dragging = False
         self._pending = None
         self._loading = False
+        self._browsed = ""
+        self._edit_marker = None
 
         widget = DropPane(self)
         widget.setMinimumSize(260, 180)
@@ -669,25 +899,25 @@ class AssetLibraryDocker(DockWidget):
         self.tree = FolderTree(self)
         self.grid = ImageGrid(self)
         self.grid.set_icon_edge(self._saved_icon_edge())
+        self.grid.set_list_icon(self._saved_list_icon())
 
-        left = QtWidgets.QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(4)
-        left_layout.addWidget(self.tree, 1)
-        left_layout.addWidget(self._build_view_mode_bar())
+        right = QtWidgets.QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(self.grid, 1)
+        right_layout.addWidget(self._build_view_mode_bar())
 
         splitter = QSplitter()
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(left)
-        splitter.addWidget(self.grid)
+        splitter.addWidget(self.tree)
+        splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([150, 420])
         layout.addWidget(splitter, 1)
         self.setWidget(widget)
-        self._apply_view_mode(self._saved_view_mode(), persist=False)
-        self._reload("")
+        self._reload(self._saved_folder())
         _install_drop_filter(self)
         QTimer.singleShot(0, self._hide_when_disabled)
 
@@ -795,13 +1025,18 @@ class AssetLibraryDocker(DockWidget):
 
     def _current_folder(self):
         item = self.tree.currentItem()
-        if item is None:
-            return ""
-        return item.data(0, Qt.ItemDataRole.UserRole) or ""
+        if _item_kind(item) == "folder":
+            return item.data(0, Qt.ItemDataRole.UserRole) or ""
+        return self._browsed
 
     def _folder_changed(self):
         if self._loading:
             return
+        item = self.tree.currentItem()
+        if _item_kind(item) != "folder":
+            return
+        self._browsed = item.data(0, Qt.ItemDataRole.UserRole) or ""
+        self._remember_folder(self._browsed)
         self._fill_grid(None)
 
     def _reload(self, folder, select_image=None, status=None):
@@ -821,30 +1056,26 @@ class AssetLibraryDocker(DockWidget):
         if not was_empty:
             self._collect_expanded(None, expanded)
         keep_open = expanded | _ancestors(folder)
+        self._browsed = folder or ""
         self._loading = True
         self.tree.blockSignals(True)
+        edit_item = None
         try:
             self.tree.forget_highlight()
             self.tree.clear()
-            items = {}
-            for rel in store.list_folders(self._root):
-                parent_rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
-                parent = items.get(parent_rel)
-                label = rel.rsplit("/", 1)[-1]
-                item = QTreeWidgetItem(self.tree if parent is None else parent, [label])
-                item.setData(0, Qt.ItemDataRole.UserRole, rel)
-                item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled
-                    | Qt.ItemFlag.ItemIsSelectable
-                    | Qt.ItemFlag.ItemIsDragEnabled
-                    | Qt.ItemFlag.ItemIsDropEnabled
-                    | Qt.ItemFlag.ItemIsEditable
-                )
-                item.setToolTip(0, "Double-click the name to rename it. Right-click to create a folder. Drop a layer or image here.")
-                item.setExpanded(was_empty or rel in keep_open)
-                items[rel] = item
-            current = items.get(folder) if folder else None
-            if current is not None:
+            self._add_tree_level(None, "", was_empty, keep_open)
+            current = self._find_folder_item(folder) if folder else None
+            if folder and current is None:
+                self._browsed = ""
+            self._remember_folder(self._browsed)
+            edit_id = self._edit_marker
+            self._edit_marker = None
+            if edit_id:
+                edit_item = self._find_marker_item(edit_id)
+            if edit_item is not None:
+                self.tree.setCurrentItem(edit_item)
+                self.tree.scrollToItem(edit_item)
+            elif current is not None:
                 self.tree.setCurrentItem(current)
                 self.tree.scrollToItem(current)
             else:
@@ -853,19 +1084,84 @@ class AssetLibraryDocker(DockWidget):
         finally:
             self.tree.blockSignals(False)
             self._loading = False
+        if edit_item is not None:
+            QTimer.singleShot(0, lambda item=edit_item: self.tree.editItem(item, 0))
+
+    def _add_tree_level(self, parent_item, parent_rel, was_empty, keep_open):
+        folder_flags = (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsDragEnabled
+            | Qt.ItemFlag.ItemIsDropEnabled
+            | Qt.ItemFlag.ItemIsEditable
+        )
+        marker_flags = (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsDragEnabled
+            | Qt.ItemFlag.ItemIsDropEnabled
+        )
+        for entry in store.merged_children(self._root, parent_rel):
+            parent = self.tree if parent_item is None else parent_item
+            if entry["type"] == "folder":
+                rel = "{}/{}".format(parent_rel, entry["name"]) if parent_rel else entry["name"]
+                item = QTreeWidgetItem(parent, [entry["name"]])
+                item.setData(0, Qt.ItemDataRole.UserRole, rel)
+                item.setData(0, _KIND_ROLE, "folder")
+                item.setData(0, _LABEL_ROLE, entry["name"])
+                item.setFlags(folder_flags)
+                item.setToolTip(0, "Double-click the name to rename it. Drag to reorder. Drop a layer or image here.")
+                item.setExpanded(was_empty or rel in keep_open)
+                self._add_tree_level(item, rel, was_empty, keep_open)
+                continue
+            if entry["type"] == "separator":
+                item = QTreeWidgetItem(parent, [""])
+                item.setData(0, Qt.ItemDataRole.UserRole, "")
+                item.setData(0, _KIND_ROLE, "separator")
+                item.setData(0, _ID_ROLE, entry["id"])
+                item.setFlags(marker_flags)
+                item.setSizeHint(0, QSize(0, 14))
+                item.setToolTip(0, "Drag to reorder.")
+                continue
+            text = entry.get("text") or "标题"
+            item = QTreeWidgetItem(parent, [text])
+            item.setData(0, Qt.ItemDataRole.UserRole, "")
+            item.setData(0, _KIND_ROLE, "title")
+            item.setData(0, _ID_ROLE, entry["id"])
+            item.setData(0, _LABEL_ROLE, text)
+            item.setFlags(marker_flags | Qt.ItemFlag.ItemIsEditable)
+            item.setToolTip(0, "A title is only a label. Double-click to edit it. Drag to reorder.")
+
+    def _find_folder_item(self, rel):
+        return self._find_tree_item(lambda item: _item_kind(item) == "folder" and (item.data(0, Qt.ItemDataRole.UserRole) or "") == rel)
+
+    def _find_marker_item(self, marker_id):
+        return self._find_tree_item(lambda item: (item.data(0, _ID_ROLE) or "") == marker_id)
+
+    def _find_tree_item(self, match, parent=None):
+        count = self.tree.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.tree.topLevelItem(index) if parent is None else parent.child(index)
+            if match(item):
+                return item
+            found = self._find_tree_item(match, item)
+            if found is not None:
+                return found
+        return None
 
     def _collect_expanded(self, item, found):
         if item is None:
             for index in range(self.tree.topLevelItemCount()):
                 self._collect_expanded(self.tree.topLevelItem(index), found)
             return
-        if item.isExpanded():
+        if item.isExpanded() and _item_kind(item) == "folder":
             found.add(item.data(0, Qt.ItemDataRole.UserRole) or "")
         for index in range(item.childCount()):
             self._collect_expanded(item.child(index), found)
 
     def _fill_grid(self, select_image):
         folder = self._current_folder()
+        self._apply_view_mode(self._saved_view_mode(folder), persist=False)
         self._loading = True
         self.grid.blockSignals(True)
         try:
@@ -937,16 +1233,100 @@ class AssetLibraryDocker(DockWidget):
         except Exception:
             pass
 
-    def _saved_view_mode(self):
+    def _saved_list_icon(self):
         try:
-            raw = Krita.instance().readSetting("TFM", "assets_view_mode", VIEW_THUMB)
+            value = int(Krita.instance().readSetting("TFM", "assets_list_size", str(LIST_DEFAULT)))
+        except (TypeError, ValueError, AttributeError):
+            return LIST_DEFAULT
+        return max(LIST_MIN, min(LIST_MAX, value))
+
+    def _remember_list_icon(self, edge):
+        self._pending_list_icon = int(edge)
+        timer = getattr(self, "_list_icon_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._write_list_icon)
+            self._list_icon_timer = timer
+        timer.start(300)
+
+    def _write_list_icon(self):
+        edge = getattr(self, "_pending_list_icon", None)
+        if edge is None:
+            return
+        try:
+            Krita.instance().writeSetting("TFM", "assets_list_size", str(int(edge)))
         except Exception:
-            return VIEW_THUMB
-        return VIEW_LIST if raw == VIEW_LIST else VIEW_THUMB
+            pass
+
+    def _saved_view_mode(self, folder):
+        mode = self._read_view_modes().get(folder or "")
+        return mode if mode in (VIEW_THUMB, VIEW_LIST) else VIEW_THUMB
 
     def _remember_view_mode(self, mode):
+        folder = self._current_folder() or ""
+        modes = self._read_view_modes()
+        modes[folder] = VIEW_LIST if mode == VIEW_LIST else VIEW_THUMB
+        self._write_view_modes(modes)
+
+    def _retarget_view_modes(self, old, new):
+        if not old or old == new:
+            return
+        modes = self._read_view_modes()
+        prefix = old + "/"
+        updated = {}
+        changed = False
+        for key, mode in modes.items():
+            if key == old:
+                updated[new] = mode
+                changed = True
+            elif key.startswith(prefix):
+                updated[new + key[len(old):]] = mode
+                changed = True
+            else:
+                updated[key] = mode
+        if changed:
+            self._write_view_modes(updated)
+
+    def _forget_view_modes(self, folder):
+        if not folder:
+            return
+        modes = self._read_view_modes()
+        prefix = folder + "/"
+        updated = {
+            key: mode
+            for key, mode in modes.items()
+            if key != folder and not key.startswith(prefix)
+        }
+        if len(updated) != len(modes):
+            self._write_view_modes(updated)
+
+    def _read_view_modes(self):
         try:
-            Krita.instance().writeSetting("TFM", "assets_view_mode", mode)
+            raw = Krita.instance().readSetting("TFM", "assets_view_modes", "")
+        except Exception:
+            return {}
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        modes = {}
+        for key, value in data.items():
+            if value in (VIEW_THUMB, VIEW_LIST):
+                modes[str(key)] = value
+        return modes
+
+    def _write_view_modes(self, modes):
+        try:
+            Krita.instance().writeSetting(
+                "TFM",
+                "assets_view_modes",
+                json.dumps(modes, sort_keys=True),
+            )
         except Exception:
             pass
 
@@ -1004,15 +1384,62 @@ class AssetLibraryDocker(DockWidget):
         return rels
 
     def _new_folder(self):
-        parent = self._current_folder()
+        item = self.tree.currentItem()
+        kind = _item_kind(item)
+        before = None
+        if kind == "folder":
+            parent = item.data(0, Qt.ItemDataRole.UserRole) or ""
+        elif kind in ("separator", "title"):
+            parent = _parent_rel(item)
+            nxt = _next_sibling(self.tree, item)
+            before = _node_ref(nxt) if nxt is not None else None
+        else:
+            parent = ""
         try:
             rel = store.create_folder(self._root, parent, "New Folder")
+            if kind in ("separator", "title"):
+                rel = store.relocate_node(self._root, "folder", rel, parent, before)
         except store.AssetError as error:
             self._tell(str(error))
             return
         self._reload(rel)
 
+    def _new_marker(self, kind):
+        item = self.tree.currentItem()
+        if item is None:
+            parent = ""
+            before = None
+        else:
+            parent = _parent_rel(item)
+            nxt = _next_sibling(self.tree, item)
+            before = _node_ref(nxt) if nxt is not None else None
+        try:
+            entry = store.insert_marker(self._root, parent, kind, before, "标题")
+        except store.AssetError as error:
+            self._tell(str(error))
+            return
+        if kind == "title":
+            self._edit_marker = entry["id"]
+        self._reload(self._browsed)
+
     def _delete_folder(self):
+        item = self.tree.currentItem()
+        kind = _item_kind(item)
+        if kind in ("separator", "title"):
+            marker_id = item.data(0, _ID_ROLE) or ""
+            if kind == "title":
+                message = 'Delete the title "{}"?'.format(item.text(0))
+            else:
+                message = "Delete this separator?"
+            if not self._confirm(message):
+                return
+            try:
+                store.remove_marker(self._root, marker_id)
+            except store.AssetError as error:
+                self._tell(str(error))
+                return
+            self._reload(self._browsed)
+            return
         rel = self._current_folder()
         if not rel:
             self._set_status("Select a folder first.")
@@ -1026,6 +1453,7 @@ class AssetLibraryDocker(DockWidget):
         except store.AssetError as error:
             self._set_status(str(error))
             return
+        self._forget_view_modes(rel)
         self._reload(parent, status='Deleted "{}".'.format(label))
 
     def _delete_images(self):
@@ -1069,23 +1497,32 @@ class AssetLibraryDocker(DockWidget):
         else:
             self.tree.clearSelection()
             self.tree.setCurrentItem(None)
-        rel = self._current_folder()
+        kind = _item_kind(item)
+        rel = item.data(0, Qt.ItemDataRole.UserRole) or "" if kind == "folder" else ""
         menu = QMenu(self)
-        menu.addAction("New Folder", self._new_folder)
+        add_menu = menu.addMenu("添加")
+        add_menu.addAction("添加文件夹", self._new_folder)
+        add_menu.addAction("添加分隔符", lambda: self._new_marker("separator"))
+        add_menu.addAction("添加标题", lambda: self._new_marker("title"))
         rename = menu.addAction("Rename", self._begin_rename)
         delete = menu.addAction("Delete", self._delete_folder)
-        rename.setEnabled(bool(rel))
-        delete.setEnabled(bool(rel))
+        rename.setEnabled(kind == "title" or bool(rel))
+        delete.setEnabled(kind in ("separator", "title") or bool(rel))
         exec_(menu, self.tree.mapToGlobal(pos))
 
     def _begin_rename(self):
         item = self.tree.currentItem()
-        if item is None:
+        if item is None or _item_kind(item) == "separator":
             return
         self.tree.editItem(item, 0)
 
     def _folder_renamed(self, item, column):
         if self._loading or column != 0:
+            return
+        if _item_kind(item) == "title":
+            self._title_edited(item)
+            return
+        if _item_kind(item) == "separator":
             return
         rel = item.data(0, Qt.ItemDataRole.UserRole) or ""
         current = rel.rsplit("/", 1)[-1] if rel else ""
@@ -1111,8 +1548,73 @@ class AssetLibraryDocker(DockWidget):
                 item.setText(0, label)
                 self._loading = False
             return
+        self._retarget_view_modes(rel, renamed)
         QTimer.singleShot(0, lambda renamed=renamed, label=label: self._reload(
             renamed, status='Renamed to "{}".'.format(label)))
+
+    def _title_edited(self, item):
+        marker_id = item.data(0, _ID_ROLE) or ""
+        previous = item.data(0, _LABEL_ROLE) or ""
+        text = item.text(0).strip()
+        if not marker_id or not text or text == previous:
+            if previous and item.text(0) != previous:
+                self._loading = True
+                item.setText(0, previous)
+                self._loading = False
+            return
+        try:
+            cleaned = store.rename_title(self._root, marker_id, text)
+        except store.AssetError as error:
+            self._loading = True
+            item.setText(0, previous)
+            self._loading = False
+            self._tell(str(error))
+            return
+        self._loading = True
+        item.setText(0, cleaned)
+        item.setData(0, _LABEL_ROLE, cleaned)
+        self._loading = False
+
+    def _reorder_dropped(self, payload, slot):
+        kind = payload.get("kind") or "folder"
+        dest = slot.get("into") or slot.get("parent") or ""
+        before = None if slot.get("into") else slot.get("before")
+        try:
+            if kind == "folder":
+                old = payload.get("path") or ""
+                new_rel = store.relocate_node(self._root, "folder", old, dest, before)
+                if new_rel != old:
+                    self._retarget_view_modes(old, new_rel)
+                self._note_change(new_rel)
+                return
+            store.relocate_node(self._root, kind, payload.get("id") or "", dest, before)
+            self._note_change(self._browsed)
+        except store.AssetError as error:
+            self._tell(str(error))
+
+    def _saved_folder(self):
+        try:
+            rel = Krita.instance().readSetting("TFM", "assets_last_folder", "") or ""
+        except Exception:
+            return ""
+        rel = str(rel).replace("\\", "/").strip("/")
+        if not rel:
+            return ""
+        try:
+            known = set(store.list_folders(self._root))
+        except store.AssetError:
+            return ""
+        return rel if rel in known else ""
+
+    def _remember_folder(self, folder):
+        folder = (folder or "").replace("\\", "/").strip("/")
+        if folder == getattr(self, "_remembered_folder", None):
+            return
+        self._remembered_folder = folder
+        try:
+            Krita.instance().writeSetting("TFM", "assets_last_folder", folder)
+        except Exception:
+            pass
 
     def _need_folder(self):
         folder = self._current_folder()
@@ -1592,6 +2094,8 @@ class AssetLibraryDocker(DockWidget):
         if moved == rel and parent == (dest or ""):
             self._set_status("Nothing was moved.")
             return
+        if moved != rel:
+            self._retarget_view_modes(rel, moved)
         self._note_change(moved, status='Moved "{}".'.format(moved.rsplit("/", 1)[-1]))
 
     def _move_asset_items(self, folder, mime):
@@ -1718,14 +2222,26 @@ class AssetLibraryDocker(DockWidget):
                 self._reload(*pending)
 
     def _start_folder_drag(self):
-        rel = self._current_folder()
-        if not rel:
+        item = self.tree.currentItem()
+        kind = _item_kind(item)
+        if kind == "folder":
+            rel = item.data(0, Qt.ItemDataRole.UserRole) or ""
+            if not rel:
+                return
+            payload = {"kind": "folder", "path": rel}
+            label = rel.rsplit("/", 1)[-1]
+        elif kind in ("separator", "title"):
+            marker_id = item.data(0, _ID_ROLE) or ""
+            if not marker_id:
+                return
+            payload = {"kind": kind, "id": marker_id}
+            label = item.text(0) if kind == "title" and item.text(0) else "—"
+        else:
             return
         mime = QMimeData()
-        mime.setData(FOLDER_MIME, QByteArray(json.dumps({"path": rel}).encode("utf-8")))
+        mime.setData(FOLDER_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
         drag = QDrag(self.tree)
         drag.setMimeData(mime)
-        label = rel.rsplit("/", 1)[-1]
         pixmap = QPixmap(168, 28)
         pixmap.fill(QColor(48, 48, 48))
         painter = QPainter(pixmap)

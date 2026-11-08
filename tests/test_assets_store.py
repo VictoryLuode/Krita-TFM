@@ -159,6 +159,52 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "Street" not in store.list_folders(root)
 
 
+def test_tree_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = store.ensure_assets(os.path.join(tmp, "order"))
+        store.create_folder(root, "", "Alpha")
+        store.create_folder(root, "", "Beta")
+        store.create_folder(root, "", "Gamma")
+        assert [item["name"] for item in store.merged_children(root, "")] == ["Alpha", "Beta", "Gamma"]
+
+        store.relocate_node(root, "folder", "Gamma", "", {"type": "folder", "name": "Alpha"})
+        folders = [item["name"] for item in store.merged_children(root, "") if item["type"] == "folder"]
+        assert folders == ["Gamma", "Alpha", "Beta"]
+
+        store.insert_marker(root, "", "separator", {"type": "folder", "name": "Alpha"})
+        title = store.insert_marker(root, "", "title", {"type": "folder", "name": "Beta"}, "参考")
+        listed = [
+            (item["type"], item.get("name") or item.get("text"))
+            for item in store.merged_children(root, "")
+        ]
+        assert listed == [
+            ("folder", "Gamma"),
+            ("separator", None),
+            ("folder", "Alpha"),
+            ("title", "参考"),
+            ("folder", "Beta"),
+        ]
+
+        assert store.rename_title(root, title["id"], "人物") == "人物"
+        renamed = store.rename_folder(root, "Alpha", "People")
+        assert renamed == "People"
+        names = [item.get("name") or item.get("text") for item in store.merged_children(root, "")]
+        assert names == ["Gamma", None, "People", "人物", "Beta"]
+
+        moved = store.move_folder(root, "Gamma", "People")
+        assert moved == "People/Gamma"
+        root_names = [item.get("name") for item in store.merged_children(root, "") if item["type"] == "folder"]
+        assert root_names == ["People", "Beta"]
+        assert [item["name"] for item in store.merged_children(root, "People")] == ["Gamma"]
+
+        store.delete_folder(root, "People")
+        assert [item.get("name") for item in store.merged_children(root, "") if item["type"] == "folder"] == ["Beta"]
+        assert store.list_folders(root) == ["Beta"]
+        store.remove_marker(root, title["id"])
+        assert [item["type"] for item in store.merged_children(root, "")] == ["separator", "folder"]
+    print("tree order ok")
+
+
 def krita_root():
     candidates = []
     env = os.environ.get("KRITA_ROOT")
@@ -236,5 +282,6 @@ def test_pixels():
     print("pixel packing ok")
 
 
+test_tree_order()
 test_pixels()
 print("assets store ok")

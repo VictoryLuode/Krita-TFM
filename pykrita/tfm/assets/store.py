@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp")
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -104,7 +105,9 @@ def rename_folder(root, rel, name):
         _rename_path(source, destination)
     except OSError as error:
         raise AssetError("Could not rename that folder.") from error
-    return relative_path(root, destination)
+    new_rel = relative_path(root, destination)
+    _retarget_order(root, rel, new_rel)
+    return new_rel
 
 
 def move_folder(root, rel, dest_parent):
@@ -130,7 +133,9 @@ def move_folder(root, rel, dest_parent):
         _rename_path(source, destination)
     except OSError as error:
         raise AssetError("Could not move that folder.") from error
-    return relative_path(root, destination)
+    new_rel = relative_path(root, destination)
+    _retarget_order(root, rel, new_rel)
+    return new_rel
 
 
 def delete_folder(root, rel):
@@ -141,6 +146,7 @@ def delete_folder(root, rel):
         shutil.rmtree(path)
     except OSError as error:
         raise AssetError("Could not delete that folder.") from error
+    _forget_order(root, rel)
 
 
 def new_image_path(root, folder_rel, stem, suffix=".png"):
@@ -335,6 +341,353 @@ def _rename_path(source, destination):
         os.rename(temporary, destination)
         return
     os.rename(source, destination)
+
+
+_ORDER_FILE = ".tfm-order.json"
+
+
+def merged_children(root, parent_rel):
+    """Ordered children of one folder: saved order, then new folders at the end."""
+    parent_rel = _clean_rel(parent_rel)
+    names = _direct_folder_names(root, parent_rel)
+    known = set(names)
+    result = []
+    seen = set()
+    for entry in _load_order(root).get(parent_rel, []):
+        if entry["type"] == "folder":
+            name = entry["name"]
+            if name in known and name not in seen:
+                result.append(dict(entry))
+                seen.add(name)
+        else:
+            result.append(dict(entry))
+    for name in names:
+        if name not in seen:
+            result.append({"type": "folder", "name": name})
+    return result
+
+
+def insert_marker(root, parent_rel, kind, before=None, text="标题"):
+    if kind not in ("separator", "title"):
+        raise AssetError("That item cannot be added.")
+    parent_rel = _clean_rel(parent_rel)
+    if parent_rel and not os.path.isdir(_folder(root, parent_rel)):
+        raise AssetError("That folder is not in the asset library.")
+    children = merged_children(root, parent_rel)
+    entry = {"type": kind, "id": _marker_id(root)}
+    if kind == "title":
+        entry["text"] = _clean_title(text) or "标题"
+    children.insert(_entry_index(children, before), entry)
+    _write_parent(root, parent_rel, children)
+    return entry
+
+
+def rename_title(root, marker_id, text):
+    cleaned = _clean_title(text)
+    if not cleaned:
+        raise AssetError("The title cannot be empty.")
+    order = _load_order(root)
+    for entries in order.values():
+        for entry in entries:
+            if entry.get("type") == "title" and entry.get("id") == marker_id:
+                entry["text"] = cleaned
+                _save_order(root, order)
+                return cleaned
+    raise AssetError("That title is no longer in the library.")
+
+
+def remove_marker(root, marker_id):
+    if not marker_id:
+        raise AssetError("That item is no longer in the library.")
+    order = _load_order(root)
+    found = False
+    for key in list(order):
+        kept = [entry for entry in order[key] if entry.get("id") != marker_id]
+        if len(kept) != len(order[key]):
+            found = True
+            if kept:
+                order[key] = kept
+            else:
+                order.pop(key)
+    if not found:
+        raise AssetError("That item is no longer in the library.")
+    _save_order(root, order)
+
+
+def relocate_node(root, kind, key, dest_parent, before=None):
+    """Move a folder, separator, or title to dest_parent, inserted before `before`."""
+    dest_parent = _clean_rel(dest_parent)
+    if dest_parent and not os.path.isdir(_folder(root, dest_parent)):
+        raise AssetError("That folder is not in the asset library.")
+    if kind == "folder":
+        return _relocate_folder(root, key, dest_parent, before)
+    if kind not in ("separator", "title"):
+        raise AssetError("That item cannot be moved.")
+    return _relocate_marker(root, kind, key, dest_parent, before)
+
+
+def _relocate_folder(root, rel, dest_parent, before):
+    rel = _clean_rel(rel)
+    source_parent, leaf = _split_rel(rel)
+    if (
+        before
+        and before.get("type") == "folder"
+        and before.get("name") == leaf
+        and source_parent == dest_parent
+    ):
+        return rel
+    if not rel or dest_parent == rel or dest_parent.startswith(rel + "/"):
+        raise AssetError("A folder cannot be moved into itself.")
+    new_rel = rel
+    if source_parent != dest_parent:
+        new_rel = move_folder(root, rel, dest_parent)
+        leaf = new_rel.rsplit("/", 1)[-1]
+    children = [
+        entry for entry in merged_children(root, dest_parent)
+        if not (entry.get("type") == "folder" and entry.get("name") == leaf)
+    ]
+    children.insert(_entry_index(children, before), {"type": "folder", "name": leaf})
+    _write_parent(root, dest_parent, children)
+    return new_rel
+
+
+def _relocate_marker(root, kind, marker_id, dest_parent, before):
+    if (
+        before
+        and before.get("type") == kind
+        and before.get("id") == marker_id
+    ):
+        return marker_id
+    order = _load_order(root)
+    found = None
+    found_parent = None
+    for parent, entries in order.items():
+        for entry in entries:
+            if entry.get("type") == kind and entry.get("id") == marker_id:
+                found = dict(entry)
+                found_parent = parent
+                break
+        if found is not None:
+            break
+    if found is None:
+        raise AssetError("That item is no longer in the library.")
+    if found_parent == dest_parent:
+        children = [
+            entry for entry in merged_children(root, dest_parent)
+            if not (entry.get("type") == kind and entry.get("id") == marker_id)
+        ]
+        children.insert(_entry_index(children, before), found)
+        _write_parent(root, dest_parent, children)
+        return marker_id
+    source = [
+        entry for entry in merged_children(root, found_parent)
+        if not (entry.get("type") == kind and entry.get("id") == marker_id)
+    ]
+    _write_parent(root, found_parent, source)
+    children = merged_children(root, dest_parent)
+    children.insert(_entry_index(children, before), found)
+    _write_parent(root, dest_parent, children)
+    return marker_id
+
+
+def _direct_folder_names(root, parent_rel):
+    path = _folder(root, parent_rel)
+    if not os.path.isdir(path):
+        return []
+    try:
+        listed = os.listdir(path)
+    except OSError:
+        return []
+    names = [
+        name for name in listed
+        if _part_ok(name) and os.path.isdir(os.path.join(path, name))
+    ]
+    names.sort(key=str.casefold)
+    return names
+
+
+def _order_path(root):
+    return os.path.join(os.path.abspath(root), _ORDER_FILE)
+
+
+def _load_order(root):
+    try:
+        with open(_order_path(root), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    order = {}
+    for key, entries in data.items():
+        if not isinstance(key, str) or not isinstance(entries, list):
+            continue
+        cleaned = []
+        seen_names = set()
+        seen_ids = set()
+        for entry in entries:
+            item = _clean_order_entry(entry, seen_names, seen_ids)
+            if item is not None:
+                cleaned.append(item)
+        if cleaned:
+            order[_clean_rel(key)] = cleaned
+    return order
+
+
+def _clean_order_entry(entry, seen_names, seen_ids):
+    if not isinstance(entry, dict):
+        return None
+    kind = entry.get("type")
+    if kind == "folder":
+        name = entry.get("name")
+        if not isinstance(name, str) or not _part_ok(name) or name in seen_names:
+            return None
+        seen_names.add(name)
+        return {"type": "folder", "name": name}
+    if kind not in ("separator", "title"):
+        return None
+    marker_id = entry.get("id")
+    if not isinstance(marker_id, str) or not marker_id or marker_id in seen_ids:
+        return None
+    seen_ids.add(marker_id)
+    item = {"type": kind, "id": marker_id}
+    if kind == "title":
+        item["text"] = _clean_title(entry.get("text")) or "标题"
+    return item
+
+
+def _save_order(root, order):
+    path = _order_path(root)
+    stored = {key: value for key, value in order.items() if value}
+    if not stored:
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError as error:
+                raise AssetError("Could not save the category order.") from error
+        return
+    fd, temporary = tempfile.mkstemp(dir=os.path.abspath(root), suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(stored, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temporary, path)
+        temporary = ""
+    except OSError as error:
+        raise AssetError("Could not save the category order.") from error
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _write_parent(root, parent_rel, children):
+    order = _load_order(root)
+    parent_rel = _clean_rel(parent_rel)
+    if children:
+        order[parent_rel] = children
+    else:
+        order.pop(parent_rel, None)
+    _save_order(root, order)
+
+
+def _marker_id(root):
+    used = set()
+    for entries in _load_order(root).values():
+        for entry in entries:
+            if entry.get("id"):
+                used.add(entry["id"])
+    while True:
+        marker_id = uuid.uuid4().hex[:8]
+        if marker_id not in used:
+            return marker_id
+
+
+def _clean_title(text):
+    cleaned = re.sub(r"[\x00-\x1f]", " ", str(text or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:80]
+
+
+def _split_rel(rel):
+    rel = _clean_rel(rel)
+    if not rel or "/" not in rel:
+        return "", rel
+    parent, leaf = rel.rsplit("/", 1)
+    return parent, leaf
+
+
+def _entry_index(children, before):
+    if not before:
+        return len(children)
+    for index, entry in enumerate(children):
+        if _entry_matches(entry, before):
+            return index
+    return len(children)
+
+
+def _entry_matches(entry, before):
+    if not isinstance(before, dict) or entry.get("type") != before.get("type"):
+        return False
+    if entry.get("type") == "folder":
+        return entry.get("name") == before.get("name")
+    return bool(before.get("id")) and entry.get("id") == before.get("id")
+
+
+def _retarget_order(root, old_rel, new_rel):
+    old_rel = _clean_rel(old_rel)
+    new_rel = _clean_rel(new_rel)
+    if not old_rel or old_rel == new_rel:
+        return
+    order = _load_order(root)
+    if not order:
+        return
+    old_parent, old_leaf = _split_rel(old_rel)
+    new_parent, new_leaf = _split_rel(new_rel)
+    rewritten = {}
+    moved = {}
+    for key, entries in order.items():
+        if key == old_rel or key.startswith(old_rel + "/"):
+            moved[new_rel + key[len(old_rel):]] = entries
+        else:
+            rewritten[key] = entries
+    rewritten.update(moved)
+    if old_parent == new_parent:
+        for entry in rewritten.get(old_parent, []):
+            if entry.get("type") == "folder" and entry.get("name") == old_leaf:
+                entry["name"] = new_leaf
+    else:
+        source = [
+            entry for entry in rewritten.get(old_parent, [])
+            if not (entry.get("type") == "folder" and entry.get("name") == old_leaf)
+        ]
+        if source:
+            rewritten[old_parent] = source
+        else:
+            rewritten.pop(old_parent, None)
+    _save_order(root, rewritten)
+
+
+def _forget_order(root, rel):
+    rel = _clean_rel(rel)
+    if not rel:
+        return
+    order = _load_order(root)
+    if not order:
+        return
+    parent, leaf = _split_rel(rel)
+    if parent in order:
+        kept = [
+            entry for entry in order[parent]
+            if not (entry.get("type") == "folder" and entry.get("name") == leaf)
+        ]
+        if kept:
+            order[parent] = kept
+        else:
+            order.pop(parent, None)
+    for key in list(order):
+        if key == rel or key.startswith(rel + "/"):
+            order.pop(key, None)
+    _save_order(root, order)
 
 
 def _rename_with_sidecar(source, destination):
