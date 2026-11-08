@@ -1,9 +1,9 @@
 """Stage TFM Python resources into an empty, isolated Krita resource directory.
 
-This only copies the resource-side package (pykrita/tfm, desktop file, actions,
-and tfm_color_range.dll). Native filter binaries kritatfm.dll and
-tfm_vulkan_worker.exe must be installed separately into the Krita install
-lib/kritaplugins/ folder, or packed with package_release.py.
+This copies the resource-side packages (pykrita/tfm, pykrita/quick_image_search,
+shared qtcompat, desktop file, actions, and tfm_color_range.dll). Native filter
+binaries kritatfm.dll and tfm_vulkan_worker.exe must be installed separately into
+the Krita install lib/kritaplugins/ folder, or packed with package_release.py.
 """
 import argparse
 import hashlib
@@ -16,6 +16,17 @@ ROOT = Path(__file__).resolve().parent
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).digest()
+
+
+def _package_files(package_dir, suffix_ok=('.py', '.html'), extra_files=()):
+    extras = {Path(p) for p in extra_files}
+    files = []
+    for path in package_dir.rglob('*'):
+        if not path.is_file() or '__pycache__' in path.parts:
+            continue
+        if path.suffix in suffix_ok or path in extras:
+            files.append(path)
+    return files
 
 
 def stage(destination):
@@ -32,28 +43,49 @@ def stage(destination):
                     active = Path(value.strip()).resolve()
                     if destination == active or active in destination.parents or destination in active.parents:
                         raise ValueError('Destination overlaps the active Krita resource directory')
-    targets = [destination / 'pykrita' / 'tfm',
-               destination / 'pykrita' / 'tfm.desktop',
-               destination / 'actions' / 'tfm.action']
+
+    tfm_dst = destination / 'pykrita' / 'tfm'
+    search_dst = destination / 'pykrita' / 'quick_image_search'
+    qtcompat_dst = destination / 'pykrita' / 'qtcompat.py'
+    desktop_dst = destination / 'pykrita' / 'tfm.desktop'
+    action_dst = destination / 'actions' / 'tfm.action'
+    targets = [tfm_dst, search_dst, qtcompat_dst, desktop_dst, action_dst]
     if any(path.exists() for path in targets):
         raise FileExistsError('TFM already exists in the destination; refusing to overwrite')
+
     package = ROOT / 'pykrita' / 'tfm'
-    required = [package / '__init__.py', package / 'manager.py',
-                package / 'menus' / 'menubelt.py', package / 'menus' / 'config.py',
-                package / 'menus' / 'dialog.py', package / 'menus' / 'shortcuts.py',
-                package / 'filters' / 'dialog.py', package / 'filters' / 'settings.py',
-                package / 'native' / 'tfm_color_range.dll',
-                ROOT / 'pykrita' / 'tfm.desktop', ROOT / 'actions' / 'tfm.action']
+    search = ROOT / 'pykrita' / 'quick_image_search'
+    color_range = package / 'native' / 'tfm_color_range.dll'
+    qtcompat = ROOT / 'pykrita' / 'qtcompat.py'
+    required = [
+        package / '__init__.py', package / 'manager.py',
+        package / 'menus' / 'menubelt.py', package / 'menus' / 'config.py',
+        package / 'menus' / 'dialog.py', package / 'menus' / 'shortcuts.py',
+        package / 'filters' / 'dialog.py', package / 'filters' / 'settings.py',
+        search / '__init__.py', search / 'docker.py',
+        color_range, qtcompat,
+        ROOT / 'pykrita' / 'tfm.desktop', ROOT / 'actions' / 'tfm.action',
+    ]
     missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError('Missing required TFM files: ' + ', '.join(missing))
-    sources = [(p, targets[0] / p.relative_to(ROOT / 'pykrita' / 'tfm'))
-               for p in (ROOT / 'pykrita' / 'tfm').rglob('*')
-               if p.is_file() and (p.suffix in ('.py', '.html') or p == package / 'native' / 'tfm_color_range.dll') and '__pycache__' not in p.parts]
-    sources.extend([(ROOT / 'pykrita' / 'tfm.desktop', targets[1]),
-                    (ROOT / 'actions' / 'tfm.action', targets[2])])
+
+    sources = [
+        (path, tfm_dst / path.relative_to(package))
+        for path in _package_files(package, extra_files=(color_range,))
+    ]
+    sources.extend(
+        (path, search_dst / path.relative_to(search))
+        for path in _package_files(search)
+    )
+    sources.extend([
+        (qtcompat, qtcompat_dst),
+        (ROOT / 'pykrita' / 'tfm.desktop', desktop_dst),
+        (ROOT / 'actions' / 'tfm.action', action_dst),
+    ])
     if not all(source.is_file() for source, _ in sources):
         raise FileNotFoundError('Missing TFM program file')
+
     created = []
     created_dirs = []
     try:

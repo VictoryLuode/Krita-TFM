@@ -42,11 +42,13 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
     color_range = package / "native" / "tfm_color_range.dll"
     dll = NATIVE_BIN / "kritatfm.dll"
     worker = NATIVE_BIN / "tfm_vulkan_worker.exe"
+    qtcompat = ROOT / "pykrita" / "qtcompat.py"
     required = [
         package / "__init__.py",
         package / "manager.py",
         search / "__init__.py",
         search / "docker.py",
+        qtcompat,
         color_range,
         ROOT / "pykrita" / "tfm.desktop",
         ROOT / "actions" / "tfm.action",
@@ -81,6 +83,7 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
         relative = source.relative_to(search)
         copy_file(source, staging / "resource" / "pykrita" / "quick_image_search" / relative, created)
 
+    copy_file(qtcompat, staging / "resource" / "pykrita" / "qtcompat.py", created)
     copy_file(ROOT / "pykrita" / "tfm.desktop", staging / "resource" / "pykrita" / "tfm.desktop", created)
     copy_file(ROOT / "actions" / "tfm.action", staging / "resource" / "actions" / "tfm.action", created)
     copy_file(dll, staging / "kritaplugins" / "kritatfm.dll", created)

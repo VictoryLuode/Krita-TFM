@@ -6,6 +6,7 @@ TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native 
 
 - Python package: `pykrita/tfm/` (`menus/`, `filters/`, `assets/`, `color_range*.py`, `manager.py`), registered via `pykrita/tfm.desktop` and `actions/tfm.action`.
 - Quick Image Search tool package: `pykrita/quick_image_search/` (imported by `tfm/search.py`; no separate `.desktop`).
+- Shared Qt shim: `pykrita/qtcompat.py` (re-exported by `tfm/menus`, `tfm/filters`, and `quick_image_search`).
 - Action IDs: `tfm_popup`, `tfm_edit`, `tfm_color_range`, `tfm_assets`, `tfm_save_asset`, `tfm_image_search`, `tfm_convert_color_space`, `tfm_tools_menu`.
 
 - Native filter plugin: `native/fx/` builds `kritatfm.dll` plus `tfm_vulkan_worker.exe` (same folder as the DLL). Vulkan compute for supported filters runs in the worker process over a local pipe; `kritatfm.dll` must not load `vulkan-1.dll`.
