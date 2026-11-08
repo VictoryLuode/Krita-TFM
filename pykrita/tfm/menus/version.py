@@ -5,4 +5,4 @@ release time; `python verify.py` fails when it falls behind the newest git tag.
 Bump it in the same commit that gets tagged.
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"

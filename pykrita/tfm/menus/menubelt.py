@@ -14,6 +14,7 @@ import time
 
 from krita import Extension, Krita
 
+from ..i18n import tr
 from .qtcompat import (
     QAction,
     QApplication,
@@ -248,7 +249,7 @@ class MenuBeltExtension(Extension):
         # Trigger action (whole-menu popup; also usable via Krita shortcuts editor)
         migrated = migrate_legacy_shortcuts(find_shortcut_file())
         popup_action = window.createAction(
-            "tfm_popup", "Pop Up Custom List", "")
+            "tfm_popup", tr("Pop Up Custom List", "弹出自定义列表"), "")
         if "tfm_popup" in migrated:
             popup_action.setShortcut(QKeySequence(migrated["tfm_popup"]))
         popup_action.triggered.connect(self.pop_menu)
@@ -258,31 +259,33 @@ class MenuBeltExtension(Extension):
         tools_menu = QMenu(window.qwindow())
         root_action.setMenu(tools_menu)
         edit_action = window.createAction(
-            "tfm_edit", "Configure TFM", "")
+            "tfm_edit", tr("Configure TFM", "配置 TFM"), "")
         edit_action.triggered.connect(self.open_editor)
 
         color_range_action = window.createAction(
-            "tfm_color_range", "Advance Selection...", "Select")
+            "tfm_color_range", tr("Advanced Selection…", "高级选区…"), "Select")
         color_range_action.triggered.connect(self.open_color_range)
         from ..manager import (
             color_range_enabled, convert_color_space_enabled, assets_enabled, search_enabled)
         color_range_action.setVisible(color_range_enabled())
         color_range_action.setEnabled(color_range_enabled())
 
-        assets_action = window.createAction("tfm_assets", "Asset Library", "")
+        assets_action = window.createAction("tfm_assets", tr("Asset Library", "资产库"), "")
         assets_action.triggered.connect(self.show_assets)
         assets_action.setVisible(assets_enabled())
         assets_action.setEnabled(assets_enabled())
-        save_asset_action = window.createAction("tfm_save_asset", "Save Asset", "")
+        save_asset_action = window.createAction("tfm_save_asset", tr("Save Asset", "保存资产"), "")
         save_asset_action.triggered.connect(self.save_asset)
         save_asset_action.setVisible(assets_enabled())
         save_asset_action.setEnabled(assets_enabled())
-        search_action = window.createAction("tfm_image_search", "Quick Image Search", "")
+        search_action = window.createAction("tfm_image_search", tr("Quick Image Search", "快速搜图"), "")
         search_action.triggered.connect(self.show_image_search)
         search_action.setVisible(search_enabled())
         search_action.setEnabled(search_enabled())
         convert_action = window.createAction(
-            "tfm_convert_color_space", "Convert All Layers to Default Color Space", "")
+            "tfm_convert_color_space",
+            tr("Convert All Layers to Default Color Space", "将所有图层转换为默认色彩空间"),
+            "")
         convert_action.triggered.connect(self.convert_layers_color_space)
         convert_action.setVisible(convert_color_space_enabled())
         convert_action.setEnabled(convert_color_space_enabled())

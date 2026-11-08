@@ -1,6 +1,6 @@
 # Source and license notes
 
-TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native filters, and the Advance Selection tool into a single Krita plugin.
+TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native filters, and the Advanced Selection tool into a single Krita plugin.
 
 ## Architecture and paths
 
@@ -27,7 +27,7 @@ TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native 
 ## Build notes
 
 - Filters / Vulkan worker (Krita closed): `python native/fx/build.py`
-- Color-range kernel (Advance Selection):
+- Color-range kernel (Advanced Selection):
   `clang -shared -O2 -ffast-math -o pykrita/tfm/native/tfm_color_range.dll native/color_range.c`
   (llvm-mingw / clang on PATH).
 - Local install when Krita is closed: `python deploy.py` (machine-local script; not shipped in the public tree).

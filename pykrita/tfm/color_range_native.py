@@ -33,11 +33,11 @@ def _function(name, argtypes):
         try:
             _library = ctypes.CDLL(str(_LIBRARY_PATH))
         except OSError as error:
-            raise RuntimeError('Advance Selection native component could not be loaded: ' + str(error)) from error
+            raise RuntimeError('Advanced Selection native component could not be loaded: ' + str(error)) from error
     try:
         function = getattr(_library, name)
     except AttributeError as error:
-        raise RuntimeError('Advance Selection native component is missing or outdated: ' + name) from error
+        raise RuntimeError('Advanced Selection native component is missing or outdated: ' + name) from error
     function.argtypes = argtypes
     function.restype = ctypes.c_int
     _functions[name] = function
@@ -46,7 +46,7 @@ def _function(name, argtypes):
 
 def _image_source(image):
     if image.format() != image.Format.Format_ARGB32:
-        raise ValueError('Advance Selection requires an ARGB32 image.')
+        raise ValueError('Advanced Selection requires an ARGB32 image.')
     width, height, stride = image.width(), image.height(), image.bytesPerLine()
     pointer = image.constBits()
     pointer.setsize(stride * height)
@@ -81,7 +81,7 @@ def mask(image, samples, fuzziness, localized, radius, invert, threshold_enabled
     if options:
         args.extend((tolerance, softness))
     if fn(*args, out) != 0:
-        raise RuntimeError('Advance Selection native calculation failed.')
+        raise RuntimeError('Advanced Selection native calculation failed.')
     return output
 
 
@@ -96,7 +96,7 @@ def perceptual(image, luminance, mode, threshold, invert, threshold_enabled=True
         raise ValueError('Unknown perceptual selection mode.')
     source, width, height, stride = _image_source(image)
     if len(luminance) != width * height:
-        raise ValueError('Invalid Advance Selection luminance.')
+        raise ValueError('Invalid Advanced Selection luminance.')
     fn = _function(
         'tfm_perceptual_options' if options else 'tfm_perceptual',
         [_U8_PTR, _U8_PTR, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -110,7 +110,7 @@ def perceptual(image, luminance, mode, threshold, invert, threshold_enabled=True
     if options:
         args.extend((tolerance, softness))
     if fn(*args, out) != 0:
-        raise RuntimeError('Advance Selection native calculation failed.')
+        raise RuntimeError('Advanced Selection native calculation failed.')
     return output
 
 
@@ -122,7 +122,7 @@ def channel_mask(image, luminance, channel, threshold, invert, threshold_enabled
     tolerance, softness = _option(tolerance), _option(softness)
     source, width, height, stride = _image_source(image)
     if len(luminance) != width * height:
-        raise ValueError('Invalid Advance Selection luminance.')
+        raise ValueError('Invalid Advanced Selection luminance.')
     fn = _function('tfm_channel_mask',
                     [_U8_PTR, _U8_PTR, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                      ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -134,7 +134,7 @@ def channel_mask(image, luminance, channel, threshold, invert, threshold_enabled
             ('red', 'green', 'blue', 'luminance').index(channel), threshold,
             int(invert), int(threshold_enabled), tolerance, softness]
     if fn(*args, out) != 0:
-        raise RuntimeError('Advance Selection native calculation failed.')
+        raise RuntimeError('Advanced Selection native calculation failed.')
     return output
 
 
@@ -147,7 +147,7 @@ def outline(mask, width, height):
     source = (_U8 * len(source_data)).from_buffer(source_data)
     output, target = _output(len(mask))
     if fn(source, width, height, target) != 0:
-        raise RuntimeError('Advance Selection outline calculation failed.')
+        raise RuntimeError('Advanced Selection outline calculation failed.')
     return output
 
 
@@ -165,5 +165,5 @@ def combine(mask, old, mode):
     o = (_U8 * len(old_data)).from_buffer(old_data)
     result, out = _output(len(mask))
     if fn(m, o, len(mask), 1, names[mode], out) != 0:
-        raise RuntimeError('Advance Selection selection combination failed.')
+        raise RuntimeError('Advanced Selection selection combination failed.')
     return result

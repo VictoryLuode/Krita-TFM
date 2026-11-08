@@ -29,7 +29,7 @@ def _kritarc_path():
     return os.path.join(base, "kritarc") if base else None
 
 
-def _resource_directory():
+def resource_directory():
     """Read ResourceDirectory straight from kritarc.
 
     Parsed by hand instead of via QSettings so the native filter and the panel
@@ -52,7 +52,7 @@ def _resource_directory():
 
 def _config_path():
     """Use the same settings file as the installed native filter."""
-    resource = _resource_directory()
+    resource = resource_directory()
     if resource:
         return os.path.join(resource, "TFM", "settings.json")
     return _app_config_path("TFM")
@@ -60,7 +60,7 @@ def _config_path():
 
 def _legacy_paths():
     """Read-only compatibility locations, newest path first."""
-    resource = _resource_directory()
+    resource = resource_directory()
     paths = []
     if resource:
         paths.append(os.path.join(resource, "pykrita", "fxmanager", "data", "settings.json"))

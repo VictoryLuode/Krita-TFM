@@ -19,6 +19,8 @@ with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR') or tempfile.gettem
     assert (resource / 'pykrita' / 'tfm' / '__init__.py').is_file()
     assert (resource / 'pykrita' / 'quick_image_search' / 'docker.py').is_file()
     assert (resource / 'pykrita' / 'qtcompat.py').is_file()
+    assert (resource / 'pykrita' / 'i18n.py').is_file()
+    assert (resource / 'pykrita' / 'ui_chrome.py').is_file()
     assert (resource / 'actions' / 'tfm.action').is_file()
     assert (resource / 'pykrita' / 'tfm' / 'native' / 'tfm_color_range.dll').read_bytes() == (root / 'pykrita' / 'tfm' / 'native' / 'tfm_color_range.dll').read_bytes()
     assert unrelated.read_bytes() == b'keep-user-data'

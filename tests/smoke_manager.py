@@ -119,7 +119,7 @@ with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR') or tempfile.gettem
         assert json.loads(settings_file.read_text(encoding='utf-8'))['unknown'] == {'keep': True}
         assert filter_settings.save({'backend': 'cpu'})
         assert json.loads(settings_file.read_text(encoding='utf-8'))['unknown'] == {'keep': True}
-with mock.patch.object(filter_settings, '_resource_directory', return_value='R:/test-resource'):
+with mock.patch.object(filter_settings, 'resource_directory', return_value='R:/test-resource'):
     assert Path(filter_settings._config_path()).as_posix().endswith('/TFM/settings.json')
 assert len(instance.extensions) == 1
 # The manager action is registered directly under Tools; popup menus remain separate.

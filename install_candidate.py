@@ -47,9 +47,11 @@ def stage(destination):
     tfm_dst = destination / 'pykrita' / 'tfm'
     search_dst = destination / 'pykrita' / 'quick_image_search'
     qtcompat_dst = destination / 'pykrita' / 'qtcompat.py'
+    i18n_dst = destination / 'pykrita' / 'i18n.py'
+    ui_chrome_dst = destination / 'pykrita' / 'ui_chrome.py'
     desktop_dst = destination / 'pykrita' / 'tfm.desktop'
     action_dst = destination / 'actions' / 'tfm.action'
-    targets = [tfm_dst, search_dst, qtcompat_dst, desktop_dst, action_dst]
+    targets = [tfm_dst, search_dst, qtcompat_dst, i18n_dst, ui_chrome_dst, desktop_dst, action_dst]
     if any(path.exists() for path in targets):
         raise FileExistsError('TFM already exists in the destination; refusing to overwrite')
 
@@ -57,13 +59,15 @@ def stage(destination):
     search = ROOT / 'pykrita' / 'quick_image_search'
     color_range = package / 'native' / 'tfm_color_range.dll'
     qtcompat = ROOT / 'pykrita' / 'qtcompat.py'
+    i18n = ROOT / 'pykrita' / 'i18n.py'
+    ui_chrome = ROOT / 'pykrita' / 'ui_chrome.py'
     required = [
         package / '__init__.py', package / 'manager.py',
         package / 'menus' / 'menubelt.py', package / 'menus' / 'config.py',
         package / 'menus' / 'dialog.py', package / 'menus' / 'shortcuts.py',
         package / 'filters' / 'dialog.py', package / 'filters' / 'settings.py',
         search / '__init__.py', search / 'docker.py',
-        color_range, qtcompat,
+        color_range, qtcompat, i18n, ui_chrome,
         ROOT / 'pykrita' / 'tfm.desktop', ROOT / 'actions' / 'tfm.action',
     ]
     missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
@@ -80,6 +84,8 @@ def stage(destination):
     )
     sources.extend([
         (qtcompat, qtcompat_dst),
+        (i18n, i18n_dst),
+        (ui_chrome, ui_chrome_dst),
         (ROOT / 'pykrita' / 'tfm.desktop', desktop_dst),
         (ROOT / 'actions' / 'tfm.action', action_dst),
     ])

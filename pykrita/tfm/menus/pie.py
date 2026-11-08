@@ -102,29 +102,39 @@ class PieWidget(QWidget):
         cx, cy = self._size / 2, self._size / 2
 
         # Outer disc
-        p.setBrush(QColor(33, 33, 33, 200))
-        p.setPen(QPen(QColor(80, 80, 84, 210), 2))
+        p.setBrush(QColor(28, 28, 30, 210))
+        p.setPen(QPen(QColor(70, 70, 74, 220), 1.5))
         p.drawEllipse(QPointF(cx, cy), self.RADIUS + self.ITEM_R + 10,
                       self.RADIUS + self.ITEM_R + 10)
 
-        # Centre deadzone dot
-        p.setBrush(QColor(90, 90, 95, 200))
+        # Centre deadzone
+        p.setBrush(QColor(70, 70, 74, 210))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx, cy), self.DEADZONE * 0.5, self.DEADZONE * 0.5)
+        p.drawEllipse(QPointF(cx, cy), self.DEADZONE * 0.45, self.DEADZONE * 0.45)
+        p.setBrush(QColor(40, 40, 42, 230))
+        p.drawEllipse(QPointF(cx, cy), self.DEADZONE * 0.22, self.DEADZONE * 0.22)
 
         # Items
         for k, (label, icon, _trig) in enumerate(self._slices):
             x, y = cx + math.cos(-math.pi / 2 + k * (2 * math.pi / self._n)) * self.RADIUS, \
                    cy + math.sin(-math.pi / 2 + k * (2 * math.pi / self._n)) * self.RADIUS
             active = (k == self._sel)
-            p.setBrush(QColor(74, 74, 78, 240) if active else QColor(44, 44, 47, 225))
-            p.setPen(QPen(QColor(255, 255, 255, 230) if active else QColor(150, 150, 150, 160), 2))
+            if active:
+                # Soft selection ring behind the slice.
+                p.setBrush(QColor(90, 140, 200, 70))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QPointF(x, y), self.ITEM_R + 7, self.ITEM_R + 7)
+            p.setBrush(QColor(88, 120, 168, 245) if active else QColor(48, 48, 52, 235))
+            p.setPen(QPen(QColor(235, 240, 255, 240) if active else QColor(140, 140, 145, 170),
+                          2.2 if active else 1.5))
             p.drawEllipse(QPointF(x, y), self.ITEM_R, self.ITEM_R)
             if icon is not None and not icon.isNull():
                 icon.paint(p, QRect(int(x - 16), int(y - 16), 32, 32))
             elif label:
-                p.setPen(QColor(230, 230, 230))
-                p.setFont(QFont("sans-serif", 9))
+                p.setPen(QColor(245, 245, 245) if active else QColor(210, 210, 210))
+                font = QFont("sans-serif", 9)
+                font.setBold(active)
+                p.setFont(font)
                 p.drawText(QRectF(x - self.ITEM_R, y - self.ITEM_R,
                                   self.ITEM_R * 2, self.ITEM_R * 2),
                            Qt.AlignmentFlag.AlignCenter, self._short(label))

@@ -43,12 +43,16 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
     dll = NATIVE_BIN / "kritatfm.dll"
     worker = NATIVE_BIN / "tfm_vulkan_worker.exe"
     qtcompat = ROOT / "pykrita" / "qtcompat.py"
+    i18n = ROOT / "pykrita" / "i18n.py"
+    ui_chrome = ROOT / "pykrita" / "ui_chrome.py"
     required = [
         package / "__init__.py",
         package / "manager.py",
         search / "__init__.py",
         search / "docker.py",
         qtcompat,
+        i18n,
+        ui_chrome,
         color_range,
         ROOT / "pykrita" / "tfm.desktop",
         ROOT / "actions" / "tfm.action",
@@ -84,6 +88,8 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
         copy_file(source, staging / "resource" / "pykrita" / "quick_image_search" / relative, created)
 
     copy_file(qtcompat, staging / "resource" / "pykrita" / "qtcompat.py", created)
+    copy_file(i18n, staging / "resource" / "pykrita" / "i18n.py", created)
+    copy_file(ui_chrome, staging / "resource" / "pykrita" / "ui_chrome.py", created)
     copy_file(ROOT / "pykrita" / "tfm.desktop", staging / "resource" / "pykrita" / "tfm.desktop", created)
     copy_file(ROOT / "actions" / "tfm.action", staging / "resource" / "actions" / "tfm.action", created)
     copy_file(dll, staging / "kritaplugins" / "kritatfm.dll", created)

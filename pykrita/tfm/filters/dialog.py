@@ -4,6 +4,8 @@ This dialog manages the filter registry and processing policy. It never applies
 filters or creates Krita nodes; those actions remain in Krita's native UI.
 """
 
+import os
+
 from . import operations, settings
 from .catalog import FILTERS, FILTER_DEFAULT_SPECS, VULKAN_FILTER_IDS
 from .qtcompat import (
@@ -101,7 +103,7 @@ class FilterSettingsDialog(QWidget):
         self._registry = None
         self._registry_error = None
         self.setMinimumSize(980, 620)
-        _dark_palette(self)
+        # Follow the host theme (Configure TFM other tabs do the same).
         self._pending = settings.load()
         self._pending["filter_defaults"] = {key: dict(value) for key, value in self._pending.get("filter_defaults", {}).items()}
         self._pending["filter_backends"] = dict(self._pending.get("filter_backends", {}))
@@ -189,6 +191,11 @@ class FilterSettingsDialog(QWidget):
             "Check a filter to register it in Krita's Filter menu (requires Save Filters, then restart Krita). "
             "Uncheck to hide it after restart. Drag a filter onto another category header to move it.")
         left.addWidget(filter_label)
+        from ..ui_chrome import apply_muted_label
+        restart_note = QLabel(
+            "Enable/disable changes need Save Filters, then a Krita restart before the Filter menu updates.")
+        apply_muted_label(restart_note)
+        left.addWidget(restart_note)
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search...")
         self._search.textChanged.connect(self._reload)
@@ -348,6 +355,9 @@ class FilterSettingsDialog(QWidget):
                  "<p><b>Status:</b> {}<br><b>Category:</b> {}<br><b>ID:</b> {}</p>".format(
                      "registered" if row["registered"] else "missing",
                      item.data(_ROLE + 1) if item else row["category"], row["id"])]
+        tip = self._actionable_filter_tip(row["id"])
+        if tip:
+            lines.append("<p><b>Setup:</b> {}</p>".format(tip))
         if row.get("settings"):
             lines.append("<p><b>Filter parameters</b></p><ul>")
             for spec in row["settings"]:
@@ -357,6 +367,26 @@ class FilterSettingsDialog(QWidget):
                 lines.append("<li>{} — {}{}</li>".format(spec["label"], value, bounds))
             lines.append("</ul>")
         self._detail.setHtml("".join(lines))
+
+    def _actionable_filter_tip(self, ident):
+        if ident in ("tfm_background_removal", "fxmanager_background_removal"):
+            from . import settings as filter_settings
+            root = filter_settings.resource_directory()
+            if not root:
+                return ("Could not locate Krita’s resource directory. "
+                        "Models belong in ResourceDirectory/TFM/background-removal/models/.")
+            models = os.path.join(root, "TFM", "background-removal", "models")
+            try:
+                names = [name for name in os.listdir(models) if name.lower().endswith(".gguf")]
+            except OSError:
+                names = []
+            if names:
+                return "Models found in {} ({}).".format(models, ", ".join(sorted(names)[:4]))
+            return ("No .gguf models in {}. Download BiRefNet into that folder, then reopen this filter.".format(models))
+        if ident in VULKAN_FILTER_IDS:
+            return ("If GPU fails (missing worker / timeout), set Compute backend to CPU here, "
+                    "or put tfm_vulkan_worker.exe beside kritatfm.dll.")
+        return ""
 
     def _show_parameters(self, ident):
         specs = FILTER_DEFAULT_SPECS.get(ident, [])
@@ -524,11 +554,25 @@ class FilterSettingsDialog(QWidget):
                    "filter_defaults", "filter_backends")}
         if settings.save(values):
             self._saved_filter_state = self._filter_state()
-            self._status.setText(
-                "Filter settings saved. Backend choice applies on the next filter run; "
-                "restart Krita for enable/disable changes in the Filter menu.")
+            from ..i18n import tr
+            self._status.setText(tr(
+                "Filter settings saved. Backend choice applies on the next filter run.\n"
+                "Restart Krita to update enable/disable changes in the Filter menu.",
+                "滤镜设置已保存。后端选择在下次运行滤镜时生效。\n"
+                "请重启 Krita，以便更新滤镜菜单中的启用/禁用项。",
+            ))
+            font = self._status.font()
+            font.setBold(True)
+            self._status.setFont(font)
         else:
-            self._status.setText("Could not save TFM filter settings.")
+            from ..i18n import tr
+            self._status.setText(tr(
+                "Could not save TFM filter settings.",
+                "无法保存 TFM 滤镜设置。",
+            ))
+            font = self._status.font()
+            font.setBold(False)
+            self._status.setFont(font)
 
 
 def show_dialog(parent=None):

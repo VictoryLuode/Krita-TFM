@@ -21,6 +21,7 @@ from .qtcompat import (
     QComboBox,
     QDesktopServices,
     QDialog,
+    QEvent,
     QFileDialog,
     QFont,
     QGroupBox,
@@ -55,6 +56,14 @@ from .qtcompat import (
     exec_,
 )
 
+from ..i18n import tr
+from ..ui_chrome import (
+    apply_warning_label,
+    icon_tool_button,
+    make_empty_state,
+    position_empty_state,
+    sync_empty_state,
+)
 from .version import __version__
 from .config import (
     BRUSH_BLEND_MODES,
@@ -121,6 +130,7 @@ class ListMenuDialog(QWidget):
         self._update_show_icons_check()
         self._render_current()
         self._update_left_shortcut()
+        self._refresh_conflict_banner()
         self._update_tag_widget()
         self._reload_available()
         self._saved_menu_state = self._menu_state()
@@ -371,14 +381,17 @@ class ListMenuDialog(QWidget):
     # ---------- UI ----------
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setSpacing(10)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
 
         body = QHBoxLayout()
-        body.setSpacing(12)
+        body.setSpacing(8)
 
-        # Left: top-level menus + per-menu popup shortcut
-        left_box = QGroupBox("Menu List")
+        # Left: top-level menus
+        left_box = QGroupBox(tr("Menus", "菜单"))
         left = QVBoxLayout(left_box)
+        left.setContentsMargins(8, 8, 8, 8)
+        left.setSpacing(6)
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("menuList")
         self.sidebar.currentRowChanged.connect(self._on_switch_list)
@@ -390,81 +403,92 @@ class ListMenuDialog(QWidget):
         left.addWidget(self.sidebar)
         self.sidebar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.sidebar.customContextMenuRequested.connect(self._sidebar_context_menu)
-        left_box.setMinimumWidth(200)
+        left_box.setMinimumWidth(180)
         body.addWidget(left_box, 1)
 
-        # Current Menu (its own panel, right of Menu List)
-        current_box = QGroupBox("Current Menu")
+        # Centre: current menu items + compact settings bar
+        current_box = QGroupBox(tr("Current menu", "当前菜单"))
         self.current_box = current_box
         cm = QVBoxLayout(current_box)
+        cm.setContentsMargins(8, 8, 8, 8)
+        cm.setSpacing(6)
         header_row = QHBoxLayout()
         self.crumb_row = QHBoxLayout()
         header_row.addLayout(self.crumb_row)
         header_row.addStretch()
         cm.addLayout(header_row)
+
+        items_host = QWidget()
+        items_layout = QVBoxLayout(items_host)
+        items_layout.setContentsMargins(0, 0, 0, 0)
+        items_layout.setSpacing(0)
         self.items_list = _MenuItemsList(self)
         self.items_list.setObjectName("menuItems")
         self.items_list.itemDoubleClicked.connect(self._on_item_double_click)
         self.items_list.setUniformItemSizes(False)
         self.items_list.setSpacing(0)
         self.items_list.setItemDelegate(_MenuItemDelegate(self.items_list))
-        cm.addWidget(self.items_list)
+        items_layout.addWidget(self.items_list)
+        self.items_empty = make_empty_state(
+            items_host,
+            tr("This menu is empty.\nAdd actions from the right panel.",
+               "此菜单为空。\n从右侧面板添加动作。"),
+        )
+        self.items_empty.hide()
+        self.items_list.installEventFilter(self)
+        cm.addWidget(items_host, 1)
 
-        # Menu settings (per-list popup behaviour)
-        settings_box = QGroupBox("Menu Settings")
-        st = QVBoxLayout(settings_box)
-        st.setContentsMargins(8, 6, 8, 6)
-
-        # Menu form (list / pie)
-        form_row = QHBoxLayout()
-        form_row.addWidget(QLabel("Menu mode:"))
+        # Compact settings strip (not a nested GroupBox)
+        settings_bar = QHBoxLayout()
+        settings_bar.setSpacing(6)
+        settings_bar.addWidget(QLabel(tr("Mode", "模式")))
         self.form_combo = QComboBox()
-        self.form_combo.addItem("List", "list")
-        self.form_combo.addItem("Pie", "pie")
+        self.form_combo.addItem(tr("List", "列表"), "list")
+        self.form_combo.addItem(tr("Pie", "饼状"), "pie")
         self.form_combo.setToolTip(
             "List: linear cursor menu.\n"
             "Pie: Blender-style radial menu (up to 8 items, submenus not shown).")
         self.form_combo.currentIndexChanged.connect(self._on_form_changed)
-        form_row.addWidget(self.form_combo)
-        form_row.addStretch()
-        st.addLayout(form_row)
-
-        # Show icons (Krita action icons + brush thumbnails)
-        self.show_icons_check = QCheckBox("Show icons")
+        settings_bar.addWidget(self.form_combo)
+        self.show_icons_check = QCheckBox(tr("Icons", "图标"))
         self.show_icons_check.setToolTip("Display Krita action icons and brush thumbnails in this menu.")
         self.show_icons_check.toggled.connect(self._on_show_icons_changed)
-        st.addWidget(self.show_icons_check)
-
-        # Per-list popup shortcut (inside Menu Settings)
-        sc_row = QHBoxLayout()
-        sc_row.addWidget(QLabel("Shortcut:"))
+        settings_bar.addWidget(self.show_icons_check)
+        settings_bar.addWidget(QLabel(tr("Shortcut", "快捷键")))
         self.list_sc_edit = QKeySequenceEdit()
         self.list_sc_edit.setMinimumWidth(90)
         self.list_sc_edit.setToolTip(
             "Press a key combination to pop this menu at the cursor.\n"
             "If it collides with another binding you can take it over.")
         self.list_sc_edit.keySequenceChanged.connect(self._on_list_shortcut_changed)
-        sc_row.addWidget(self.list_sc_edit)
-        sc_clear = QPushButton("Clear")
-        sc_clear.clicked.connect(self._clear_list_shortcut)
-        sc_row.addWidget(sc_clear)
-        self.undo_sc_btn = QPushButton("Restore")
-        self.undo_sc_btn.setToolTip(
-            "Give back the Krita shortcuts this menu took over\n"
-            "(enabled after an override)")
-        self.undo_sc_btn.clicked.connect(self._restore_overrides)
-        sc_row.addWidget(self.undo_sc_btn)
-        sc_row.addStretch()
-        st.addLayout(sc_row)
+        settings_bar.addWidget(self.list_sc_edit)
+        sc_clear = icon_tool_button(
+            self, tr("Clear", "清除"),
+            tr("Clear this menu shortcut", "清除此菜单快捷键"),
+            "SP_LineEditClearButton", self._clear_list_shortcut)
+        settings_bar.addWidget(sc_clear)
+        self.undo_sc_btn = icon_tool_button(
+            self, tr("Restore", "恢复"),
+            tr("Give back the Krita shortcuts this menu took over",
+               "把此菜单占用的 Krita 快捷键还回去"),
+            "SP_BrowserReload", self._restore_overrides)
+        settings_bar.addWidget(self.undo_sc_btn)
+        settings_bar.addStretch()
+        cm.addLayout(settings_bar)
+        self.shortcut_conflict_label = QLabel("")
+        apply_warning_label(self.shortcut_conflict_label)
+        self.shortcut_conflict_label.hide()
+        cm.addWidget(self.shortcut_conflict_label)
 
         self.items_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.items_list.customContextMenuRequested.connect(self._items_context_menu)
-        cm.addWidget(settings_box)
         body.addWidget(current_box, 2)
 
         # Add items (pick a Krita action or a layer blend mode to add)
-        avail_box = QGroupBox("Add items")
+        avail_box = QGroupBox(tr("Add items", "添加项目"))
         av = QVBoxLayout(avail_box)
+        av.setContentsMargins(8, 8, 8, 8)
+        av.setSpacing(6)
         self.add_type = QComboBox()
         self.add_type.addItems([s.label for s in self._sources])
         self.add_type.currentIndexChanged.connect(lambda _i: self._on_add_type_changed())
@@ -658,6 +682,7 @@ class ListMenuDialog(QWidget):
         lst["active"] = active
         self._style_sidebar_item(item, active)
         save_config(self.popup_shortcut, self.lists)
+        self._saved_menu_state = self._menu_state()
         notify_refresh()
 
     def _on_switch_list(self, row):
@@ -680,7 +705,9 @@ class ListMenuDialog(QWidget):
             return
         lst["menu_mode"] = self.form_combo.currentData()
         save_config(self.popup_shortcut, self.lists)
+        self._saved_menu_state = self._menu_state()
         notify_refresh()
+        self._warn_pie_limits(lst)
 
     def _update_form_combo(self):
         lst = self._cur_top_list()
@@ -700,7 +727,34 @@ class ListMenuDialog(QWidget):
             return
         lst["show_icons"] = self.show_icons_check.isChecked()
         save_config(self.popup_shortcut, self.lists)
+        self._saved_menu_state = self._menu_state()
         notify_refresh()
+
+    def _warn_pie_limits(self, lst):
+        if lst is None or lst.get("menu_mode", lst.get("form", "list")) != "pie":
+            return
+        items = lst.get("items") or []
+        has_submenu = any(isinstance(it, dict) and it.get("type") == "menu" for it in items)
+        count = sum(1 for it in items if isinstance(it, dict) and it.get("type") != "sep")
+        messages = []
+        if count > 8:
+            messages.append(tr(
+                "Pie menus show at most 8 items ({} configured).",
+                "饼状菜单最多显示 8 项（当前配置了 {} 项）。",
+            ).format(count))
+        if has_submenu:
+            messages.append(tr(
+                "Submenus are hidden in pie mode.",
+                "饼状模式下子菜单会被隐藏。",
+            ))
+        if not messages:
+            return
+        from .qtcompat import QMessageBox
+        QMessageBox.information(
+            self,
+            tr("Pie menu", "饼状菜单"),
+            "\n".join(messages),
+        )
 
     def _update_show_icons_check(self):
         lst = self._cur_top_list()
@@ -820,10 +874,12 @@ class ListMenuDialog(QWidget):
         self._pending_overrides.pop(name, None)
         if not key or key == previous:
             self.lists[self.current]["shortcut"] = key
+            self._refresh_conflict_banner()
             return
         conflicts = self._conflicts_for(key)
         if conflicts and not self._ask_override(key, conflicts):
             self._revert_shortcut_field(previous)
+            self._refresh_conflict_banner()
             return
         self.lists[self.current]["shortcut"] = key
         records = []
@@ -840,6 +896,7 @@ class ListMenuDialog(QWidget):
             })
         if records:
             self._pending_overrides[name] = records
+        self._refresh_conflict_banner()
 
     def _clear_list_shortcut(self):
         if not self.lists:
@@ -847,6 +904,7 @@ class ListMenuDialog(QWidget):
         self._drop_pending()
         self.lists[self.current]["shortcut"] = ""
         self._revert_shortcut_field("")
+        self._refresh_conflict_banner()
 
     def _update_left_shortcut(self):
         if not self.lists:
@@ -856,6 +914,23 @@ class ListMenuDialog(QWidget):
             self.lists[self.current].get("shortcut", ""))
         self._loading_sc = False
         self._update_undo_button()
+        self._refresh_conflict_banner()
+
+    def _refresh_conflict_banner(self):
+        label = getattr(self, "shortcut_conflict_label", None)
+        if label is None:
+            return
+        conflict = self._check_conflicts()
+        if conflict:
+            label.setText(tr(
+                "Shortcut conflict: {} Use Override when assigning, or Clear / Restore, then Save Menus.",
+                "快捷键冲突：{} 分配时用「接管」，或清除/恢复后再「保存菜单」。",
+            ).format(conflict))
+            apply_warning_label(label)
+            label.show()
+        else:
+            label.clear()
+            label.hide()
 
     # ---------- Current menu items ----------
     @staticmethod
@@ -1089,6 +1164,19 @@ class ListMenuDialog(QWidget):
                     checked = False
                 entry.setData(ROLE_CHECKED, checked)
             self.items_list.addItem(entry)
+        self._sync_items_empty_state()
+
+    def _sync_items_empty_state(self):
+        empty = getattr(self, "items_empty", None)
+        if empty is None:
+            return
+        sync_empty_state(empty, self.items_list.count() == 0)
+        position_empty_state(empty, self.items_list)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "items_list", None) and event.type() == QEvent.Type.Resize:
+            position_empty_state(getattr(self, "items_empty", None), self.items_list)
+        return super().eventFilter(obj, event)
 
     def _existing_cmd_ids(self):
         out = set()
@@ -1654,4 +1742,5 @@ class ListMenuDialog(QWidget):
             return
         self._saved_menu_state = self._menu_state()
         self._update_undo_button()
+        self._refresh_conflict_banner()
         notify_refresh()

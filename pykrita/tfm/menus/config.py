@@ -210,8 +210,29 @@ BRUSH_VALUES = [
     ("size:128", "Size 128 px"),
 ]
 
-# Default lists on first run (action ids verified against Krita 5.3 krita.action)
+# Default lists on first run (action ids verified against Krita 5.3 krita.action).
+# Quick Tool is the featured sample: popup-friendly painting helpers + TFM entry points.
 DEFAULT_LISTS = [
+    {"name": "Quick Tool", "shortcut": "Q", "menu_mode": "list", "show_icons": True, "items": [
+        "undo",
+        "redo",
+        "deselect",
+        "invert_selection",
+        {"sep": True},
+        "duplicatelayer",
+        "merge_layer",
+        "add_new_paint_layer",
+        "add_new_group_layer",
+        {"sep": True},
+        "mirror_canvas",
+        "wrap_around_mode",
+        "toggle_fg_bg",
+        {"sep": True},
+        "tfm_color_range",
+        "tfm_assets",
+        "tfm_image_search",
+        "tfm_edit",
+    ]},
     {"name": "Canvas Assist", "shortcut": "", "items": [
         "mirror_canvas",
         "wrap_around_mode",
@@ -266,7 +287,7 @@ DEFAULT_LISTS = [
     ]},
 ]
 
-DEFAULT_POPUP_SHORTCUT = ""  # whole-menu popup trigger key
+DEFAULT_POPUP_SHORTCUT = ""  # whole-menu popup; Quick Tool sample binds Q to that list alone
 
 
 def _clean_items(items):

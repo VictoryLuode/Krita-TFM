@@ -9,23 +9,22 @@
 
 ![TFM](assets/tfm-hero.jpg)
 
-Custom **menus**, **native filters**, **Advance Selection**, and an **asset library** for Krita — one plugin under **Tools → TFM**.
+Custom **menus**, **native filters**, **Advanced Selection**, and an **asset library** for Krita — one plugin under **Tools → TFM**.
 
 ## Highlights
 
 - **Custom menus** — multi-list popups (list or pie), nested items, per-list shortcuts, import / export.
 - **Native filters** — Bloom, Film Grain, flares, light leaks, Guided / Statistical Color Match, Background Removal, motion / focus blur, and more via `kritatfm.dll`.
 - **Vulkan compute** — GPU work runs in `tfm_vulkan_worker.exe` (out of process). Global default in Settings; per-filter **Compute backend** override.
-- **Advance Selection** — luminance / channel / sampled-color ranges with live preview.
+- **Advanced Selection** — luminance / channel / sampled-color ranges with live preview.
 - **Asset Library** — categorized cutouts onto the canvas; save the active layer as an asset.
 - **Quick Image Search** · **Layer Color Space** — optional tools you can enable under Configure TFM → Tools.
 
-## What's new in 0.1.6
+## What's new in 0.1.7
 
-- Out-of-process Vulkan worker so Krita itself does not load `vulkan-1.dll` for those filters.
-- Guided Color Match: compact grade storage, lighter preview, per-tile Vulkan when available.
-- Per-filter Auto / CPU / GPU backends, plus a global default.
-- Advance Selection preview and overlay polish.
+- UI follows Krita’s language; first-run Quick Tool sample (Q) and Configure welcome guide.
+- Advanced Selection naming and clearer selection actions; Asset Library status bar and empty states.
+- Quick Image Search Verify / Reset profile; actionable filter/backend tips; Configure UI polish.
 
 Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
@@ -54,7 +53,7 @@ Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 - [ ] macOS
 - [ ] Android
 
-1. Download `TFM-0.1.6.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
+1. Download `TFM-0.1.7.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
 2. Copy everything under `resource/` into your Krita **resource** directory.
 3. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder (same directory).
 4. Start Krita and enable **TFM** under **Settings → Manage Resources → Python Plugin Manager** if needed.
@@ -66,11 +65,11 @@ Settings and menu lists live under `<ResourceDirectory>/TFM/`. Optional BiRefNet
 **Tools → TFM → Configure TFM**
 
 - **Menus** — build Quick Tool (and other lists), add Krita actions / filters / scripts, bind shortcuts.
-- **Filters** — enable TFM filters, set defaults and **Compute backend**.
-- **Tools** — turn on Advance Selection, Asset Library, Quick Image Search, Layer Color Space.
+- **Filters** — enable TFM filters and set defaults / **Compute backend**, then **restart Krita** so they appear in the Filter menu.
+- **Tools** — turn on Advanced Selection, Asset Library, Quick Image Search, Layer Color Space (checkboxes apply immediately).
 - **Settings** — window size, CPU threads, default filter backend.
 
-Open the cursor popup with your list shortcut (often **Q** for Quick Tool), or use **Select → Advance Selection…**.
+Open the cursor popup with your list shortcut (often **Q** for Quick Tool), or use **Select → Advanced Selection…**.
 
 ## Community
 

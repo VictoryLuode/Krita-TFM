@@ -234,7 +234,7 @@ color_dialog.invert.setChecked(True)
 assert color_dialog.mask() == bytes((0, 255, 255))
 # Independent threshold / tolerance / softness controls affect each mask family.
 controls = ColorRangeDialog(FakeDocument(tones))
-assert controls.windowTitle() == 'Advance Selection'
+assert controls.windowTitle() == 'Advanced Selection'
 assert controls.tolerance_slider.value() == controls.tolerance.value() == 32
 assert controls.softness_slider.value() == controls.softness.value() == 12
 controls.tolerance_enabled.setChecked(True)

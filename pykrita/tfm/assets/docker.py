@@ -16,6 +16,7 @@ from ..menus.qtcompat import (
     QHBoxLayout,
     QIcon,
     QImage,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -43,46 +44,67 @@ from ..menus.qtcompat import (
 )
 from . import filter_asset, group_asset, mask_asset, pixels, store
 from .widgets import *  # noqa: F403
+from ..i18n import tr
+from ..ui_chrome import apply_muted_label, make_empty_state, position_empty_state, sync_empty_state
 
 class AssetLibraryDocker(DockWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Asset Library")
+        self.setWindowTitle(tr("Asset Library", "资产库"))
         from ..manager import assets_directory
         try:
             self._root = store.ensure_assets(assets_directory())
         except OSError:
             self._root = store.ensure_assets(store.default_assets_dir())
         self._thumbs = {}
+        self._thumb_order = []
         self._dragging = False
         self._pending = None
         self._loading = False
         self._browsed = ""
         self._edit_marker = None
+        self._status_backup = ""
 
         widget = DropPane(self)
         widget.setMinimumSize(260, 180)
-        widget.setToolTip(
+        widget.setToolTip(tr(
             "Drop a layer here to store it. "
             "Double-click a thumbnail to place it as a paint layer. "
             "Ctrl+double-click to rename. Right-click for Place as Reference. "
             "Drag a thumbnail onto the canvas or the Layers docker to place it. "
-            "Hold Ctrl and scroll over the images to resize them."
-        )
+            "Hold Ctrl and scroll over the images to resize them.",
+            "将图层拖到这里保存。"
+            "双击缩略图放置为绘制图层。"
+            "Ctrl+双击重命名。右键可放置为参考图。"
+            "把缩略图拖到画布或图层面板即可放置。"
+            "在缩略图上按住 Ctrl 并滚轮可调整大小。",
+        ))
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         self.tree = FolderTree(self)
+        grid_host = QtWidgets.QWidget(self)
+        grid_host_layout = QVBoxLayout(grid_host)
+        grid_host_layout.setContentsMargins(0, 0, 0, 0)
+        grid_host_layout.setSpacing(0)
         self.grid = ImageGrid(self)
         self.grid.set_icon_edge(self._saved_icon_edge())
         self.grid.set_list_icon(self._saved_list_icon())
+        grid_host_layout.addWidget(self.grid)
+        self.grid_empty = make_empty_state(
+            grid_host,
+            tr("Drop a layer or image here\nto store it in this folder.",
+               "把图层或图片拖到这里\n保存到当前文件夹。"),
+        )
+        self.grid_empty.hide()
+        self.grid.installEventFilter(self)
 
         right = QtWidgets.QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
-        right_layout.addWidget(self.grid, 1)
+        right_layout.addWidget(grid_host, 1)
         right_layout.addWidget(self._build_view_mode_bar())
 
         splitter = QSplitter()
@@ -93,6 +115,10 @@ class AssetLibraryDocker(DockWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([150, 420])
         layout.addWidget(splitter, 1)
+        self._status = QLabel("")
+        apply_muted_label(self._status)
+        self._status.setObjectName("tfm_assets_status")
+        layout.addWidget(self._status)
         self.setWidget(widget)
         self._reload(self._saved_folder())
         _install_drop_filter(self)
@@ -103,6 +129,7 @@ class AssetLibraryDocker(DockWidget):
         row = QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
+        from ..ui_chrome import standard_icon
         self._view_thumb = QtWidgets.QToolButton()
         self._view_thumb.setCheckable(True)
         self._view_thumb.setAutoRaise(True)
@@ -110,8 +137,13 @@ class AssetLibraryDocker(DockWidget):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self._view_thumb.setText("Thumbs")
-        self._view_thumb.setToolTip("Thumbnail view")
+        self._view_thumb.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        thumb_icon = standard_icon(self, "SP_FileDialogListView")
+        if not thumb_icon.isNull():
+            self._view_thumb.setIcon(thumb_icon)
+        self._view_thumb.setText(tr("Thumbs", "缩略图"))
+        self._view_thumb.setToolTip(tr("Thumbnail view", "缩略图视图"))
         self._view_list = QtWidgets.QToolButton()
         self._view_list.setCheckable(True)
         self._view_list.setAutoRaise(True)
@@ -119,8 +151,13 @@ class AssetLibraryDocker(DockWidget):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self._view_list.setText("List")
-        self._view_list.setToolTip("List view")
+        self._view_list.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        list_icon = standard_icon(self, "SP_FileDialogDetailedView")
+        if not list_icon.isNull():
+            self._view_list.setIcon(list_icon)
+        self._view_list.setText(tr("List", "列表"))
+        self._view_list.setToolTip(tr("List view", "列表视图"))
         group = QtWidgets.QButtonGroup(bar)
         group.setExclusive(True)
         group.addButton(self._view_thumb)
@@ -175,13 +212,16 @@ class AssetLibraryDocker(DockWidget):
         self._reload(folder)
 
     def _set_status(self, text):
-        del text
+        message = "" if text is None else str(text)
+        self._status.setText(message)
+        self._status.setToolTip(message)
 
     def _remember_status(self, text):
-        del text
+        self._status_backup = self._status.text()
+        self._set_status(text)
 
     def _restore_status(self):
-        return
+        self._set_status(self._status_backup)
 
     def _document(self):
         try:
@@ -217,9 +257,10 @@ class AssetLibraryDocker(DockWidget):
         self._fill_grid(None)
 
     def _reload(self, folder, select_image=None, status=None):
-        del status
         self._fill_tree(folder)
         self._fill_grid(select_image)
+        if status is not None:
+            self._set_status(status)
 
     def _note_change(self, folder, select_image=None, status=None):
         if self._dragging:
@@ -300,7 +341,7 @@ class AssetLibraryDocker(DockWidget):
                 item.setSizeHint(0, QSize(0, 14))
                 item.setToolTip(0, "Drag to reorder.")
                 continue
-            text = entry.get("text") or "标题"
+            text = entry.get("text") or tr("Title", "标题")
             item = QTreeWidgetItem(parent, [text])
             item.setData(0, Qt.ItemDataRole.UserRole, "")
             item.setData(0, _KIND_ROLE, "title")
@@ -349,11 +390,17 @@ class AssetLibraryDocker(DockWidget):
 
     def _fill_grid_items(self, folder, select_image):
         self.grid.clear()
+        self._pending_thumbs = []
         chosen = None
         try:
             names = store.list_images(self._root, folder)
         except store.AssetError:
             names = []
+        if not names:
+            self._set_status(tr(
+                "This folder is empty. Drop a layer or image here to store it.",
+                "此文件夹为空。将图层或图片拖到这里即可保存。",
+            ))
         for name in names:
             rel = "{}/{}".format(folder, name) if folder else name
             try:
@@ -362,7 +409,7 @@ class AssetLibraryDocker(DockWidget):
                 continue
             item = QListWidgetItem(os.path.splitext(name)[0])
             item.setData(Qt.ItemDataRole.UserRole, rel)
-            item.setIcon(self._icon(path))
+            item.setData(Qt.ItemDataRole.UserRole + 20, path)
             item.setToolTip(self._tip(path, name))
             item.setTextAlignment(self.grid._item_alignment())
             item.setSizeHint(self.grid._item_size_hint())
@@ -373,12 +420,40 @@ class AssetLibraryDocker(DockWidget):
                 | Qt.ItemFlag.ItemIsEditable
             )
             self.grid.addItem(item)
+            self._pending_thumbs.append(item)
             if rel == select_image:
                 chosen = item
         if chosen is not None:
             self.grid.setCurrentItem(chosen)
             chosen.setSelected(True)
             self.grid.scrollToItem(chosen)
+        self._sync_grid_empty_state()
+        QTimer.singleShot(0, self._fill_pending_thumbs)
+
+    def _sync_grid_empty_state(self):
+        empty = getattr(self, "grid_empty", None)
+        if empty is None:
+            return
+        sync_empty_state(empty, self.grid.count() == 0)
+        position_empty_state(empty, self.grid)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "grid", None) and event.type() == QEvent.Type.Resize:
+            position_empty_state(getattr(self, "grid_empty", None), self.grid)
+        return super().eventFilter(obj, event)
+
+    def _fill_pending_thumbs(self):
+        pending = getattr(self, "_pending_thumbs", None) or []
+        if not pending:
+            return
+        batch = pending[:24]
+        self._pending_thumbs = pending[24:]
+        for item in batch:
+            path = item.data(Qt.ItemDataRole.UserRole + 20)
+            if path:
+                item.setIcon(self._icon(path))
+        if self._pending_thumbs:
+            QTimer.singleShot(0, self._fill_pending_thumbs)
 
     def _saved_icon_edge(self):
         try:
@@ -515,11 +590,18 @@ class AssetLibraryDocker(DockWidget):
         key = (path, stamp)
         cached = self._thumbs.get(key)
         if cached is not None:
+            try:
+                self._thumb_order.remove(key)
+            except ValueError:
+                pass
+            self._thumb_order.append(key)
             return cached
         icon = _thumbnail(path, THUMB_EDGE)
-        if len(self._thumbs) > 400:
-            self._thumbs.clear()
         self._thumbs[key] = icon
+        self._thumb_order.append(key)
+        while len(self._thumb_order) > 400:
+            old = self._thumb_order.pop(0)
+            self._thumbs.pop(old, None)
         return icon
 
     def _tip(self, path, name):
@@ -591,7 +673,7 @@ class AssetLibraryDocker(DockWidget):
             nxt = _next_sibling(self.tree, item)
             before = _node_ref(nxt) if nxt is not None else None
         try:
-            entry = store.insert_marker(self._root, parent, kind, before, "标题")
+            entry = store.insert_marker(self._root, parent, kind, before, tr("Title", "标题"))
         except store.AssetError as error:
             self._tell(str(error))
             return
@@ -619,7 +701,7 @@ class AssetLibraryDocker(DockWidget):
             return
         rel = self._current_folder()
         if not rel:
-            self._set_status("Select a folder first.")
+            self._set_status(tr("Select a folder first.", "请先选择文件夹。"))
             return
         label = rel.rsplit("/", 1)[-1]
         if not self._confirm('Delete the folder "{}" and the images inside it?'.format(label)):
@@ -677,12 +759,12 @@ class AssetLibraryDocker(DockWidget):
         kind = _item_kind(item)
         rel = item.data(0, Qt.ItemDataRole.UserRole) or "" if kind == "folder" else ""
         menu = QMenu(self)
-        add_menu = menu.addMenu("添加")
-        add_menu.addAction("添加文件夹", self._new_folder)
-        add_menu.addAction("添加分隔符", lambda: self._new_marker("separator"))
-        add_menu.addAction("添加标题", lambda: self._new_marker("title"))
-        rename = menu.addAction("Rename", self._begin_rename)
-        delete = menu.addAction("Delete", self._delete_folder)
+        add_menu = menu.addMenu(tr("Add", "添加"))
+        add_menu.addAction(tr("Add Folder", "添加文件夹"), self._new_folder)
+        add_menu.addAction(tr("Add Separator", "添加分隔符"), lambda: self._new_marker("separator"))
+        add_menu.addAction(tr("Add Title", "添加标题"), lambda: self._new_marker("title"))
+        rename = menu.addAction(tr("Rename", "重命名"), self._begin_rename)
+        delete = menu.addAction(tr("Delete", "删除"), self._delete_folder)
         rename.setEnabled(kind == "title" or bool(rel))
         delete.setEnabled(kind in ("separator", "title") or bool(rel))
         exec_(menu, self.tree.mapToGlobal(pos))
@@ -1260,7 +1342,7 @@ class AssetLibraryDocker(DockWidget):
     def _move_dropped_folder(self, dest, mime):
         rel = folder_rel_from_mime(mime)
         if not rel:
-            self._set_status("That folder is not in the asset library.")
+            self._set_status(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
             return
         try:
             moved = store.move_folder(self._root, rel, dest)
@@ -1269,7 +1351,7 @@ class AssetLibraryDocker(DockWidget):
             return
         parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
         if moved == rel and parent == (dest or ""):
-            self._set_status("Nothing was moved.")
+            self._set_status(tr("Nothing was moved.", "没有移动任何内容。"))
             return
         if moved != rel:
             self._retarget_view_modes(rel, moved)
@@ -1288,7 +1370,7 @@ class AssetLibraryDocker(DockWidget):
             except store.AssetError:
                 continue
         if not moved:
-            self._set_status("Nothing was moved.")
+            self._set_status(tr("Nothing was moved.", "没有移动任何内容。"))
             return
         text = "Moved 1 image." if moved == 1 else "Moved {} images.".format(moved)
         self._note_change(folder, last, text)
@@ -1302,7 +1384,7 @@ class AssetLibraryDocker(DockWidget):
                 except store.AssetError:
                     continue
         if not saved:
-            self._set_status("No images were imported.")
+            self._set_status(tr("No images were imported.", "没有导入任何图片。"))
             return
         text = "Imported 1 image." if len(saved) == 1 else "Imported {} images.".format(len(saved))
         self._note_change(folder, saved[-1], text)
@@ -1353,7 +1435,7 @@ class AssetLibraryDocker(DockWidget):
             self._set_status(str(error))
             return
         except Exception:
-            self._set_status("Could not save that image.")
+            self._set_status(tr("Could not save that image.", "无法保存该图片。"))
             return
         rel = store.relative_path(self._root, path)
         label = os.path.splitext(os.path.basename(path))[0]

@@ -223,11 +223,21 @@ def run_convert(parent=None):
             message = "This document has no layers."
         QMessageBox.information(parent, "Convert Layers", message)
         return False
+    names = [describe_node(node) for node in pending]
+    preview = "\n".join("• " + name for name in names[:20])
+    if len(names) > 20:
+        preview += "\n• … and {} more".format(len(names) - 20)
     message = (
-        "Convert every layer to your default color space?\n\n"
+        "Convert every mismatched layer to your default color space?\n\n"
         "{}\n\n"
-        "{} {} will be converted. Pixels are converted, and Undo can restore them."
-    ).format(target_text, len(pending), "layer" if len(pending) == 1 else "layers")
+        "{} {} will be converted:\n{}\n\n"
+        "Pixels are converted, and Undo can restore them."
+    ).format(
+        target_text,
+        len(pending),
+        "layer" if len(pending) == 1 else "layers",
+        preview,
+    )
     image = _document_space(document)
     if image and image != target:
         message += "\n\nThe image color space stays {}.".format(format_color_space(*image))

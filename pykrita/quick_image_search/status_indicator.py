@@ -2,11 +2,14 @@ from .qtcompat import (QPoint, QTimer, Qt, pyqtSignal, QColor, QPainter, QPen, Q
 
 
 class StatusIndicator(QLabel):
-    """Fixed-size, text-free status icon with accessible message details."""
+    """Fixed-size status icon with accessible message details."""
 
     details_requested = pyqtSignal(QPoint)
-    _BUSY_PREFIXES = ('正在', '准备', '排队', '处理中')
-    _ERROR_WORDS = ('失败', '未保存', '无法', 'error')
+    _BUSY_PREFIXES = ('正在', '准备', '排队', '处理中', 'searching', 'loading', 'queued', 'preparing', 'busy')
+    _ERROR_WORDS = (
+        '失败', '未保存', '无法', 'error', 'fail', 'failed', 'unable', 'could not',
+        'invalid', 'timeout', 'denied',
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)

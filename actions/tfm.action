@@ -9,8 +9,8 @@
             <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
         </Action>
         <Action name="tfm_color_range">
-            <icon></icon><text>Advance Selection...</text><whatsThis></whatsThis>
-            <toolTip>Select an enhanced image color range</toolTip><iconText></iconText>
+            <icon></icon><text>Advanced Selection...</text><whatsThis></whatsThis>
+            <toolTip>Select image regions by luminance, channel, or sampled color</toolTip><iconText></iconText>
             <activationFlags>0</activationFlags><activationConditions>0</activationConditions>
             <shortcut></shortcut><isCheckable>false</isCheckable><statusTip></statusTip>
         </Action>

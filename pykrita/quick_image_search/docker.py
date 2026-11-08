@@ -13,6 +13,51 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from krita import DockWidget, Krita
+try:
+    from i18n import tr
+except ImportError:  # standalone / unit-test load without pykrita on path
+    def tr(english, chinese=None):
+        return english
+try:
+    from ui_chrome import (
+        apply_muted_label,
+        icon_tool_button,
+        make_empty_state,
+        position_empty_state,
+        standard_icon,
+        sync_empty_state,
+    )
+except ImportError:
+    def apply_muted_label(label):
+        label.setWordWrap(True)
+
+    def icon_tool_button(parent, text, tip, icon_name, slot=None):
+        button = QToolButton(parent)
+        button.setAutoRaise(True)
+        button.setText(text)
+        button.setToolTip(tip or text)
+        if slot is not None:
+            button.clicked.connect(slot)
+        return button
+
+    def make_empty_state(parent, text):
+        label = QLabel(text, parent)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        return label
+
+    def position_empty_state(label, host):
+        if label is not None and host is not None:
+            label.setGeometry(host.rect())
+            label.raise_()
+
+    def standard_icon(widget, name):
+        return QIcon()
+
+    def sync_empty_state(label, visible, text=None):
+        if text is not None:
+            label.setText(text)
+        label.setVisible(bool(visible))
 from .drop_router import DRAG_FORMAT, install_drop_router
 from .search_library import SearchLibraryMixin, thumbnail_image, image_identity
 from .gallery_experience import GalleryExperienceMixin
@@ -22,8 +67,8 @@ from .panel_widgets import *  # noqa: F403
 class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
     def __init__(self, browser=None, cache_dir=None, downloader=None, user_data_dir=None):
         super().__init__()
-        self.setObjectName('quick_image_search')
-        self.setWindowTitle('快速搜图')
+        self.setObjectName('tfm_quick_image_search')
+        self.setWindowTitle(tr('Quick Image Search', '快速搜图'))
         self.setMinimumWidth(332)
         self.browser = browser
         default_profile = str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)) / 'quick-image-search' / 'browser')
@@ -74,12 +119,15 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.search_input = QLineEdit()
         self.search_input.setMaxLength(4096)
         self.search_input.setMinimumWidth(100)
-        self.search_input.setPlaceholderText('搜索照片素材…')
+        self.search_input.setPlaceholderText(tr('Search photo references…', '搜索照片素材…'))
         self.init_library(user_data_dir, cache_dir)
-        self.translate_button = QPushButton('翻译')
+        self.translate_button = QPushButton(tr('Translate', '翻译'))
         self.translate_button.setEnabled(False)
-        self.translate_button.setToolTip('将当前中文关键词在线译成英文（MyMemory，匿名免费额度 5000 字符/天）；只发送关键词，不自动搜索。')
-        self.search_button = QPushButton('搜索')
+        self.translate_button.setToolTip(tr(
+            'Translate the current Chinese keywords to English online (MyMemory anonymous quota). Does not search automatically.',
+            '将当前中文关键词在线译成英文（MyMemory，匿名免费额度）；只发送关键词，不自动搜索。',
+        ))
+        self.search_button = QPushButton(tr('Search', '搜索'))
         for button in (self.translate_button, self.search_button):
             button.setMaximumWidth(button.fontMetrics().horizontalAdvance(button.text()) + 24)
         self.init_gallery_experience(row, prepare_image)
@@ -88,20 +136,60 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         row.addWidget(self.translate_button)
         row.addWidget(self.search_button)
         layout.addLayout(row)
+        grid_host = QWidget(self)
+        grid_host_layout = QVBoxLayout(grid_host)
+        grid_host_layout.setContentsMargins(0, 0, 0, 0)
+        grid_host_layout.setSpacing(0)
         self.grid = ImageGrid()
         self.grid.set_tile_size(self._grid_settings.tile_size)
         self.grid.tile_size_changed.connect(self.remember_grid_size)
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self.context_menu)
-        layout.addWidget(self.grid, 1)
+        grid_host_layout.addWidget(self.grid)
+        self.grid_empty = make_empty_state(
+            grid_host,
+            tr('Search Google or Pinterest for photo references.\nGoogle may ask you to verify in a browser window.',
+               '搜索 Google 或 Pinterest 找照片素材。\nGoogle 可能需要在浏览器窗口中完成验证。'),
+        )
+        self.grid.installEventFilter(self)
+        layout.addWidget(grid_host, 1)
         buttons = QHBoxLayout()
         self.source.currentIndexChanged.connect(self.update_source_controls)
         self.init_favorite_tabs(buttons)
         self.status = TransientStatus()
+        self.status_text = QLabel('')
+        self.status_text.setWordWrap(False)
+        apply_muted_label(self.status_text)
+        self.status_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.status.details_requested.connect(self.show_status_menu)
+        _set_status = self.status.setText
+
+        def set_status_with_text(message):
+            _set_status(message)
+            text = str(message or '')
+            metrics = self.status_text.fontMetrics()
+            self.status_text.setText(
+                metrics.elidedText(text, Qt.TextElideMode.ElideRight, 320) if text else '')
+            self._sync_grid_empty_state()
+
+        self.status.setText = set_status_with_text
+        self.verify_button = icon_tool_button(
+            self, tr('Verify…', '验证…'),
+            tr('Open a visible browser window to complete Google verification or login.',
+               '打开可见浏览器窗口，完成 Google 验证或登录。'),
+            'SP_DialogApplyButton', self.show_browser)
+        self.reset_profile_button = icon_tool_button(
+            self, tr('Reset profile', '重置配置'),
+            tr('Close the search browser and delete its local profile folder, then start fresh.',
+               '关闭搜图浏览器并删除本地配置目录，然后重新开始。'),
+            'SP_BrowserReload', self.reset_browser_profile)
         buttons.addWidget(self.status, 0, Qt.AlignmentFlag.AlignVCenter)
+        buttons.addWidget(self.status_text, 1)
+        buttons.addWidget(self.verify_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        buttons.addWidget(self.reset_profile_button, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(buttons)
         self.setWidget(widget)
+        set_status_with_text('')
         self.search_button.clicked.connect(self.search)
         self.translate_button.clicked.connect(self.translate_query)
         self.search_input.textChanged.connect(self.query_edited)
@@ -115,13 +203,26 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.grid.verticalScrollBar().valueChanged.connect(self.scroll_changed)
         QApplication.instance().aboutToQuit.connect(self.shutdown)
         self.update_source_controls()
+        self._sync_grid_empty_state()
         if self.search_store.last_error:
-            self.status.setText('历史/收藏存储提示：' + self.search_store.last_error)
+            self.status.setText(tr('History/favorites store notice: ', '历史/收藏存储提示：') + self.search_store.last_error)
         elif self._grid_settings.last_error:
-            self.status.setText('网格尺寸设置无法读取：' + self._grid_settings.last_error)
+            self.status.setText(tr('Could not read grid size setting: ', '网格尺寸设置无法读取：') + self._grid_settings.last_error)
 
     def canvasChanged(self, canvas):
         pass
+
+    def _sync_grid_empty_state(self):
+        empty = getattr(self, 'grid_empty', None)
+        if empty is None:
+            return
+        sync_empty_state(empty, self.grid.count() == 0)
+        position_empty_state(empty, self.grid)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, 'grid', None) and event.type() == QEvent.Type.Resize:
+            position_empty_state(getattr(self, 'grid_empty', None), self.grid)
+        return super().eventFilter(obj, event)
 
     def query_edited(self, text):
         self.cancel_preview_load()
@@ -139,10 +240,12 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         if self._closing or self._translation_job is not None or not has_chinese(text):
             return
         revision = self._query_revision
-        if self.status.text().startswith('翻译失败：'):
+        translating = tr('Translating…', '正在翻译…')
+        failed_prefix = tr('Translation failed: ', '翻译失败：')
+        if self.status.text().startswith(failed_prefix) or self.status.text().startswith('翻译失败：'):
             self.status.clear()
         if not self.busy and not self.status.text():
-            self.status.setText('正在翻译…')
+            self.status.setText(translating)
         job = Job(lambda worker: translate_to_english(text, self.browser_proxy))
         self._translation_job = job
         self.jobs.add(job)
@@ -155,13 +258,13 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
                 self._translation_pair = (text.strip(), result.strip())
         def failed(message):
             if not self._closing and revision == self._query_revision:
-                self.status.setText('翻译失败：' + message)
+                self.status.setText(failed_prefix + message)
         def release():
             self.jobs.discard(job)
             _WORKERS.discard(job)
             self._translation_job = None
             if not self._closing:
-                if self.status.text() == '正在翻译…':
+                if self.status.text() in (translating, '正在翻译…'):
                     self.status.clear()
                 self.update_translation_controls()
         job.done.connect(translated)
@@ -183,9 +286,11 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         entry = dict(item.data(ENTRY_ROLE))
         path, dimensions = item.data(PATH_ROLE), item.data(SIZE_ROLE)
         menu = QMenu(self.grid)
-        menu.addAction('图片详细信息').triggered.connect(lambda: self.show_details(entry, dimensions))
-        menu.addAction('打开原网址').triggered.connect(lambda: self.open_original(entry))
-        similar = menu.addAction('查找相似图片')
+        menu.addAction(tr('Image details', '图片详细信息')).triggered.connect(
+            lambda: self.show_details(entry, dimensions))
+        menu.addAction(tr('Open source page', '打开原网址')).triggered.connect(
+            lambda: self.open_original(entry))
+        similar = menu.addAction(tr('Find similar images', '查找相似图片'))
 
         similar.triggered.connect(lambda: self.find_similar(entry, path))
         return menu
@@ -195,14 +300,23 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self.details_dialog.close()
             self.details_dialog.deleteLater()
         dialog = QDialog(self)
-        dialog.setWindowTitle('图片详细信息')
+        dialog.setWindowTitle(tr('Image details', '图片详细信息'))
         dialog.resize(520, 340)
         text = QPlainTextEdit(dialog)
         text.setReadOnly(True)
         width, height = dimensions or (entry.get('width'), entry.get('height'))
-        size = f'{width} × {height}' if width and height else '未提供'
-        fields = [('图片名', entry.get('title') or '未提供'), ('来源', entry.get('source') or '未提供'), ('尺寸', size), ('原始网站', entry.get('website_url') or entry.get('source_url') or '未提供'), ('来源页面', entry.get('detail_url') or '未提供'), ('图片地址', entry.get('image_url') or '未解析'), ('说明', entry.get('description') or '未提供')]
-        text.setPlainText('\n\n'.join(name + '：' + str(value) for name, value in fields))
+        missing = tr('Not provided', '未提供')
+        size = f'{width} × {height}' if width and height else missing
+        fields = [
+            (tr('Title', '图片名'), entry.get('title') or missing),
+            (tr('Source', '来源'), entry.get('source') or missing),
+            (tr('Size', '尺寸'), size),
+            (tr('Website', '原始网站'), entry.get('website_url') or entry.get('source_url') or missing),
+            (tr('Source page', '来源页面'), entry.get('detail_url') or missing),
+            (tr('Image URL', '图片地址'), entry.get('image_url') or tr('Unresolved', '未解析')),
+            (tr('Description', '说明'), entry.get('description') or missing),
+        ]
+        text.setPlainText('\n\n'.join(name + ': ' + str(value) for name, value in fields))
         layout = QVBoxLayout(dialog)
         layout.addWidget(text)
         self.details_dialog = dialog
@@ -218,9 +332,9 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             except ValueError:
                 continue
             if not QDesktopServices.openUrl(QUrl(url)):
-                self.status.setText('无法打开来源网址。')
+                self.status.setText(tr('Could not open the source URL.', '无法打开来源网址。'))
             return
-        self.status.setText('这张图片没有可用的来源网址。')
+        self.status.setText(tr('This image has no usable source URL.', '这张图片没有可用的来源网址。'))
 
     def similar_results(self, browser, entry, path=None):
         if path and Path(path).is_file():
@@ -229,7 +343,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         else:
             resolved = browser.resolve(entry)
             if not isinstance(resolved, dict) or not resolved.get('url'):
-                raise ValueError('无法取得这张图片的内容。')
+                raise ValueError(tr('Could not fetch this image.', '无法取得这张图片的内容。'))
             data = self.downloader(resolved['url'], resolved.get('referer', ''))
         return browser.similar(similarity_jpeg(data), limit=24)
 
@@ -243,7 +357,10 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.cancel_preview_load()
         if self.busy:
             self._pending_similar = (dict(entry), path)
-            self.status.setText('相似搜索已排队，当前图片任务完成后执行…')
+            self.status.setText(tr(
+                'Similar search queued; it will run after the current image job…',
+                '相似搜索已排队，当前图片任务完成后执行…',
+            ))
             return
         cached = self._prepared_cache.get((entry.get('source'), entry.get('thumbnail')))
         if not path and cached and Path(cached[0]).is_file():
@@ -251,7 +368,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         frame = self.capture_gallery()
         self.has_more = False
         self._more_pending = False
-        self.status.setText('正在查找相似图片…')
+        self.status.setText(tr('Finding similar images…', '正在查找相似图片…'))
         def operation(job):
             return self.similar_results(self.get_browser(), entry, path)
         def loaded(entries):
@@ -263,7 +380,10 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self._search_source = 'pinterest'
             self.source.setCurrentIndex(self.source.findData('pinterest'))
             self.search_input.clear()
-            self.search_input.setPlaceholderText('相似结果 · 输入关键词可重新搜索')
+            self.search_input.setPlaceholderText(tr(
+                'Similar results · type keywords to search again',
+                '相似结果 · 输入关键词可重新搜索',
+            ))
             self._more_retry_at = 0
             self.display_results(entries)
             self.remember_similar_parent(frame, entry, path)
@@ -290,6 +410,12 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
 
     def update_source_controls(self):
         self.update_library_controls()
+        google = self.source.currentData() == 'google'
+        if hasattr(self, 'verify_button'):
+            self.verify_button.setEnabled(google and not self.busy and not self._closing)
+            self.verify_button.setVisible(google)
+        if hasattr(self, 'reset_profile_button'):
+            self.reset_profile_button.setEnabled(not self.busy and not self._closing)
 
     def run_job(self, operation, success, background=False, lock_grid=True, on_failure=None):
         if not background:
@@ -324,7 +450,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         def failed(message):
             release()
             if not background:
-                self.status.setText('失败：' + message)
+                self.status.setText(tr('Failed: ', '失败：') + message)
             if on_failure is not None:
                 on_failure(message)
             self.resume_pending_search()
@@ -359,7 +485,10 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self._pending_gallery_back = False
         if self.busy:
             self._pending_query = request
-            self.status.setText('搜索已排队，当前任务完成后执行最后一次提交…')
+            self.status.setText(tr(
+                'Search queued; the latest request will run after the current job…',
+                '搜索已排队，当前任务完成后执行最后一次提交…',
+            ))
             return
         self._pending_query = None
         self.flush_favorite_snapshot()
@@ -367,14 +496,14 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.generation += 1
         for job in list(self.jobs):
             job.requestInterruption()
-        self.status.setText('正在搜索…')
-        self.search_input.setPlaceholderText('搜索照片素材…')
+        self.status.setText(tr('Searching…', '正在搜索…'))
+        self.search_input.setPlaceholderText(tr('Search photo references…', '搜索照片素材…'))
         previous_source, previous_more = self._search_source, self.has_more
         history_error = ''
         try:
             self.search_store.record_search(source, query, original_query)
         except (OSError, ValueError) as error:
-            history_error = '历史未保存：' + str(error)
+            history_error = tr('History not saved: ', '历史未保存：') + str(error)
         self.update_library_controls()
         self._search_source = source
         self.has_more = False
@@ -392,7 +521,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self._pagination_rebuild = self._page_context
             self._cached_page = bool(self._page_context)
             if history_error:
-                self.status.setText('失败：' + message + '；' + history_error)
+                self.status.setText(tr('Failed: ', '失败：') + message + '; ' + history_error)
         self.run_job(lambda job: self.get_browser().search(source, query, limit=24), loaded, on_failure=failed)
 
     def thumbnail_bytes(self, entry):
@@ -426,6 +555,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         if self.has_more and hasattr(self.browser, 'has_more'):
             self.has_more = self.browser.has_more(self._search_source)
         self.append_results(entries, cached_images=cached_images)
+        self._sync_grid_empty_state()
 
     def append_results(self, entries, cached_images=None):
         fresh = []
@@ -450,7 +580,11 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         if self.grid.count():
             self.status.clear()
         else:
-            self.status.setText('没有可用结果；可以打开登录 / 验证窗口检查。')
+            self.status.setText(tr(
+                'No results; open the login / verification window to check.',
+                '没有可用结果；可以打开登录 / 验证窗口检查。',
+            ))
+        self._sync_grid_empty_state()
         if not fresh:
             return 0
         if cached_images is not None:
@@ -507,7 +641,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self._more_pending = True
             return
         self._loading_more = True
-        self.status.setText('正在加载更多…')
+        self.status.setText(tr('Loading more…', '正在加载更多…'))
         source = self._search_source
         generation = self.generation
         cached_query = self._active_search[1] if self._cached_page and self._active_search else None
@@ -537,7 +671,10 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self.schedule_snapshot(reset=True)
             if not added:
                 self._more_retry_at = time.monotonic() + 1
-                self.status.setText('暂未加载到更多图片；稍后下滑可重试。' if self.has_more else '已到当前搜索结果末尾。')
+                self.status.setText(
+                    tr('No more images yet; scroll again later to retry.', '暂未加载到更多图片；稍后下滑可重试。')
+                    if self.has_more else
+                    tr('Reached the end of these search results.', '已到当前搜索结果末尾。'))
             if rebuild is None:
                 self.selection_changed(self.grid.currentItem())
         def failed(message):
@@ -558,8 +695,11 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         image = thumbnail_image(data) if not error else QImage()
         if image.isNull():
             if item.icon().isNull():
-                item.setData(THUMB_ERROR_ROLE, error or '缩略图无法解码')
-                item.setToolTip('缩略图加载失败，点击中央按钮重试。\n' + (error or '无法解码图片'))
+                item.setData(THUMB_ERROR_ROLE, error or tr('Could not decode thumbnail', '缩略图无法解码'))
+                item.setToolTip(
+                    tr('Thumbnail failed to load. Click the center button to retry.\n',
+                       '缩略图加载失败，点击中央按钮重试。\n')
+                    + (error or tr('Could not decode image', '无法解码图片')))
             return
         item.setData(THUMB_ERROR_ROLE, '')
         item.setToolTip('')
@@ -607,7 +747,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             return
         entry = item.data(ENTRY_ROLE)
         generation = self.generation
-        self.status.setText('正在获取大图…')
+        self.status.setText(tr('Fetching full image…', '正在获取大图…'))
         def operation(job):
             result = self.get_browser().resolve(entry)
             return self.downloader(result['url'], result.get('referer', ''))
@@ -635,7 +775,7 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
                 else:
                     self.resume_current_image(item)
             except Exception as error:
-                self.status.setText('失败：' + str(error))
+                self.status.setText(tr('Failed: ', '失败：') + str(error))
                 failed(str(error))
         def failed(message):
             if self._pending_preview == (generation, item):
@@ -653,7 +793,10 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
     def drag_not_ready(self):
         if not self.busy:
             self.selection_changed(self.grid.currentItem())
-        self.status.setText('大图准备中；完成后再拖入画布。')
+        self.status.setText(tr(
+            'Preparing the full image; drag onto the canvas when ready.',
+            '大图准备中；完成后再拖入画布。',
+        ))
 
     def cancel_preview_load(self):
         self._pending_preview = None
@@ -733,13 +876,19 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         item = self.grid.currentItem()
         path = item.data(PATH_ROLE) if item is not None else None
         generation = self.generation
-        target, reason = None, '请先准备图片并打开文档'
+        target, reason = None, tr(
+            'Prepare an image and open a document first',
+            '请先准备图片并打开文档',
+        )
         try:
             target = self.drop_router.current_import_target()
         except (AttributeError, ValueError, RuntimeError) as error:
             reason = str(error)
         ready = bool(target is not None and path and dialog and not dialog.loading and dialog.error_label.isHidden() and not self.busy)
-        for text, mode in (('插入为图层', 'layer'), ('插入为参考图', 'reference')):
+        for text, mode in (
+            (tr('Insert as layer', '插入为图层'), 'layer'),
+            (tr('Insert as reference', '插入为参考图'), 'reference'),
+        ):
             action = menu.addAction(text)
             action.setEnabled(ready)
             action.setToolTip(text if ready else reason)
@@ -771,16 +920,68 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self.status.setText('导入失败：' + str(error))
 
     def show_browser(self):
-        if self.busy or self.source.currentData() != 'google':
+        if self.busy or self.source.currentData() != 'google' or self._closing:
             return
-        self.run_job(lambda job: self.get_browser().show(), lambda result: self.status.setText('完成 Google 验证后回来重新搜索；验证窗口将关闭并恢复后台运行。'))
+        self.run_job(
+            lambda job: self.get_browser().show(),
+            lambda result: self.status.setText(tr(
+                'Finish Google verification, then search again. The window will close and return to the background.',
+                '完成 Google 验证后回来重新搜索；验证窗口将关闭并恢复后台运行。',
+            )))
+
+    def reset_browser_profile(self):
+        if self.busy or self._closing:
+            return
+        from .qtcompat import QMessageBox
+        answer = QMessageBox.question(
+            self,
+            tr('Reset browser profile', '重置浏览器配置'),
+            tr(
+                'Delete the Quick Image Search browser profile on disk?\n\n'
+                'This clears login / verification cookies for Google and Pinterest. '
+                'You will need to verify again next time.',
+                '删除快速搜图的浏览器本地配置？\n\n'
+                '这会清除 Google / Pinterest 的登录与验证 Cookie，下次需要重新验证。',
+            ),
+        )
+        yes = getattr(QMessageBox.StandardButton, 'Yes', None) or QMessageBox.Yes
+        if answer != yes:
+            return
+        try:
+            browser = self.browser
+            if browser is not None and hasattr(browser, 'close'):
+                browser.close()
+        except Exception:
+            pass
+        self.browser = None
+        profile = Path(self.browser_profile)
+        removed = False
+        try:
+            import shutil
+            if profile.exists():
+                shutil.rmtree(profile, ignore_errors=False)
+                removed = True
+            sibling = profile.with_name(profile.name + '-background')
+            if sibling.exists():
+                shutil.rmtree(sibling, ignore_errors=False)
+                removed = True
+        except OSError as error:
+            self.status.setText(tr('Could not reset profile: ', '无法重置配置：') + str(error))
+            return
+        self.status.setText(
+            tr('Browser profile reset. Search again when ready.', '浏览器配置已重置。准备好后请重新搜索。')
+            if removed else
+            tr('No browser profile folder was present.', '没有找到浏览器配置目录。'))
 
     def build_status_menu(self):
         menu = QMenu(self.status)
-        if self.source.currentData() == 'google' and self.status.state == 'error':
-            action = menu.addAction('打开 Google 验证窗口')
+        if self.source.currentData() == 'google':
+            action = menu.addAction(tr('Open Google verification window', '打开 Google 验证窗口'))
             action.setEnabled(not self.busy and not self._closing)
             action.triggered.connect(self.show_browser)
+        reset = menu.addAction(tr('Reset browser profile…', '重置浏览器配置…'))
+        reset.setEnabled(not self.busy and not self._closing)
+        reset.triggered.connect(self.reset_browser_profile)
         return menu
 
     def show_status_menu(self, position):

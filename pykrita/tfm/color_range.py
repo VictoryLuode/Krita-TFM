@@ -2,14 +2,17 @@
 from krita import Krita, Selection
 from .menus.qtcompat import (
     Qt, QByteArray, QTimer, pyqtSignal, QApplication, QCheckBox, QComboBox,
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSlider, QSpinBox, QVBoxLayout, QImage, QPixmap, QColor, QtWidgets,
 )
+from .i18n import tr
 from .color_range_native import channel_mask as native_channel_mask
 from .color_range_native import combine as native_combine
 from .color_range_native import mask as native_mask
 from .color_range_native import perceptual as native_perceptual
 from .color_range_overlay import ColorRangeOverlay
+
+TOOL_TITLE = lambda: tr('Advanced Selection', '高级选区')
 
 
 def _enum(group, name):
@@ -36,8 +39,10 @@ class ColorRangeDialog(QDialog):
     def __init__(self, document, parent=None):
         super().__init__(parent)
         self.document = document
-        self.setWindowTitle('Advance Selection')
+        self.setWindowTitle(TOOL_TITLE())
+        self._source_generation = None
         self._capture_source()
+        self._bind_document_changes()
         self.target_color = QColor(255, 255, 255)
         self.mask_mode = QComboBox()
         for group in (
@@ -61,7 +66,7 @@ class ColorRangeDialog(QDialog):
         self.preview = QLabel()
         self.preview.setFixedSize(300, 220)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setFrameShape(QLabel.Shape.Box)
+        self.preview.setMinimumHeight(220)
         # Keep the historical threshold behavior as the default. The new
         # overrides remain off until explicitly enabled.
         self.threshold_enabled = QCheckBox('Threshold')
@@ -103,6 +108,7 @@ class ColorRangeDialog(QDialog):
             saved_threshold = 128
         self.threshold.setValue(saved_threshold)
         self.invert.setChecked(defaults.readSetting('TFM', 'color_range_default_invert', 'false').lower() == 'true')
+        from .ui_chrome import apply_warning_label
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
@@ -111,28 +117,45 @@ class ColorRangeDialog(QDialog):
         row = QHBoxLayout(); row.addWidget(self.threshold_enabled); row.addWidget(self.slider, 1); row.addWidget(self.threshold); layout.addLayout(row)
         row = QHBoxLayout(); row.addWidget(self.tolerance_enabled); row.addWidget(self.tolerance_slider, 1); row.addWidget(self.tolerance); layout.addLayout(row)
         row = QHBoxLayout(); row.addWidget(self.softness_enabled); row.addWidget(self.softness_slider, 1); row.addWidget(self.softness); layout.addLayout(row)
-        row = QHBoxLayout(); row.addStretch(); row.addWidget(self.preview); row.addStretch(); layout.addLayout(row)
+        preview_frame = QFrame()
+        preview_frame.setFrameShape(_enum(QFrame, 'StyledPanel') or getattr(QFrame.Shape, 'StyledPanel', QFrame.StyledPanel))
+        preview_frame.setFrameShadow(_enum(QFrame, 'Sunken') or getattr(QFrame.Shadow, 'Sunken', QFrame.Sunken))
+        preview_inner = QHBoxLayout(preview_frame)
+        preview_inner.setContentsMargins(8, 8, 8, 8)
+        preview_inner.addStretch()
+        preview_inner.addWidget(self.preview)
+        preview_inner.addStretch()
+        layout.addWidget(preview_frame, 1)
         layout.addWidget(self.invert)
         self.preview.setToolTip('White: selected. Black: unselected.')
         buttons = QHBoxLayout()
-        self.select_button = QPushButton('Select')
-        self.deselect_button = QPushButton('Deselect')
-        self.clean_button = QPushButton('Clean')
-        self.reselect_button = QPushButton('Reselect')
-        self.refresh_source_button = QPushButton('Refresh Source')
-        self.refresh_source_button.setToolTip('Reread the canvas after it changes, so the selection is not based on a stale image.')
+        self.select_button = QPushButton(tr('Add', '添加'))
+        self.deselect_button = QPushButton(tr('Subtract', '减去'))
+        self.clean_button = QPushButton(tr('Clear', '清除'))
+        self.reselect_button = QPushButton(tr('Replace', '替换'))
+        self.refresh_source_button = QPushButton(tr('Refresh Source', '刷新来源'))
+        self.refresh_source_button.setToolTip(tr(
+            'Reread the canvas after it changes, so the selection is not based on a stale image.',
+            '画布变化后重新读取，避免基于过期图像做选区。',
+        ))
+        self.source_status = QLabel('')
+        apply_warning_label(self.source_status)
         self.clean_button.clicked.connect(self.clean_selection)
         self.reselect_button.clicked.connect(lambda: self.apply_mode('replace', close=False))
         self.select_button.clicked.connect(lambda: self.apply_mode('add', close=False))
         self.deselect_button.clicked.connect(lambda: self.apply_mode('subtract', close=False))
         self.refresh_source_button.clicked.connect(self.refresh_source_from_canvas)
+        buttons.addWidget(self.reselect_button)
         buttons.addWidget(self.select_button)
         buttons.addWidget(self.deselect_button)
         buttons.addWidget(self.clean_button)
-        buttons.addWidget(self.reselect_button)
         buttons.addWidget(self.refresh_source_button)
         layout.addLayout(buttons)
+        layout.addWidget(self.source_status)
         box = QDialogButtonBox(_enum(QDialogButtonBox, 'Ok') | _enum(QDialogButtonBox, 'Cancel'))
+        ok_button = box.button(_enum(QDialogButtonBox, 'Ok'))
+        if ok_button is not None:
+            ok_button.setText(tr('Replace and Close', '替换并关闭'))
         box.accepted.connect(self.apply); box.rejected.connect(self.reject); layout.addWidget(box)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(self.refresh)
         self._preview_image = QImage()
@@ -156,6 +179,46 @@ class ColorRangeDialog(QDialog):
         self.change_mode()
         self.refresh()
 
+    def _bind_document_changes(self):
+        self._source_stale = False
+        modified = getattr(self.document, 'imageModified', None) or getattr(self.document, 'modified', None)
+        if modified is not None and hasattr(modified, 'connect'):
+            try:
+                modified.connect(self._mark_source_stale)
+            except Exception:
+                pass
+        sig = getattr(self.document, 'sigProgress', None)
+        # Prefer periodic check while open: document may not expose a clean modified signal on all builds.
+        self._stale_timer = QTimer(self)
+        self._stale_timer.setInterval(1000)
+        self._stale_timer.timeout.connect(self._check_source_freshness)
+        self._stale_timer.start()
+        self.finished.connect(self._stale_timer.stop)
+
+    def _mark_source_stale(self, *_):
+        self._source_stale = True
+        self.source_status.setText(tr(
+            'Canvas changed. Click Refresh Source before applying.',
+            '画布已变化。应用前请先点「刷新来源」。',
+        ))
+
+    def _check_source_freshness(self):
+        if Krita.instance().activeDocument() != self.document:
+            self.source_status.setText(tr(
+                'Active document changed. Close this window or switch back.',
+                '当前文档已切换。请关闭此窗口或切回原文档。',
+            ))
+            return
+        # Heuristic: if projection size changed, source is stale.
+        try:
+            if self.source is not None and (
+                self.source.width() != self.document.width()
+                or self.source.height() != self.document.height()
+            ):
+                self._mark_source_stale()
+        except Exception:
+            pass
+
     def _capture_source(self, source=None):
         if source is None:
             source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
@@ -174,6 +237,9 @@ class ColorRangeDialog(QDialog):
         self.luminance = luminance
         self._mask_cache_key = None
         self._mask_cache = None
+        self._source_stale = False
+        if hasattr(self, 'source_status'):
+            self.source_status.setText('')
 
     def _refresh_source(self):
         source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
@@ -184,12 +250,12 @@ class ColorRangeDialog(QDialog):
     def refresh_source_from_canvas(self):
         """Re-read document projection while the non-modal dialog stays open."""
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, 'Advance Selection', 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
             return
         try:
             self._refresh_source()
         except (RuntimeError, ValueError) as error:
-            QMessageBox.warning(self, 'Advance Selection', str(error))
+            QMessageBox.warning(self, TOOL_TITLE(), str(error))
             return
         self.schedule_refresh()
 
@@ -275,7 +341,7 @@ class ColorRangeDialog(QDialog):
             self.preview_mode.blockSignals(True)
             self.preview_mode.setCurrentIndex(0)
             self.preview_mode.blockSignals(False)
-            QMessageBox.warning(self, 'Advance Selection Preview', str(error))
+            QMessageBox.warning(self, TOOL_TITLE(), str(error))
 
     def _remove_canvas_preview(self, *args):
         overlay, self.overlay = self.overlay, None
@@ -392,7 +458,7 @@ class ColorRangeDialog(QDialog):
 
     def clean_selection(self):
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, 'Advance Selection', 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
             return
         try:
             if self.document.selection() is not None:
@@ -400,7 +466,7 @@ class ColorRangeDialog(QDialog):
                 self.document.waitForDone()
                 self.document.refreshProjection()
         except Exception as error:
-            QMessageBox.warning(self, 'Advance Selection', str(error))
+            QMessageBox.warning(self, TOOL_TITLE(), str(error))
             return
         self.schedule_refresh()
 
@@ -409,7 +475,7 @@ class ColorRangeDialog(QDialog):
 
     def apply_mode(self, mode, close=False):
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, 'Advance Selection', 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
             return
         QApplication.setOverrideCursor(_enum(Qt, 'WaitCursor'))
         holder = None
@@ -433,7 +499,7 @@ class ColorRangeDialog(QDialog):
                 show_selection.trigger()
             self.document.refreshProjection()
         except Exception as error:
-            QMessageBox.warning(self, 'Advance Selection', str(error))
+            QMessageBox.warning(self, TOOL_TITLE(), str(error))
             return
         finally:
             if holder is not None:
@@ -454,7 +520,7 @@ class ColorRangeDialog(QDialog):
 def open_color_range():
     document = Krita.instance().activeDocument()
     if document is None:
-        QMessageBox.information(QApplication.activeWindow(), 'Advance Selection', 'Open a document first.')
+        QMessageBox.information(QApplication.activeWindow(), TOOL_TITLE(), 'Open a document first.')
         return
     try:
         window = QApplication.activeWindow()
@@ -465,4 +531,4 @@ def open_color_range():
         _open_dialogs.append(dialog)
         dialog.show()
     except (RuntimeError, ValueError) as error:
-        QMessageBox.warning(QApplication.activeWindow(), 'Advance Selection', str(error))
+        QMessageBox.warning(QApplication.activeWindow(), TOOL_TITLE(), str(error))
