@@ -5,11 +5,11 @@ Krita plugin for custom menus, native filters, Advance Selection, an asset libra
 Requires **Krita 5.3** on Windows (Qt5 build). Restart Krita after installing or updating.
 
 <p align="center">
-  <img src="docs/images/tfm-menus.png" alt="TFM Menus tab" width="720"><br>
-  <img src="docs/images/tfm-filters.png" alt="TFM Filters tab" width="720"><br>
-  <img src="docs/images/tfm-tools.png" alt="TFM Tools tab" width="720"><br>
-  <img src="docs/images/tfm-settings.png" alt="TFM Settings tab" width="720"><br>
-  <img src="docs/images/tfm-advance-selection.png" alt="Advance Selection" width="360">
+  <a href="docs/videos/tfm-demo-1.mp4"><img src="docs/images/tfm-demo-1.jpg" alt="TFM demo 1" width="720"></a><br>
+  <a href="docs/videos/tfm-demo-1.mp4">Watch demo 1</a>
+  ·
+  <a href="docs/videos/tfm-demo-2.mp4">Watch demo 2</a><br>
+  <a href="docs/videos/tfm-demo-2.mp4"><img src="docs/images/tfm-demo-2.jpg" alt="TFM demo 2" width="720"></a>
 </p>
 
 Open **Tools → TFM → Configure TFM** for menus, filters, tools, and backends. **Select → Advance Selection…** (also on the Quick Tool popup) for luminance / color-range selections.
