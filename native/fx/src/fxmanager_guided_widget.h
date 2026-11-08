@@ -426,9 +426,21 @@ public:
             const bool hasPosition=m_recommendationPending ? m_previousHasPosition[r][c] : m_hasPosition[r][c];
             if(hasPosition) config->setProperty(QStringLiteral("guided_sample_position_%1_%2").arg(r).arg(c),positionString(m_recommendationPending ? m_previousPositions[r][c] : m_positions[r][c]));
         }
-        config->setProperty("guided_lut",m_recommendationPending ? m_previousLutData : m_lutData);
+        // The display grid is rebuilt from the compact grade. Krita persists this
+        // configuration as kritarc "Last Used"/bookmarks, and the raw grid was ~0.5MB.
+        const LookTransfer &look=m_recommendationPending ? m_previousLook : m_look;
+        const QByteArray lookBytes=encodeLook(look);
+        config->setProperty("guided_look",lookBytes.isEmpty() ? QByteArray() : qCompress(lookBytes,9));
+        const LightnessStats &sourceStats=m_recommendationPending ? m_previousSourceStats : m_sourceStats;
+        const LightnessStats &referenceStats=m_recommendationPending ? m_previousReferenceStats : m_referenceStats;
+        config->setProperty("guided_lightness",encodeLightness(sourceStats,referenceStats));
+        config->setProperty("guided_lut",QByteArray());
         config->setProperty("guided_lut_valid",m_recommendationPending ? m_previousValid : m_valid);
-        config->setProperty("guided_source_preview",m_sourceData); config->setProperty("guided_reference_preview",m_targetData);
+        // Preview PNGs are session UI only. Krita writes this configuration into
+        // kritarc "Last Used"/bookmarks; embedding full previews previously
+        // ballooned kritarc to multi-megabyte and made the app feel sluggish.
+        config->setProperty("guided_source_preview",QByteArray());
+        config->setProperty("guided_reference_preview",QByteArray());
         return config;
     }
     void setConfiguration(const KisPropertiesConfigurationSP config) override
@@ -457,14 +469,22 @@ public:
                 m_positions[r][c]=position; m_hasPosition[r][c]=true;
             }
         }
-        m_lutData=config->getProperty("guided_lut").toByteArray();
+        m_look=decodeLook(inflateStored(config->getProperty("guided_look").toByteArray()));
+        decodeLightness(config->getProperty("guided_lightness").toByteArray(),m_sourceStats,m_referenceStats);
+        if(m_look.valid) {
+            m_lutData=encodeLut(buildLookLut(m_look));
+        } else {
+            const QByteArray stored=inflateStored(config->getProperty("guided_lut").toByteArray());
+            m_lutData=stored; // documents saved before guided_look
+        }
         m_valid=config->getBool("guided_lut_valid",false) && decodeLut(m_lutData).valid;
         m_sourceData=config->getProperty("guided_source_preview").toByteArray(); m_targetData=config->getProperty("guided_reference_preview").toByteArray();
         m_sourcePreview->image=QImage::fromData(m_sourceData,"PNG"); m_targetPreview->image=QImage::fromData(m_targetData,"PNG");
         m_sourcePreview->resetFit(); m_targetPreview->resetFit();
         if(m_sourceData.isEmpty()) setPreview(m_sourcePreview,m_sourceData,m_sourceReader());
         updateCellVisuals(); updatePreviewMarkers(); m_sourcePreview->update(); m_targetPreview->update(); updateStatus();
-        useCanvasReference();
+        // Let the canvas finish its current frame before walking the other layers.
+        QTimer::singleShot(0, this, [this] { useCanvasReference(); });
     }
 private:
     static QString positionString(const QPointF &position)
@@ -575,6 +595,9 @@ private:
         m_rebuildTimer.stop();
         m_rebuildPending=false;
         m_valid=false;
+        m_look={};
+        m_sourceStats={};
+        m_referenceStats={};
         m_lutData.clear();
         m_recommendationStatus->setText(i18n("Colour match cleared."));
         m_recommendationStatus->setVisible(true);
@@ -611,6 +634,9 @@ private:
         m_targetData.clear();
         m_matchCleared=true;
         m_valid=false;
+        m_look={};
+        m_sourceStats={};
+        m_referenceStats={};
         m_lutData.clear();
         if(m_pairsTable) {
             const QSignalBlocker blocker(m_pairsTable);
@@ -698,10 +724,11 @@ private:
             1.0,
             m_boxes["keep_local"]->value(),
             m_boxes["match_local"]->value());
+        m_look=look;
+        m_sourceStats=imageLightnessStats(sourceImage);
+        m_referenceStats=imageLightnessStats(referenceImage);
         Lut lut=buildLookLut(look);
         if(!lut.valid) {
-            const LightnessStats sourceStats=imageLightnessStats(sourceImage);
-            const LightnessStats referenceStats=imageLightnessStats(referenceImage);
             lut=buildLut(pairsFromUi(),
                          0.0,
                          m_boxes["chroma"]->value(),
@@ -711,8 +738,8 @@ private:
                          1.0,
                          1.0,
                          align>0.0,
-                         sourceStats,
-                         referenceStats);
+                         m_sourceStats,
+                         m_referenceStats);
         }
         m_valid=lut.valid; m_lutData=encodeLut(lut); updateStatus(); emit sigConfigurationItemChanged();
     }
@@ -819,6 +846,8 @@ private:
     QHash<QString,QSlider*> m_sliders;
     QHash<QString,double> m_defaults;
     QByteArray m_lutData,m_sourceData,m_targetData;
+    LookTransfer m_look,m_previousLook;
+    LightnessStats m_sourceStats,m_referenceStats,m_previousSourceStats,m_previousReferenceStats;
     std::array<std::array<QPointF,2>,4> m_positions{};
     std::array<std::array<bool,2>,4> m_hasPosition{};
     std::array<Pair,4> m_recommended{};
@@ -826,7 +855,6 @@ private:
     std::array<std::array<QPointF,2>,4> m_previousPositions{};
     std::array<std::array<bool,2>,4> m_previousHasPosition{};
     QHash<QString,double> m_previousBoxValues;
-    QByteArray m_previousLutData;
     QTimer m_rebuildTimer;
     bool m_rebuildPending=false;
     bool m_matchCleared=false;

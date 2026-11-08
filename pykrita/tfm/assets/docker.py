@@ -817,6 +817,19 @@ class AssetLibraryDocker(DockWidget):
         return max(ICON_MIN, min(ICON_MAX, value))
 
     def _remember_icon_edge(self, edge):
+        self._pending_icon_edge = int(edge)
+        timer = getattr(self, "_icon_edge_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._write_icon_edge)
+            self._icon_edge_timer = timer
+        timer.start(300)
+
+    def _write_icon_edge(self):
+        edge = getattr(self, "_pending_icon_edge", None)
+        if edge is None:
+            return
         try:
             Krita.instance().writeSetting("TFM", "assets_icon_size", str(int(edge)))
         except Exception:

@@ -256,11 +256,11 @@ class ManagerDialog(QtWidgets.QDialog):
         settings_form.addRow('Default window height', self.default_height)
         self.cpu_threads.setToolTip('Controls plugin filters using the shared CPU worker pool. Other processing paths may use their own threads.')
         settings_form.addRow('Plugin filters CPU threads', self.cpu_threads)
-        settings_form.addRow('Filter backend', self.filter_backend)
+        settings_form.addRow('Default filter backend', self.filter_backend)
         settings_layout.addLayout(settings_form)
         backend_note = QtWidgets.QLabel(
-            'A GPU request uses CPU when that filter has no Vulkan path or the device is unavailable. '
-            'Background Removal uses its own backend.')
+            'Default for filters that support Vulkan. Override one filter under Filters → Compute backend. '
+            'GPU falls back to CPU when Vulkan is unavailable. Background Removal keeps its own backend.')
         backend_note.setWordWrap(True)
         settings_layout.addWidget(backend_note)
         self.backend_status = QtWidgets.QLabel()

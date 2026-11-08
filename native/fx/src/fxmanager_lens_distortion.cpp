@@ -144,7 +144,7 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
     KisPainter::copyAreaOptimizedOldData(frame.topLeft(), device, pristine, frame);
     const QImage source = fxmanager::readImage(pristine, frame);
     if (source.isNull()) return;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         QImage gpuOutput;
         QString reason;
         QString gpuDevice;

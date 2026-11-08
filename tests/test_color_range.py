@@ -96,14 +96,14 @@ assert [dialog.preview_image().pixelColor(x, 0).red() for x in range(5)] == list
 from PyQt5.QtCore import QTimer, QEventLoop
 def wait_refresh():
     loop = QEventLoop()
-    QTimer.singleShot(100, loop.quit)
+    QTimer.singleShot(220, loop.quit)
     loop.exec_()
 with mock.patch.object(doc, 'setSelection', side_effect=AssertionError('preview wrote selection')):
     dialog.slider.setValue(200)
     wait_refresh()
     assert dialog.threshold.value() == 200
     assert dialog.mask() == bytes(5)
-    assert dialog.preview.pixmap().toImage().pixelColor(10, 10).red() == 0
+    assert dialog.preview.pixmap().toImage().pixelColor(0, 0).red() == 0
     dialog.threshold.setValue(64)
     wait_refresh()
     assert dialog.slider.value() == 64

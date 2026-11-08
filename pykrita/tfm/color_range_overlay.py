@@ -18,6 +18,7 @@ class ColorRangeOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(canvas.rect())
+        self.canvas.installEventFilter(self)
         self.view.installEventFilter(self)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)

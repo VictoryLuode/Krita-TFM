@@ -1,405 +1,465 @@
+// Plugin-side Vulkan client. This process must not call LoadLibrary on
+// vulkan-1.dll. NVIDIA keeps a mixed OpenGL/ANGLE + Vulkan state for the
+// whole process, which is what makes canvas zoom stutter after a GPU filter.
+// The device lives in tfm_vulkan_worker.exe and dies with that process.
+
 #include "fxmanager_vulkan.h"
+#include "fxmanager_vulkan_ipc.h"
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <limits>
-#include <sstream>
-#include <utility>
-#define VK_NO_PROTOTYPES
-#include <vulkan/vulkan_core.h>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-#if defined(_WIN32)
-#  define NOMINMAX
-#  include <windows.h>
-#else
-#  include <dlfcn.h>
-#endif
+namespace {
 
-namespace
+struct Worker {
+    HANDLE job = nullptr;
+    HANDLE process = nullptr;
+    HANDLE toWorker = nullptr;
+    HANDLE fromWorker = nullptr;
+    bool ready = false;
+    bool float64 = false;
+    bool idleArmed = false;
+    std::string name;
+    std::uint64_t generation = 0;
+    std::chrono::steady_clock::time_point idleDeadline{};
+
+    void closePipes()
+    {
+        if (toWorker) CloseHandle(toWorker);
+        if (fromWorker) CloseHandle(fromWorker);
+        toWorker = fromWorker = nullptr;
+    }
+
+    void closeProcess()
+    {
+        if (process) CloseHandle(process);
+        process = nullptr;
+        ready = false;
+    }
+};
+
+Worker &worker()
 {
-#if defined(_WIN32)
-using Library = HMODULE;
-void *loadSymbol(Library lib, const char *name) { return reinterpret_cast<void *>(GetProcAddress(lib, name)); }
-#else
-using Library = void *;
-void *loadSymbol(Library lib, const char *name) { return dlsym(lib, name); }
-#endif
-
-template<typename T> bool loadProc(Library lib, const char *name, T &out)
-{
-    out = reinterpret_cast<T>(loadSymbol(lib, name));
-    return out != nullptr;
+    static Worker instance;
+    return instance;
 }
 
-std::string resultMessage(const char *operation, VkResult result)
+std::mutex &gate()
 {
-    std::ostringstream s;
-    s << operation << " failed (VkResult " << result << ')';
-    return s.str();
-}
+    static std::mutex mutex;
+    return mutex;
 }
 
-struct FxManagerVulkan::Impl
+std::condition_variable &idleCv()
 {
-    Library library = nullptr;
-    VkInstance instance = nullptr;
-    VkPhysicalDevice physicalDevice = nullptr;
-    VkDevice device = nullptr;
-    VkQueue queue = nullptr;
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::uint32_t queueFamily = 0;
-    std::uint32_t memoryTypeCount = 0;
-    VkMemoryType memoryTypes[32]{};
-    std::string gpuName;
-    bool shaderFloat64 = false;
-#define FX_VK_PROC(name) decltype(&::vk##name) name = nullptr
-    // Function pointer signatures are listed explicitly below; no Vulkan
-    // declarations or symbols are imported from the SDK or loader.
-    using CreateInstanceFn = PFN_vkCreateInstance;
-    using DestroyInstanceFn = PFN_vkDestroyInstance;
-    using EnumeratePhysicalDevicesFn = PFN_vkEnumeratePhysicalDevices;
-    using GetPhysicalDevicePropertiesFn = PFN_vkGetPhysicalDeviceProperties;
-    using GetPhysicalDeviceFeaturesFn = PFN_vkGetPhysicalDeviceFeatures;
-    using GetPhysicalDeviceQueueFamilyPropertiesFn = PFN_vkGetPhysicalDeviceQueueFamilyProperties;
-    using GetPhysicalDeviceMemoryPropertiesFn = PFN_vkGetPhysicalDeviceMemoryProperties;
-    using CreateDeviceFn = PFN_vkCreateDevice;
-    using DestroyDeviceFn = PFN_vkDestroyDevice;
-    using GetDeviceQueueFn = PFN_vkGetDeviceQueue;
-    using CreateCommandPoolFn = PFN_vkCreateCommandPool;
-    using DestroyCommandPoolFn = PFN_vkDestroyCommandPool;
-    using CreateBufferFn = PFN_vkCreateBuffer;
-    using DestroyBufferFn = PFN_vkDestroyBuffer;
-    using GetBufferMemoryRequirementsFn = PFN_vkGetBufferMemoryRequirements;
-    using AllocateMemoryFn = PFN_vkAllocateMemory;
-    using FreeMemoryFn = PFN_vkFreeMemory;
-    using BindBufferMemoryFn = PFN_vkBindBufferMemory;
-    using MapMemoryFn = PFN_vkMapMemory;
-    using UnmapMemoryFn = PFN_vkUnmapMemory;
-    using CreateShaderModuleFn = PFN_vkCreateShaderModule;
-    using DestroyShaderModuleFn = PFN_vkDestroyShaderModule;
-    using CreateDescriptorSetLayoutFn = PFN_vkCreateDescriptorSetLayout;
-    using DestroyDescriptorSetLayoutFn = PFN_vkDestroyDescriptorSetLayout;
-    using CreatePipelineLayoutFn = PFN_vkCreatePipelineLayout;
-    using DestroyPipelineLayoutFn = PFN_vkDestroyPipelineLayout;
-    using CreateComputePipelinesFn = PFN_vkCreateComputePipelines;
-    using DestroyPipelineFn = PFN_vkDestroyPipeline;
-    using CreateDescriptorPoolFn = PFN_vkCreateDescriptorPool;
-    using DestroyDescriptorPoolFn = PFN_vkDestroyDescriptorPool;
-    using AllocateDescriptorSetsFn = PFN_vkAllocateDescriptorSets;
-    using UpdateDescriptorSetsFn = PFN_vkUpdateDescriptorSets;
-    using AllocateCommandBuffersFn = PFN_vkAllocateCommandBuffers;
-    using FreeCommandBuffersFn = PFN_vkFreeCommandBuffers;
-    using BeginCommandBufferFn = PFN_vkBeginCommandBuffer;
-    using EndCommandBufferFn = PFN_vkEndCommandBuffer;
-    using CmdBindPipelineFn = PFN_vkCmdBindPipeline;
-    using CmdBindDescriptorSetsFn = PFN_vkCmdBindDescriptorSets;
-    using CmdDispatchFn = PFN_vkCmdDispatch;
-    using CmdPipelineBarrierFn = PFN_vkCmdPipelineBarrier;
-    using CreateFenceFn = PFN_vkCreateFence;
-    using DestroyFenceFn = PFN_vkDestroyFence;
-    using QueueSubmitFn = PFN_vkQueueSubmit;
-    using WaitForFencesFn = PFN_vkWaitForFences;
-    using DeviceWaitIdleFn = PFN_vkDeviceWaitIdle;
+    static std::condition_variable cv;
+    return cv;
+}
 
-    CreateInstanceFn createInstance = nullptr;
-    DestroyInstanceFn destroyInstance = nullptr;
-    EnumeratePhysicalDevicesFn enumeratePhysicalDevices = nullptr;
-    GetPhysicalDevicePropertiesFn getPhysicalDeviceProperties = nullptr;
-    GetPhysicalDeviceFeaturesFn getPhysicalDeviceFeatures = nullptr;
-    GetPhysicalDeviceQueueFamilyPropertiesFn getQueueFamilies = nullptr;
-    GetPhysicalDeviceMemoryPropertiesFn getMemoryProperties = nullptr;
-    CreateDeviceFn createDevice = nullptr;
-    DestroyDeviceFn destroyDevice = nullptr;
-    GetDeviceQueueFn getDeviceQueue = nullptr;
-    CreateCommandPoolFn createCommandPool = nullptr;
-    DestroyCommandPoolFn destroyCommandPool = nullptr;
-    CreateBufferFn createBuffer = nullptr;
-    DestroyBufferFn destroyBuffer = nullptr;
-    GetBufferMemoryRequirementsFn getBufferMemoryRequirements = nullptr;
-    AllocateMemoryFn allocateMemory = nullptr;
-    FreeMemoryFn freeMemory = nullptr;
-    BindBufferMemoryFn bindBufferMemory = nullptr;
-    MapMemoryFn mapMemory = nullptr;
-    UnmapMemoryFn unmapMemory = nullptr;
-    CreateShaderModuleFn createShaderModule = nullptr;
-    DestroyShaderModuleFn destroyShaderModule = nullptr;
-    CreateDescriptorSetLayoutFn createDescriptorSetLayout = nullptr;
-    DestroyDescriptorSetLayoutFn destroyDescriptorSetLayout = nullptr;
-    CreatePipelineLayoutFn createPipelineLayout = nullptr;
-    DestroyPipelineLayoutFn destroyPipelineLayout = nullptr;
-    CreateComputePipelinesFn createComputePipelines = nullptr;
-    DestroyPipelineFn destroyPipeline = nullptr;
-    CreateDescriptorPoolFn createDescriptorPool = nullptr;
-    DestroyDescriptorPoolFn destroyDescriptorPool = nullptr;
-    AllocateDescriptorSetsFn allocateDescriptorSets = nullptr;
-    UpdateDescriptorSetsFn updateDescriptorSets = nullptr;
-    AllocateCommandBuffersFn allocateCommandBuffers = nullptr;
-    FreeCommandBuffersFn freeCommandBuffers = nullptr;
-    BeginCommandBufferFn beginCommandBuffer = nullptr;
-    EndCommandBufferFn endCommandBuffer = nullptr;
-    CmdBindPipelineFn cmdBindPipeline = nullptr;
-    CmdBindDescriptorSetsFn cmdBindDescriptorSets = nullptr;
-    CmdDispatchFn cmdDispatch = nullptr;
-    CmdPipelineBarrierFn cmdPipelineBarrier = nullptr;
-    CreateFenceFn createFence = nullptr;
-    DestroyFenceFn destroyFence = nullptr;
-    QueueSubmitFn queueSubmit = nullptr;
-    WaitForFencesFn waitForFences = nullptr;
-    DeviceWaitIdleFn deviceWaitIdle = nullptr;
-#undef FX_VK_PROC
+bool pipeIo(HANDLE handle, void *data, std::size_t size, std::size_t &moved, bool writing)
+{
+    DWORD count = 0;
+    const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(size, 1u << 20));
+    const BOOL ok = writing
+        ? WriteFile(handle, data, chunk, &count, nullptr)
+        : ReadFile(handle, data, chunk, &count, nullptr);
+    if (!ok) return false;
+    moved = count;
+    return true;
+}
 
-    ~Impl() { shutdown(); }
+std::wstring executableDirectory()
+{
+    wchar_t path[32768];
+    const DWORD length = GetModuleFileNameW(nullptr, path, 32768);
+    if (!length || length >= 32768) return {};
+    std::wstring text(path, length);
+    const auto slash = text.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : text.substr(0, slash);
+}
 
-    void shutdown()
-    {
-        if (device) {
-            if (deviceWaitIdle) deviceWaitIdle(device);
-            if (commandPool && destroyCommandPool) destroyCommandPool(device, commandPool, nullptr);
-            if (destroyDevice) destroyDevice(device, nullptr);
-            device = nullptr;
-        }
-        if (instance && destroyInstance) destroyInstance(instance, nullptr);
-        instance = nullptr;
-#if defined(_WIN32)
-        if (library) FreeLibrary(library);
-#else
-        if (library) dlclose(library);
-#endif
-        library = nullptr;
-        physicalDevice = nullptr; queue = nullptr; commandPool = VK_NULL_HANDLE;
-        gpuName.clear(); memoryTypeCount = 0;
-    }
+std::wstring workerExecutable()
+{
+    HMODULE module = GetModuleHandleW(L"kritatfm.dll");
+    if (!module) return {};
+    wchar_t path[32768];
+    const DWORD length = GetModuleFileNameW(module, path, 32768);
+    if (!length || length >= 32768) return {};
+    std::wstring text(path, length);
+    const auto slash = text.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return {};
+    return text.substr(0, slash + 1) + L"tfm_vulkan_worker.exe";
+}
 
-    bool loadGlobal(std::string &error)
-    {
-#if defined(_WIN32)
-        library = LoadLibraryW(L"vulkan-1.dll");
-#elif defined(__APPLE__)
-        library = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
-        if (!library) library = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
-#else
-        library = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-        if (!library) library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
-#endif
-        if (!library) { error = "Unable to load the system Vulkan loader"; return false; }
-#define LOAD_GLOBAL(field, symbol) if (!loadProc(library, symbol, field)) { error = std::string("Missing Vulkan entry point: ") + symbol; return false; }
-        LOAD_GLOBAL(createInstance, "vkCreateInstance");
-#undef LOAD_GLOBAL
-        return true;
-    }
-
-    template<typename T> bool loadInstanceProc(const char *name, T &out)
-    {
-        out = reinterpret_cast<T>(loadSymbol(library, name));
-        return out != nullptr;
-    }
-
-    bool loadInstanceFunctions(std::string &error)
-    {
-#define LOAD_INSTANCE(field, symbol) if (!loadInstanceProc(symbol, field)) { error = std::string("Missing Vulkan entry point: ") + symbol; return false; }
-        LOAD_INSTANCE(destroyInstance, "vkDestroyInstance");
-        LOAD_INSTANCE(enumeratePhysicalDevices, "vkEnumeratePhysicalDevices");
-        LOAD_INSTANCE(getPhysicalDeviceProperties, "vkGetPhysicalDeviceProperties");
-        LOAD_INSTANCE(getPhysicalDeviceFeatures, "vkGetPhysicalDeviceFeatures");
-        LOAD_INSTANCE(getQueueFamilies, "vkGetPhysicalDeviceQueueFamilyProperties");
-        LOAD_INSTANCE(getMemoryProperties, "vkGetPhysicalDeviceMemoryProperties");
-        LOAD_INSTANCE(createDevice, "vkCreateDevice");
-        LOAD_INSTANCE(destroyDevice, "vkDestroyDevice");
-        LOAD_INSTANCE(getDeviceQueue, "vkGetDeviceQueue");
-        LOAD_INSTANCE(createCommandPool, "vkCreateCommandPool");
-        LOAD_INSTANCE(destroyCommandPool, "vkDestroyCommandPool");
-        LOAD_INSTANCE(createBuffer, "vkCreateBuffer");
-        LOAD_INSTANCE(destroyBuffer, "vkDestroyBuffer");
-        LOAD_INSTANCE(getBufferMemoryRequirements, "vkGetBufferMemoryRequirements");
-        LOAD_INSTANCE(allocateMemory, "vkAllocateMemory");
-        LOAD_INSTANCE(freeMemory, "vkFreeMemory");
-        LOAD_INSTANCE(bindBufferMemory, "vkBindBufferMemory");
-        LOAD_INSTANCE(mapMemory, "vkMapMemory");
-        LOAD_INSTANCE(unmapMemory, "vkUnmapMemory");
-        LOAD_INSTANCE(createShaderModule, "vkCreateShaderModule");
-        LOAD_INSTANCE(destroyShaderModule, "vkDestroyShaderModule");
-        LOAD_INSTANCE(createDescriptorSetLayout, "vkCreateDescriptorSetLayout");
-        LOAD_INSTANCE(destroyDescriptorSetLayout, "vkDestroyDescriptorSetLayout");
-        LOAD_INSTANCE(createPipelineLayout, "vkCreatePipelineLayout");
-        LOAD_INSTANCE(destroyPipelineLayout, "vkDestroyPipelineLayout");
-        LOAD_INSTANCE(createComputePipelines, "vkCreateComputePipelines");
-        LOAD_INSTANCE(destroyPipeline, "vkDestroyPipeline");
-        LOAD_INSTANCE(createDescriptorPool, "vkCreateDescriptorPool");
-        LOAD_INSTANCE(destroyDescriptorPool, "vkDestroyDescriptorPool");
-        LOAD_INSTANCE(allocateDescriptorSets, "vkAllocateDescriptorSets");
-        LOAD_INSTANCE(updateDescriptorSets, "vkUpdateDescriptorSets");
-        LOAD_INSTANCE(allocateCommandBuffers, "vkAllocateCommandBuffers");
-        LOAD_INSTANCE(freeCommandBuffers, "vkFreeCommandBuffers");
-        LOAD_INSTANCE(beginCommandBuffer, "vkBeginCommandBuffer");
-        LOAD_INSTANCE(endCommandBuffer, "vkEndCommandBuffer");
-        LOAD_INSTANCE(cmdBindPipeline, "vkCmdBindPipeline");
-        LOAD_INSTANCE(cmdBindDescriptorSets, "vkCmdBindDescriptorSets");
-        LOAD_INSTANCE(cmdDispatch, "vkCmdDispatch");
-        LOAD_INSTANCE(cmdPipelineBarrier, "vkCmdPipelineBarrier");
-        LOAD_INSTANCE(createFence, "vkCreateFence");
-        LOAD_INSTANCE(destroyFence, "vkDestroyFence");
-        LOAD_INSTANCE(queueSubmit, "vkQueueSubmit");
-        LOAD_INSTANCE(waitForFences, "vkWaitForFences");
-        LOAD_INSTANCE(deviceWaitIdle, "vkDeviceWaitIdle");
-#undef LOAD_INSTANCE
-        return true;
-    }
-
-    bool findMemoryType(std::uint32_t bits, VkMemoryPropertyFlags required, std::uint32_t &index) const
-    {
-        for (std::uint32_t i = 0; i < memoryTypeCount; ++i) {
-            if ((bits & (1u << i)) && (memoryTypes[i].propertyFlags & required) == required) {
-                index = i;
-                return true;
+std::wstring environmentWith(const std::wstring &binDirectory)
+{
+    std::wstring block;
+    wchar_t *source = GetEnvironmentStringsW();
+    bool sawPath = false;
+    if (source) {
+        for (const wchar_t *cursor = source; *cursor; ) {
+            const std::wstring entry = cursor;
+            cursor += entry.size() + 1;
+            std::wstring rewritten = entry;
+            if (entry.size() >= 5 && _wcsnicmp(entry.c_str(), L"PATH=", 5) == 0) {
+                rewritten = L"PATH=" + binDirectory + L";" + entry.substr(5);
+                sawPath = true;
             }
+            block.append(rewritten);
+            block.push_back(L'\0');
         }
+        FreeEnvironmentStringsW(source);
+    }
+    if (!sawPath) {
+        block.append(L"PATH=" + binDirectory);
+        block.push_back(L'\0');
+    }
+    block.push_back(L'\0');
+    return block;
+}
+
+void abandonProcess()
+{
+    Worker &current = worker();
+    current.closePipes();
+    if (current.process) {
+        TerminateProcess(current.process, 1);
+        WaitForSingleObject(current.process, 2000);
+    }
+    current.closeProcess();
+}
+
+void stopWorker()
+{
+    Worker &current = worker();
+    if (current.toWorker) {
+        auto write = [&](const void *data, std::size_t size, std::size_t &moved) {
+            return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true);
+        };
+        tfm_vulkan_ipc::writeMagic(write);
+        tfm_vulkan_ipc::writeU32(write, tfm_vulkan_ipc::kShutdown);
+    }
+    current.closePipes();
+    if (current.process) {
+        if (WaitForSingleObject(current.process, 3000) != WAIT_OBJECT_0)
+            TerminateProcess(current.process, 1);
+        WaitForSingleObject(current.process, 1000);
+    }
+    current.closeProcess();
+}
+
+void ensureIdleThread()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        std::thread([] {
+            std::unique_lock<std::mutex> lock(gate());
+            for (;;) {
+                idleCv().wait(lock, [] { return worker().idleArmed; });
+                const auto token = worker().generation;
+                const auto deadline = worker().idleDeadline;
+                const bool cancelled = idleCv().wait_until(lock, deadline, [&] {
+                    return !worker().idleArmed || worker().generation != token
+                        || worker().idleDeadline != deadline;
+                });
+                if (cancelled) continue;
+                if (worker().idleArmed && worker().generation == token) {
+                    worker().idleArmed = false;
+                    stopWorker();
+                }
+            }
+        }).detach();
+    });
+}
+
+void armIdle()
+{
+    ensureIdleThread();
+    Worker &current = worker();
+    current.idleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    current.idleArmed = true;
+    idleCv().notify_all();
+}
+
+void disarmIdle()
+{
+    worker().idleArmed = false;
+    idleCv().notify_all();
+}
+
+bool readHello(std::string &error)
+{
+    Worker &current = worker();
+    auto read = [&](void *data, std::size_t size, std::size_t &moved) {
+        return pipeIo(current.fromWorker, data, size, moved, false);
+    };
+    std::uint32_t kind = 0, ok = 0, float64 = 0, nameLen = 0, errorLen = 0;
+    if (!tfm_vulkan_ipc::readMagic(read) || !tfm_vulkan_ipc::readU32(read, kind) || kind != tfm_vulkan_ipc::kHello
+        || !tfm_vulkan_ipc::readU32(read, ok) || !tfm_vulkan_ipc::readU32(read, float64)
+        || !tfm_vulkan_ipc::readU32(read, nameLen) || nameLen > 4096) {
+        error = "Vulkan worker closed before it was ready";
+        return false;
+    }
+    current.name.assign(nameLen, '\0');
+    if ((nameLen && !tfm_vulkan_ipc::readExact(read, current.name.data(), nameLen))
+        || !tfm_vulkan_ipc::readU32(read, errorLen) || errorLen > (1u << 20)) {
+        error = "Vulkan worker closed before it was ready";
+        return false;
+    }
+    error.assign(errorLen, '\0');
+    if (errorLen && !tfm_vulkan_ipc::readExact(read, error.data(), errorLen)) {
+        error = "Vulkan worker closed before it was ready";
+        return false;
+    }
+    current.float64 = float64 != 0;
+    if (!ok) {
+        if (error.empty()) error = "Vulkan worker failed to create a device";
+        return false;
+    }
+    current.ready = true;
+    return true;
+}
+
+bool ensureWorker(std::string &error)
+{
+    if (const char *disabled = std::getenv("TFM_VULKAN_DISABLE")) {
+        if (disabled[0] && disabled[0] != '0') {
+            error = "Vulkan disabled by TFM_VULKAN_DISABLE";
+            return false;
+        }
+    }
+    Worker &current = worker();
+    if (current.process) {
+        DWORD code = 0;
+        if (current.ready && GetExitCodeProcess(current.process, &code) && code == STILL_ACTIVE) return true;
+        abandonProcess();
+    }
+    const std::wstring exe = workerExecutable();
+    if (exe.empty() || GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        error = "TFM Vulkan worker is not installed next to kritatfm.dll";
+        return false;
+    }
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+    HANDLE childInRead = nullptr, childInWrite = nullptr, childOutRead = nullptr, childOutWrite = nullptr, nul = nullptr;
+    auto cleanupHandles = [&] {
+        if (childInRead) CloseHandle(childInRead);
+        if (childInWrite) CloseHandle(childInWrite);
+        if (childOutRead) CloseHandle(childOutRead);
+        if (childOutWrite) CloseHandle(childOutWrite);
+        if (nul) CloseHandle(nul);
+        childInRead = childInWrite = childOutRead = childOutWrite = nul = nullptr;
+    };
+    if (!CreatePipe(&childInRead, &childInWrite, &inherit, 1u << 20)
+        || !CreatePipe(&childOutRead, &childOutWrite, &inherit, 1u << 20)) {
+        cleanupHandles();
+        error = "Could not create the Vulkan worker pipes";
+        return false;
+    }
+    SetHandleInformation(childInWrite, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(childOutRead, HANDLE_FLAG_INHERIT, 0);
+    nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE | FILE_SHARE_READ, &inherit, OPEN_EXISTING, 0, nullptr);
+    if (nul == INVALID_HANDLE_VALUE) {
+        nul = nullptr;
+        cleanupHandles();
+        error = "Could not start the Vulkan worker";
         return false;
     }
 
-    struct Buffer { VkBuffer handle = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; VkDeviceSize size = 0; };
-
-    void destroyBufferObject(Buffer &b)
-    {
-        if (b.handle) destroyBuffer(device, b.handle, nullptr);
-        if (b.memory) freeMemory(device, b.memory, nullptr);
-        b = {};
+    SIZE_T attributeSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeSize);
+    std::vector<std::uint8_t> attributeStorage(attributeSize);
+    auto *attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+    if (!attributeSize || !InitializeProcThreadAttributeList(attributes, 1, 0, &attributeSize)) {
+        cleanupHandles();
+        error = "Could not start the Vulkan worker";
+        return false;
+    }
+    HANDLE inherited[3] = {childInRead, childOutWrite, nul};
+    const BOOL listed = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                   inherited, sizeof(inherited), nullptr, nullptr);
+    if (!listed) {
+        DeleteProcThreadAttributeList(attributes);
+        cleanupHandles();
+        error = "Could not start the Vulkan worker";
+        return false;
     }
 
-    bool makeBuffer(std::size_t size, Buffer &buffer, std::string &error)
-    {
-        buffer.size = std::max<std::size_t>(size, 4);
-        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, buffer.size,
-                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
-        VkResult r = createBuffer(device, &info, nullptr, &buffer.handle);
-        if (r != VK_SUCCESS) { error = resultMessage("vkCreateBuffer", r); return false; }
-        VkMemoryRequirements requirements{};
-        getBufferMemoryRequirements(device, buffer.handle, &requirements);
-        std::uint32_t memoryIndex = 0;
-        if (!findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, memoryIndex)) {
-            error = "No coherent host-visible Vulkan memory type for storage buffer";
-            destroyBufferObject(buffer);
-            return false;
+    std::wstring command = L"\"" + exe + L"\"";
+    std::vector<wchar_t> commandBuffer(command.begin(), command.end());
+    commandBuffer.push_back(L'\0');
+    std::wstring environment = environmentWith(executableDirectory());
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = childInRead;
+    startup.StartupInfo.hStdOutput = childOutWrite;
+    startup.StartupInfo.hStdError = nul;
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION process{};
+    const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+    const BOOL created = CreateProcessW(exe.c_str(), commandBuffer.data(), nullptr, nullptr, TRUE, flags,
+                                         environment.empty() ? nullptr : environment.data(), nullptr,
+                                         &startup.StartupInfo, &process);
+    DeleteProcThreadAttributeList(attributes);
+    if (!created) {
+        cleanupHandles();
+        error = "Could not start the Vulkan worker";
+        return false;
+    }
+    if (!current.job) {
+        current.job = CreateJobObjectW(nullptr, nullptr);
+        if (current.job) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(current.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
         }
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, memoryIndex};
-        r = allocateMemory(device, &allocation, nullptr, &buffer.memory);
-        if (r != VK_SUCCESS) { error = resultMessage("vkAllocateMemory", r); destroyBufferObject(buffer); return false; }
-        r = bindBufferMemory(device, buffer.handle, buffer.memory, 0);
-        if (r != VK_SUCCESS) { error = resultMessage("vkBindBufferMemory", r); destroyBufferObject(buffer); return false; }
-        return true;
     }
+    if (current.job) AssignProcessToJobObject(current.job, process.hProcess);
+    ResumeThread(process.hThread);
+    CloseHandle(process.hThread);
+    CloseHandle(childInRead);
+    CloseHandle(childOutWrite);
+    if (nul) CloseHandle(nul);
+    childInRead = childOutWrite = nul = nullptr;
+    current.process = process.hProcess;
+    current.toWorker = childInWrite;
+    current.fromWorker = childOutRead;
+    childInWrite = childOutRead = nullptr;
+    if (!readHello(error)) {
+        abandonProcess();
+        return false;
+    }
+    return true;
+}
 
-    bool writeBuffer(const Buffer &buffer, const void *data, std::size_t size, std::string &error)
-    {
-        if (!size) return true;
-        void *mapped = nullptr;
-        VkResult r = mapMemory(device, buffer.memory, 0, buffer.size, 0, &mapped);
-        if (r != VK_SUCCESS) { error = resultMessage("vkMapMemory", r); return false; }
-        std::memcpy(mapped, data, size);
-        unmapMemory(device, buffer.memory);
-        return true;
+bool sendDispatch(const std::vector<std::uint32_t> &spirv, const void *inputData, std::size_t inputSize,
+                  const void *parametersData, std::size_t parametersSize, std::size_t outputSize,
+                  const FxManagerVulkan::Dispatch &config, std::vector<std::uint8_t> &outputData, std::string &error)
+{
+    Worker &current = worker();
+    auto write = [&](const void *data, std::size_t size, std::size_t &moved) {
+        return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true);
+    };
+    auto read = [&](void *data, std::size_t size, std::size_t &moved) {
+        return pipeIo(current.fromWorker, data, size, moved, false);
+    };
+    const std::uint32_t groups[3] = {config.groupsX, config.groupsY, config.groupsZ};
+    const std::uint32_t bindings[3] = {config.inputBinding, config.outputBinding, config.parametersBinding};
+    const auto spirvBytes = static_cast<std::uint32_t>(spirv.size() * sizeof(std::uint32_t));
+    if (!tfm_vulkan_ipc::writeMagic(write) || !tfm_vulkan_ipc::writeU32(write, tfm_vulkan_ipc::kDispatch)
+        || !tfm_vulkan_ipc::writeU32(write, spirvBytes)
+        || !tfm_vulkan_ipc::writeU32(write, static_cast<std::uint32_t>(inputSize))
+        || !tfm_vulkan_ipc::writeU32(write, static_cast<std::uint32_t>(parametersSize))
+        || !tfm_vulkan_ipc::writeU32(write, static_cast<std::uint32_t>(outputSize))
+        || !tfm_vulkan_ipc::writeExact(write, groups, sizeof(groups))
+        || !tfm_vulkan_ipc::writeExact(write, bindings, sizeof(bindings))
+        || !tfm_vulkan_ipc::writeExact(write, spirv.data(), spirvBytes)
+        || (inputSize && !tfm_vulkan_ipc::writeExact(write, inputData, inputSize))
+        || (parametersSize && !tfm_vulkan_ipc::writeExact(write, parametersData, parametersSize))) {
+        error = "Could not send a Vulkan job";
+        abandonProcess();
+        return false;
     }
+    std::uint32_t kind = 0, ok = 0, nameLen = 0, errorLen = 0;
+    if (!tfm_vulkan_ipc::readMagic(read) || !tfm_vulkan_ipc::readU32(read, kind) || kind != tfm_vulkan_ipc::kResult
+        || !tfm_vulkan_ipc::readU32(read, ok)
+        || !tfm_vulkan_ipc::readU32(read, nameLen) || nameLen > 4096) {
+        error = "Vulkan worker ended during the job";
+        abandonProcess();
+        return false;
+    }
+    current.name.assign(nameLen, '\0');
+    if ((nameLen && !tfm_vulkan_ipc::readExact(read, current.name.data(), nameLen))
+        || !tfm_vulkan_ipc::readU32(read, errorLen) || errorLen > (1u << 20)) {
+        error = "Vulkan worker ended during the job";
+        abandonProcess();
+        return false;
+    }
+    error.assign(errorLen, '\0');
+    if (errorLen && !tfm_vulkan_ipc::readExact(read, error.data(), errorLen)) {
+        error = "Vulkan worker ended during the job";
+        abandonProcess();
+        return false;
+    }
+    if (!ok) {
+        if (error.empty()) error = "Vulkan dispatch failed";
+        return false;
+    }
+    outputData.resize(outputSize);
+    if (outputSize && !tfm_vulkan_ipc::readExact(read, outputData.data(), outputSize)) {
+        error = "Vulkan worker returned a short image";
+        abandonProcess();
+        return false;
+    }
+    return true;
+}
 
-    bool readBuffer(const Buffer &buffer, void *data, std::size_t size, std::string &error)
-    {
-        if (!size) return true;
-        void *mapped = nullptr;
-        VkResult r = mapMemory(device, buffer.memory, 0, buffer.size, 0, &mapped);
-        if (r != VK_SUCCESS) { error = resultMessage("vkMapMemory", r); return false; }
-        std::memcpy(data, mapped, size);
-        unmapMemory(device, buffer.memory);
-        return true;
-    }
-};
+} // namespace
+
+struct FxManagerVulkan::Impl {};
 
 FxManagerVulkan::FxManagerVulkan() : m_impl(std::make_unique<Impl>()) {}
 FxManagerVulkan::~FxManagerVulkan() = default;
 
+void FxManagerVulkan::shutdown()
+{
+    std::lock_guard<std::mutex> self(m_mutex);
+    std::lock_guard<std::mutex> lock(gate());
+    ++worker().generation;
+    disarmIdle();
+    stopWorker();
+}
+
+void FxManagerVulkan::scheduleIdleShutdown()
+{
+    std::lock_guard<std::mutex> lock(gate());
+    armIdle();
+}
+
 bool FxManagerVulkan::initialize(std::string *errorOut)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    auto fail = [&](const std::string &message) { if (errorOut) *errorOut = message; return false; };
-    if (m_impl->device) return true;
-    m_impl->shutdown();
+    std::lock_guard<std::mutex> self(m_mutex);
+    std::lock_guard<std::mutex> lock(gate());
+    ++worker().generation;
+    disarmIdle();
     std::string error;
-    if (!m_impl->loadGlobal(error)) { m_impl->shutdown(); return fail(error); }
-
-    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "Krita FxManager", 1, "FxManager", 1, VK_API_VERSION_1_0};
-    VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr, 0, &app, 0, nullptr, 0, nullptr};
-    VkResult r = m_impl->createInstance(&instanceInfo, nullptr, &m_impl->instance);
-    if (r != VK_SUCCESS) { m_impl->shutdown(); return fail(resultMessage("vkCreateInstance", r)); }
-    if (!m_impl->loadInstanceFunctions(error)) { m_impl->shutdown(); return fail(error); }
-
-    std::uint32_t count = 0;
-    r = m_impl->enumeratePhysicalDevices(m_impl->instance, &count, nullptr);
-    if (r != VK_SUCCESS || !count) { m_impl->shutdown(); return fail(r == VK_SUCCESS ? "No Vulkan physical devices found" : resultMessage("vkEnumeratePhysicalDevices", r)); }
-    std::vector<VkPhysicalDevice> devices(count);
-    r = m_impl->enumeratePhysicalDevices(m_impl->instance, &count, devices.data());
-    if (r != VK_SUCCESS) { m_impl->shutdown(); return fail(resultMessage("vkEnumeratePhysicalDevices", r)); }
-
-    int bestScore = std::numeric_limits<int>::min();
-    for (VkPhysicalDevice candidate : devices) {
-        VkPhysicalDeviceProperties properties{};
-        m_impl->getPhysicalDeviceProperties(candidate, &properties);
-        std::uint32_t familyCount = 0;
-        m_impl->getQueueFamilies(candidate, &familyCount, nullptr);
-        std::vector<VkQueueFamilyProperties> families(familyCount);
-        if (familyCount) m_impl->getQueueFamilies(candidate, &familyCount, families.data());
-        for (std::uint32_t i = 0; i < familyCount; ++i) {
-            if (!(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) || !families[i].queueCount) continue;
-            const int score = (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 1000000 : 0)
-                              + static_cast<int>(std::min<VkDeviceSize>(properties.limits.maxStorageBufferRange, 100000));
-            if (score > bestScore) {
-                bestScore = score;
-                m_impl->physicalDevice = candidate;
-                m_impl->queueFamily = i;
-                m_impl->gpuName = properties.deviceName;
-            }
-            break;
-        }
-    }
-    if (!m_impl->physicalDevice) { m_impl->shutdown(); return fail("No Vulkan device with a compute queue found"); }
-
-    VkPhysicalDeviceFeatures supportedFeatures{};
-    m_impl->getPhysicalDeviceFeatures(m_impl->physicalDevice, &supportedFeatures);
-    VkPhysicalDeviceFeatures enabledFeatures{};
-    enabledFeatures.shaderFloat64 = supportedFeatures.shaderFloat64;
-    m_impl->shaderFloat64 = enabledFeatures.shaderFloat64 == VK_TRUE;
-
-    const float priority = 1.0f;
-    VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr, 0, m_impl->queueFamily, 1, &priority};
-    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, nullptr, 0, 1, &queueInfo, 0, nullptr, 0, nullptr, &enabledFeatures};
-    r = m_impl->createDevice(m_impl->physicalDevice, &deviceInfo, nullptr, &m_impl->device);
-    if (r != VK_SUCCESS) { m_impl->shutdown(); return fail(resultMessage("vkCreateDevice", r)); }
-    m_impl->getDeviceQueue(m_impl->device, m_impl->queueFamily, 0, &m_impl->queue);
-
-    VkPhysicalDeviceMemoryProperties memoryProperties{};
-    m_impl->getMemoryProperties(m_impl->physicalDevice, &memoryProperties);
-    m_impl->memoryTypeCount = std::min<std::uint32_t>(memoryProperties.memoryTypeCount, 32);
-    std::copy(memoryProperties.memoryTypes, memoryProperties.memoryTypes + m_impl->memoryTypeCount, m_impl->memoryTypes);
-
-    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, m_impl->queueFamily};
-    r = m_impl->createCommandPool(m_impl->device, &poolInfo, nullptr, &m_impl->commandPool);
-    if (r != VK_SUCCESS) { m_impl->shutdown(); return fail(resultMessage("vkCreateCommandPool", r)); }
-    if (errorOut) errorOut->clear();
-    return true;
+    const bool ok = ensureWorker(error);
+    if (!ok && errorOut) *errorOut = error;
+    if (ok && errorOut) errorOut->clear();
+    return ok;
 }
 
 bool FxManagerVulkan::isInitialized() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_impl->device != nullptr;
+    std::lock_guard<std::mutex> self(m_mutex);
+    std::lock_guard<std::mutex> lock(gate());
+    return worker().ready;
 }
 
 std::string FxManagerVulkan::deviceName() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_impl->gpuName;
+    std::lock_guard<std::mutex> self(m_mutex);
+    std::lock_guard<std::mutex> lock(gate());
+    return worker().name;
 }
 
 bool FxManagerVulkan::supportsShaderFloat64() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_impl->device != VK_NULL_HANDLE && m_impl->shaderFloat64;
+    std::lock_guard<std::mutex> self(m_mutex);
+    std::lock_guard<std::mutex> lock(gate());
+    return worker().ready && worker().float64;
 }
 
 bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
@@ -409,10 +469,12 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
                                std::vector<std::uint8_t> &outputData,
                                std::string *errorOut)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    auto fail = [&](const std::string &message) { if (errorOut) *errorOut = message; return false; };
-    if (!m_impl->device) return fail("Vulkan service is not initialized");
-    constexpr std::size_t budget = 128ULL * 1024 * 1024;
+    std::lock_guard<std::mutex> self(m_mutex);
+    auto fail = [&](const std::string &message) {
+        if (errorOut) *errorOut = message;
+        return false;
+    };
+    constexpr std::size_t budget = 128ull * 1024 * 1024;
     if (inputSize > budget || outputSize > budget || parametersSize > budget)
         return fail("Vulkan buffer exceeds 128 MiB processing budget");
     if (spirv.empty() || spirv.front() != 0x07230203u || (spirv.size() * sizeof(std::uint32_t)) % 4 != 0)
@@ -423,113 +485,22 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
         return fail("Output size and dispatch group counts must be non-zero");
     if (config.groupsX > 65535 || config.groupsY > 65535 || config.groupsZ > 65535)
         return fail("Vulkan dispatch exceeds portable group-count limits");
-    if (config.inputBinding == config.outputBinding || config.inputBinding == config.parametersBinding || config.outputBinding == config.parametersBinding)
+    if (config.inputBinding == config.outputBinding || config.inputBinding == config.parametersBinding
+        || config.outputBinding == config.parametersBinding)
         return fail("Descriptor binding numbers must be distinct");
+    if (inputSize > 0xffffffffu || parametersSize > 0xffffffffu || outputSize > 0xffffffffu)
+        return fail("Vulkan buffer exceeds 128 MiB processing budget");
 
-    using Buffer = Impl::Buffer;
-    Buffer input, output, parameters;
-    VkShaderModule shader = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkCommandBuffer command = nullptr;
-    VkFence fence = VK_NULL_HANDLE;
     std::string error;
-    auto cleanup = [&] {
-        if (fence) m_impl->destroyFence(m_impl->device, fence, nullptr);
-        if (command) m_impl->freeCommandBuffers(m_impl->device, m_impl->commandPool, 1, &command);
-        if (descriptorPool) m_impl->destroyDescriptorPool(m_impl->device, descriptorPool, nullptr);
-        if (pipeline) m_impl->destroyPipeline(m_impl->device, pipeline, nullptr);
-        if (pipelineLayout) m_impl->destroyPipelineLayout(m_impl->device, pipelineLayout, nullptr);
-        if (setLayout) m_impl->destroyDescriptorSetLayout(m_impl->device, setLayout, nullptr);
-        if (shader) m_impl->destroyShaderModule(m_impl->device, shader, nullptr);
-        m_impl->destroyBufferObject(parameters);
-        m_impl->destroyBufferObject(output);
-        m_impl->destroyBufferObject(input);
-    };
-    auto failCleanup = [&](const std::string &message) { cleanup(); return fail(message); };
-
-    if (!m_impl->makeBuffer(inputSize, input, error) || !m_impl->makeBuffer(outputSize, output, error)
-        || (parametersSize && !m_impl->makeBuffer(parametersSize, parameters, error))) return failCleanup(error);
-    if (!m_impl->writeBuffer(input, inputData, inputSize, error)
-        || (parametersSize && !m_impl->writeBuffer(parameters, parametersData, parametersSize, error))) return failCleanup(error);
-
-    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, spirv.size() * sizeof(std::uint32_t), spirv.data()};
-    VkResult r = m_impl->createShaderModule(m_impl->device, &shaderInfo, nullptr, &shader);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateShaderModule", r));
-
-    VkDescriptorSetLayoutBinding bindings[3]{};
-    std::uint32_t bindingCount = 0;
-    auto addBinding = [&](std::uint32_t binding) { bindings[bindingCount++] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; };
-    addBinding(config.inputBinding);
-    addBinding(config.outputBinding);
-    if (parametersSize) {
-        if (config.parametersBinding == UINT32_MAX) return failCleanup("parametersBinding must be set when parametersData is provided");
-        addBinding(config.parametersBinding);
+    {
+        std::lock_guard<std::mutex> lock(gate());
+        ++worker().generation;
+        disarmIdle();
+        if (!ensureWorker(error)) return fail(error);
+        if (!sendDispatch(spirv, inputData, inputSize, parametersData, parametersSize, outputSize, config, outputData, error))
+            return fail(error);
     }
-    std::sort(bindings, bindings + bindingCount, [](const auto &a, const auto &b) { return a.binding < b.binding; });
-    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, bindingCount, bindings};
-    r = m_impl->createDescriptorSetLayout(m_impl->device, &layoutInfo, nullptr, &setLayout);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateDescriptorSetLayout", r));
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &setLayout, 0, nullptr};
-    r = m_impl->createPipelineLayout(m_impl->device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreatePipelineLayout", r));
-    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, shader, "main", nullptr};
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, stage, pipelineLayout, 0, -1};
-    r = m_impl->createComputePipelines(m_impl->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateComputePipelines", r));
-
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bindingCount};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 1, &poolSize};
-    r = m_impl->createDescriptorPool(m_impl->device, &poolInfo, nullptr, &descriptorPool);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateDescriptorPool", r));
-    VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, descriptorPool, 1, &setLayout};
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    r = m_impl->allocateDescriptorSets(m_impl->device, &setInfo, &descriptorSet);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkAllocateDescriptorSets", r));
-
-    VkDescriptorBufferInfo bufferInfos[3]{};
-    VkWriteDescriptorSet writes[3]{};
-    std::uint32_t writeCount = 0;
-    auto addWrite = [&](std::uint32_t binding, const Buffer &b) {
-        bufferInfos[writeCount] = {b.handle, 0, b.size};
-        writes[writeCount] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet, binding, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufferInfos[writeCount], nullptr};
-        ++writeCount;
-    };
-    addWrite(config.inputBinding, input);
-    addWrite(config.outputBinding, output);
-    if (parametersSize) addWrite(config.parametersBinding, parameters);
-    m_impl->updateDescriptorSets(m_impl->device, writeCount, writes, 0, nullptr);
-
-    VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, m_impl->commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
-    r = m_impl->allocateCommandBuffers(m_impl->device, &commandInfo, &command);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkAllocateCommandBuffers", r));
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
-    r = m_impl->beginCommandBuffer(command, &beginInfo);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkBeginCommandBuffer", r));
-    m_impl->cmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    m_impl->cmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-    m_impl->cmdDispatch(command, config.groupsX, config.groupsY, config.groupsZ);
-    VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, UINT32_MAX, UINT32_MAX, output.handle, 0, VK_WHOLE_SIZE};
-    m_impl->cmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
-    r = m_impl->endCommandBuffer(command);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkEndCommandBuffer", r));
-
-    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
-    r = m_impl->createFence(m_impl->device, &fenceInfo, nullptr, &fence);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateFence", r));
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &command, 0, nullptr};
-    r = m_impl->queueSubmit(m_impl->queue, 1, &submit, fence);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkQueueSubmit", r));
-    r = m_impl->waitForFences(m_impl->device, 1, &fence, 1, std::numeric_limits<std::uint64_t>::max());
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkWaitForFences", r));
-
-    std::vector<std::uint8_t> result(outputSize);
-    if (!m_impl->readBuffer(output, result.data(), outputSize, error)) return failCleanup(error);
-    outputData.swap(result);
-    cleanup();
+    scheduleIdleShutdown();
     if (errorOut) errorOut->clear();
     return true;
 }

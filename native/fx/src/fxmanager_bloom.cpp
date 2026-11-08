@@ -46,7 +46,7 @@ void KisFilterBloom::processImpl(KisPaintDeviceSP d,const QRect &rect,const KisF
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("Bloom diffusion remains CPU-only"));
         out=fxmanager::bloom::diffuse(source,threshold,radius,strength,c ? c->getDouble("softness",0.0) : 0.0);
     } else {
-        if (fxmanager::gpuRequested()) {
+        if (fxmanager::gpuRequested(id().id())) {
             QImage gpuOutput;
             QString reason;
             QString gpuDevice;

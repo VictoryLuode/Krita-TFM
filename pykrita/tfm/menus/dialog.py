@@ -95,6 +95,7 @@ from .config import (
     save_config,
     script_filename,
     write_script,
+    _RESOURCE_ROOT,
 )
 from .shortcuts import find_shortcut_file, parse_entries, read_text, set_entries, UNBOUND
 from .shortcuts import restore as restore_shortcuts
@@ -127,9 +128,7 @@ def _load_preset_tags():
     resource_type_id 5 == 'paintoppresets'. Returns ([], {}) on any error.
     """
     try:
-        root = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", ".."))
-        db = os.path.join(root, "resourcecache.sqlite")
+        db = os.path.join(_RESOURCE_ROOT, "resourcecache.sqlite")
         if not os.path.exists(db):
             return [], {}
         con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)

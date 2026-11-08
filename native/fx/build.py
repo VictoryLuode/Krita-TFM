@@ -77,6 +77,35 @@ def escape(path):
     return str(path).replace('\\', '/').replace('$', '$$').replace(':', '$:').replace(' ', '$ ')
 
 
+def build_vulkan_worker(env):
+    """Link the Vulkan device into its own process, never into kritatfm.dll."""
+    device_src = PROJECT / 'src' / 'fxmanager_vulkan_device.cpp'
+    worker_src = PROJECT / 'src' / 'tfm_vulkan_worker.cpp'
+    if not device_src.is_file() or not worker_src.is_file():
+        raise SystemExit('Missing Vulkan worker sources')
+    obj_dir = OUT / 'obj'
+    obj_dir.mkdir(parents=True, exist_ok=True)
+    includes = ['-I' + str(PROJECT / 'src'),
+                '-I' + str(PROJECT / 'third_party' / 'vulkan-headers' / 'include')]
+    objects = []
+    for src in (device_src, worker_src):
+        obj = obj_dir / (src.name + '.obj')
+        subprocess.run([str(COMPILER), '-std=c++17', '-O2', '-DNDEBUG', '-c', str(src), '-o', str(obj), *includes],
+                       env=env, check=True)
+        objects.append(obj)
+    exe = OUT / 'bin' / 'tfm_vulkan_worker.exe'
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(COMPILER), '-O2', '-o', str(exe), *[str(obj) for obj in objects]], env=env, check=True)
+    linked = {path.name for path in objects}
+    if 'fxmanager_vulkan.cpp.obj' in linked:
+        raise SystemExit('Refusing to link the in-process Vulkan client into the worker')
+    ping = subprocess.run([str(exe), '--ping'], env=env, capture_output=True, text=True)
+    print('VULKAN_WORKER_PING', ping.returncode, ping.stdout.strip(), ping.stderr.strip(), flush=True)
+    if ping.returncode not in (0, 1):
+        raise SystemExit('Vulkan worker failed to start')
+    return exe
+
+
 def main():
     env = os.environ.copy()
     extra_paths = [str(COMPILER.parent), str(DEPS / 'bin'), str(Path.home() / '.local/bin')]
@@ -154,6 +183,8 @@ def main():
         entries.append(synth)
     graph = ['rule compile', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = COMPILE $out', 'rule link', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = LINK $out']
     objects, database = [], []
+    if any('fxmanager_vulkan_device.cpp' in str(entry.get('file', '')) for entry in entries):
+        raise SystemExit('Vulkan device code must not be compiled into kritatfm.dll')
     plugin_cpp = (PROJECT / 'src/fxmanager_plugin.cpp').read_text()
     moc_outputs = [auto / name for name in re.findall(r'#include\s+"([^"\n]+\.moc)"', plugin_cpp)]
     for e in entries:
@@ -233,7 +264,12 @@ def main():
     os.replace(candidate, dll)
     manifest = {'dll': str(dll), 'sha256': digest(dll), 'sources': before, 'compiler': str(COMPILER), 'cmake': cmake, 'ninja': ninja}
     (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+    worker = build_vulkan_worker(env)
+    manifest['worker'] = str(worker)
+    manifest['worker_sha256'] = digest(worker)
+    (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     print('BUILD_OK', dll, 'SHA256', manifest['sha256'], flush=True)
+    print('WORKER_OK', worker, 'SHA256', manifest['worker_sha256'], flush=True)
 
 
 if __name__ == '__main__':

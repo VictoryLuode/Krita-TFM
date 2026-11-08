@@ -340,6 +340,31 @@ FILTERS = [
 ]
 
 
+# Filters that can dispatch through the out-of-process Vulkan worker.
+# Background Removal keeps its own in-dialog backend and is not listed here.
+VULKAN_FILTER_IDS = frozenset({
+    "tfm_bloom",
+    "tfm_filmgrain",
+    "tfm_lens_distortion",
+    "tfm_vignette",
+    "tfm_color_temperature",
+    "tfm_vibrance",
+    "tfm_kuwahara",
+    "tfm_halation",
+    "tfm_lens_flare",
+    "tfm_anamorphic_flare",
+    "tfm_light_rays",
+    "tfm_light_leaks",
+    "tfm_light_patch",
+    "tfm_guided_color_match",
+    "tfm_color_range_mask",
+    "tfm_motion_blur_circular",
+    "tfm_motion_blur_zoom",
+})
+for _entry in FILTERS:
+    if _entry["id"] in VULKAN_FILTER_IDS:
+        _entry["vulkan"] = True
+
 # Only configuration parameters, never reference images, profiles or statistics.
 FILTER_DEFAULT_SPECS = {}
 for _entry in FILTERS:

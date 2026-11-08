@@ -322,6 +322,8 @@ class MenuBeltExtension(Extension):
         # Whole-menu popup trigger is bound via Krita's own Keyboard Shortcuts
         # editor (the tfm_popup action), so only per-list keys
         # are registered here. The app-level event filter stays installed.
+        # Scanning every Krita action is only needed when the key set changes.
+        previous = set(self._shortcut_map)
         self._shortcut_map = {}
         for lst in load_lists():
             if not lst.get("active", True):
@@ -333,7 +335,8 @@ class MenuBeltExtension(Extension):
                     self._shortcut_map[key] = (lambda n=name: self.pop_pie(n))
                 else:
                     self._shortcut_map[key] = (lambda n=name: self.pop_list(n))
-        self._reassert_overrides()
+        if set(self._shortcut_map) != previous:
+            self._reassert_overrides()
 
     def _reassert_overrides(self):
         """Re-take keys recorded as overridden when a Krita action holds one again.

@@ -362,7 +362,7 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
     }
     if (progressUpdater && progressUpdater->interrupted()) return;
     QString backendReason;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id())) {
         fxmanager::FloatRgbaImage gpuOutput;
         QString gpuDevice;
         if (tfm_motion_gpu::render(dense, stored, defaultImage, read, rect, frame,

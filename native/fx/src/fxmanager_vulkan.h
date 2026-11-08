@@ -7,8 +7,11 @@
 #include <string>
 #include <vector>
 
-// A self-contained Vulkan compute service. Vulkan is loaded at runtime, so
-// including this header does not require Vulkan SDK headers or link libraries.
+// Compute service used by TFM GPU filters.
+// kritatfm.dll forwards these calls to tfm_vulkan_worker.exe and does not load
+// Vulkan into the Krita process. The worker executable links the device
+// implementation and exits when the filter goes idle, so the driver state
+// leaves with that process instead of sticking to the canvas.
 class FxManagerVulkan final
 {
 public:
@@ -37,6 +40,8 @@ public:
     // creates the Vulkan device. Returns false and stores a diagnostic on
     // failure. Safe to call repeatedly after a failed attempt.
     bool initialize(std::string *error = nullptr);
+    // Drops the Vulkan device/instance so OpenGL/ANGLE canvas can recover.
+    void shutdown();
     bool isInitialized() const;
     std::string deviceName() const;
     // True only when the selected device advertises shaderFloat64 and the
@@ -57,7 +62,10 @@ public:
                   std::string *error = nullptr);
 
 private:
+    void scheduleIdleShutdown();
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     mutable std::mutex m_mutex;
+    std::uint64_t m_idleGeneration = 0;
 };

@@ -135,6 +135,7 @@ class ColorRangeDialog(QDialog):
         box = QDialogButtonBox(_enum(QDialogButtonBox, 'Ok') | _enum(QDialogButtonBox, 'Cancel'))
         box.accepted.connect(self.apply); box.rejected.connect(self.reject); layout.addWidget(box)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(self.refresh)
+        self._preview_image = QImage()
         for signal in (self.threshold.valueChanged, self.threshold_enabled.toggled,
                        self.tolerance.valueChanged, self.tolerance_enabled.toggled,
                        self.softness.valueChanged, self.softness_enabled.toggled,
@@ -211,22 +212,60 @@ class ColorRangeDialog(QDialog):
             self.schedule_refresh()
 
     def schedule_refresh(self, *args):
-        self.timer.start(60)
+        self.timer.start(150)
+
+    def _canvas_for_view(self, window, view):
+        if view is None:
+            raise RuntimeError('Unable to identify the active canvas.')
+        names = ('KisOpenGLCanvas2', 'KisQPainterCanvas')
+
+        def collect(root):
+            if root is None:
+                return []
+            found = []
+            try:
+                widgets = root.findChildren(QtWidgets.QWidget)
+            except (RuntimeError, AttributeError):
+                return []
+            for widget in widgets:
+                try:
+                    if widget.isVisible() and widget.metaObject().className() in names:
+                        found.append(widget)
+                except RuntimeError:
+                    continue
+            return found
+
+        try:
+            host = window.qwindow()
+        except (RuntimeError, AttributeError):
+            host = None
+        if host is not None:
+            try:
+                areas = host.findChildren(QtWidgets.QMdiArea)
+            except (RuntimeError, AttributeError):
+                areas = []
+            for area in areas:
+                sub = area.activeSubWindow()
+                found = collect(sub)
+                if found:
+                    return found[0]
+            found = collect(host)
+            if found:
+                return found[0]
+        raise RuntimeError('Unable to identify the active canvas.')
 
     def update_canvas_preview(self, *args):
         self._remove_canvas_preview()
         mode = self.preview_mode.currentData()
         try:
-            self._refresh_source()
+            if self.source is None or self.source.isNull():
+                self._refresh_source()
             window = Krita.instance().activeWindow()
             view = window.activeView() if window else None
             if view is None or view.document() != self.document:
                 raise RuntimeError('The original document is not active.')
-            canvases = [w for w in window.qwindow().findChildren(QtWidgets.QWidget)
-                        if w.isVisible() and w.metaObject().className() in ('KisOpenGLCanvas2', 'KisQPainterCanvas')]
-            if len(canvases) != 1:
-                raise RuntimeError('Unable to identify a unique active canvas.')
-            self.overlay = ColorRangeOverlay(canvases[0], view, self.document,
+            canvas = self._canvas_for_view(window, view)
+            self.overlay = ColorRangeOverlay(canvas, view, self.document,
                                               lambda: window.activeView() == view)
             self.overlay.set_mask(self.mask(), self.source.width(), self.source.height(), mode)
             self.overlay.show()
@@ -296,19 +335,44 @@ class ColorRangeDialog(QDialog):
                 softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
         raise ValueError('Unknown color range selection mode.')
 
+    def _show_preview(self, mask):
+        width, height = self.source.width(), self.source.height()
+        box = self.preview.size()
+        preview_width, preview_height = width, height
+        pixels = mask
+        if width > box.width() or height > box.height():
+            preview_height = max(1, int(box.height()))
+            preview_width = max(1, int(round(width * (preview_height / height))))
+            if preview_width > box.width():
+                preview_width = max(1, int(box.width()))
+                preview_height = max(1, int(round(height * (preview_width / width))))
+            pixels = bytearray(preview_width * preview_height)
+            for y in range(preview_height):
+                source_y = min(height - 1, y * height // preview_height)
+                source_row = source_y * width
+                dest_row = y * preview_width
+                for x in range(preview_width):
+                    source_x = min(width - 1, x * width // preview_width)
+                    pixels[dest_row + x] = mask[source_row + source_x]
+        image = QImage(bytes(pixels), preview_width, preview_height, preview_width,
+                       _image_format('Format_Indexed8')).copy()
+        image.setColorTable([0xff000000 | v << 16 | v << 8 | v for v in range(256)])
+        self._preview_image = image
+        self.preview.setPixmap(QPixmap.fromImage(image))
+
+    def preview_image(self):
+        return self._preview_image
+
     def refresh(self):
         try:
             mask = self.combined_mask()
-            image = QImage(bytes(mask), self.source.width(), self.source.height(),
-                           self.source.width(), _image_format('Format_Indexed8')).copy()
-            image.setColorTable([0xff000000 | v << 16 | v << 8 | v for v in range(256)])
-            self.preview.setPixmap(QPixmap.fromImage(image).scaled(
-                self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation))
+            self._show_preview(mask)
             if self.overlay is not None:
                 self.overlay.set_mask(mask, self.source.width(), self.source.height(), self.preview_mode.currentData())
         except (RuntimeError, ValueError, TypeError) as error:
             self.timer.stop()
             self.preview.clear()
+            self._preview_image = QImage()
             self.preview.setText(str(error))
 
 

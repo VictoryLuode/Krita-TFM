@@ -5,4 +5,4 @@ release time; `verify.sh` fails when it falls behind the newest git tag.
 Bump it in the same commit that gets tagged.
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"

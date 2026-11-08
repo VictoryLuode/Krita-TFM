@@ -24,8 +24,9 @@ struct FloatRgbaImage {
 void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP config);
 // True when TFM/settings.json has no enabled_filters list, or lists this id.
 bool filterEnabled(const QString &filterId);
-// Auto/GPU request compute for supported filters; CPU remains a live fallback.
-bool gpuRequested();
+// Per-filter backend from TFM/settings.json filter_backends, else global backend.
+// Auto/GPU requests Vulkan when available; CPU remains a live fallback.
+bool gpuRequested(const QString &filterId = QString());
 void reportBackend(const QString &filter, const QString &actual, const QString &reason,
                    const QString &device = QString());
 

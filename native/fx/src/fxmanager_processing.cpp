@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QSaveFile>
 #include <QDateTime>
+#include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSemaphore>
@@ -120,31 +121,111 @@ QString settingsReadPath()
 }
 
 namespace {
-QString requestedBackend()
+struct BackendCache {
+    QString path;
+    qint64 mtime = -1;
+    QString globalBackend = QStringLiteral("auto");
+    QHash<QString, QString> filterBackends;
+};
+
+BackendCache &backendCache()
+{
+    static BackendCache cache;
+    return cache;
+}
+
+QMutex &backendMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+void refreshBackendCacheLocked()
+{
+    BackendCache &cache = backendCache();
+    const QString path = settingsReadPath();
+    qint64 mtime = 0;
+    if (!path.isEmpty()) {
+        const QFileInfo info(path);
+        mtime = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    }
+    if (path == cache.path && mtime == cache.mtime) return;
+    cache.path = path;
+    cache.mtime = mtime;
+    cache.globalBackend = QStringLiteral("auto");
+    cache.filterBackends.clear();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    const QString global = root.value(QStringLiteral("backend")).toString();
+    if (global == QLatin1String("cpu") || global == QLatin1String("gpu") || global == QLatin1String("auto")) {
+        cache.globalBackend = global;
+    }
+    const QJsonObject perFilter = root.value(QStringLiteral("filter_backends")).toObject();
+    for (auto it = perFilter.begin(); it != perFilter.end(); ++it) {
+        const QString value = it.value().toString();
+        if (value == QLatin1String("cpu") || value == QLatin1String("gpu")) {
+            cache.filterBackends.insert(it.key(), value);
+        }
+    }
+}
+
+QString canonicalFilterId(const QString &filterId)
+{
+    if (filterId.startsWith(QLatin1String("fxmanager_"))) {
+        return QStringLiteral("tfm_") + filterId.mid(10);
+    }
+    return filterId;
+}
+
+QString requestedBackend(const QString &filterId)
 {
     const QString override = qEnvironmentVariable("TFM_BACKEND").toLower();
-    if (override == QLatin1String("cpu") || override == QLatin1String("gpu") || override == QLatin1String("auto")) return override;
-    QFile file(settingsReadPath());
-    if (file.open(QIODevice::ReadOnly)) {
-        const QString value = QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("backend")).toString();
-        if (value == QLatin1String("cpu") || value == QLatin1String("gpu")) return value;
+    if (override == QLatin1String("cpu") || override == QLatin1String("gpu") || override == QLatin1String("auto")) {
+        return override;
     }
-    return QStringLiteral("auto");
+    QMutexLocker lock(&backendMutex());
+    refreshBackendCacheLocked();
+    const BackendCache &cache = backendCache();
+    if (!filterId.isEmpty()) {
+        const QString canonical = canonicalFilterId(filterId);
+        const auto it = cache.filterBackends.constFind(canonical);
+        if (it != cache.filterBackends.cend()) return *it;
+        if (canonical != filterId) {
+            const auto legacy = cache.filterBackends.constFind(filterId);
+            if (legacy != cache.filterBackends.cend()) return *legacy;
+        }
+    }
+    return cache.globalBackend;
 }
 }
 
-bool gpuRequested() { return requestedBackend() != QLatin1String("cpu"); }
+bool gpuRequested(const QString &filterId)
+{
+    return requestedBackend(filterId) != QLatin1String("cpu");
+}
 
 void reportBackend(const QString &filter, const QString &actual, const QString &reason, const QString &device)
 {
     static QMutex mutex;
     QMutexLocker lock(&mutex);
+    // Tiled GPU filters call this once per patch. Keep the last status only.
+    static QString lastFilter;
+    static QString lastActual;
+    static QString lastReason;
+    static QString lastDevice;
+    if (filter == lastFilter && actual == lastActual && reason == lastReason && device == lastDevice) return;
+    lastFilter = filter;
+    lastActual = actual;
+    lastReason = reason;
+    lastDevice = device;
+
     const QString directory = QFileInfo(settingsPath()).absolutePath();
     if (!QDir().mkpath(directory)) return;
     QJsonObject record;
     record.insert(QStringLiteral("pid"), double(QCoreApplication::applicationPid()));
     record.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
-    record.insert(QStringLiteral("requested"), requestedBackend());
+    record.insert(QStringLiteral("requested"), requestedBackend(filter));
     record.insert(QStringLiteral("actual"), actual);
     record.insert(QStringLiteral("filter"), filter);
     record.insert(QStringLiteral("device"), device);

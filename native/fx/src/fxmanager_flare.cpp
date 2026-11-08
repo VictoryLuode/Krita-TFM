@@ -213,7 +213,7 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
         sources = {primary};
     }
 
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id)) {
         tfm_flare_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;

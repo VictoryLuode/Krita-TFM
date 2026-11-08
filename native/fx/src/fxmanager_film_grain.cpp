@@ -73,7 +73,7 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
     const bool mono = isCustom ? (c ? c->getBool("monochrome", preset.monochrome) : preset.monochrome) : preset.monochrome;
     QImage image = fxmanager::readImage(d, r); if (image.isNull()) return;
     const QPoint frameOffset = r.topLeft();
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
         gpu.outputRect = r;

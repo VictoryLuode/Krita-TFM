@@ -66,7 +66,7 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
     // centre and aspect ratio still come from the complete frame.
     const QImage source = fxmanager::readImage(d, outputRect);
     if (source.isNull()) return;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::Vignette;
         gpu.outputRect = outputRect; gpu.frame = frame;

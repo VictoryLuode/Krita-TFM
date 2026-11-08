@@ -5,7 +5,7 @@ filters or creates Krita nodes; those actions remain in Krita's native UI.
 """
 
 from . import operations, settings
-from .catalog import FILTERS, FILTER_DEFAULT_SPECS
+from .catalog import FILTERS, FILTER_DEFAULT_SPECS, VULKAN_FILTER_IDS
 from .qtcompat import (
     QColor,
     QCheckBox,
@@ -98,10 +98,13 @@ class _CategoryList(QListWidget):
 class FxManagerDialog(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._registry = None
+        self._registry_error = None
         self.setMinimumSize(980, 620)
         _dark_palette(self)
         self._pending = settings.load()
         self._pending["filter_defaults"] = {key: dict(value) for key, value in self._pending.get("filter_defaults", {}).items()}
+        self._pending["filter_backends"] = dict(self._pending.get("filter_backends", {}))
         self._managed = set(self._pending.get("managed_filters", []))
         self._enabled = set(self._pending.get("enabled_filters", []))
         raw_categories = self._pending.get("filter_categories", {})
@@ -168,6 +171,7 @@ class FxManagerDialog(QWidget):
     def _filter_state(self):
         import copy
         return (copy.deepcopy(self._pending.get("filter_defaults", {})),
+                dict(self._pending.get("filter_backends", {})),
                 set(self._managed), set(self._enabled), [(name, list(ids)) for name, ids in self._categories.items()])
 
     def has_unsaved_changes(self):
@@ -237,6 +241,16 @@ class FxManagerDialog(QWidget):
         item.setFont(font)
         item.setForeground(QColor("#9a9a9a") if not enabled else QColor("#eeeeee"))
 
+    def _load_registry(self):
+        if self._registry is not None:
+            return
+        self._registry_error = None
+        try:
+            self._registry = operations.inspect()
+        except operations.RegistryQueryError as error:
+            self._registry = []
+            self._registry_error = error
+
     def _reload(self):
         selected_id = None
         current = self._category_list.currentItem()
@@ -244,10 +258,9 @@ class FxManagerDialog(QWidget):
             selected_id = current.data(_ROLE)
         # Every catalog filter stays listed; the checkbox alone controls on/off.
         self._managed = {entry["id"] for entry in FILTERS}
-        try:
-            self._rows = operations.inspect()
-        except operations.RegistryQueryError as error:
-            self._rows = []
+        self._load_registry()
+        self._rows = list(self._registry)
+        if self._registry_error is not None:
             blocked = self._category_list.blockSignals(True)
             try:
                 self._category_list.clear()
@@ -255,7 +268,7 @@ class FxManagerDialog(QWidget):
                 self._category_list.blockSignals(blocked)
             self._show_selected()
             self._detail.setPlainText(
-                "{}\nRegistration status is unknown. Reopen TFM to retry.".format(error)
+                "{}\nRegistration status is unknown. Reopen TFM to retry.".format(self._registry_error)
             )
             return
         needle = self._search.text().strip().lower()
@@ -347,11 +360,29 @@ class FxManagerDialog(QWidget):
 
     def _show_parameters(self, ident):
         specs = FILTER_DEFAULT_SPECS.get(ident, [])
-        self._restore_defaults.setEnabled(bool(specs))
+        vulkan = ident in VULKAN_FILTER_IDS
+        self._restore_defaults.setEnabled(bool(specs) or vulkan)
         container = QWidget()
         form = QFormLayout(container)
         self._parameter_controls = {}
         values = self._pending["filter_defaults"].get(ident, {})
+        if vulkan:
+            control = QComboBox()
+            for label, value in (
+                ("Default (Settings)", "auto"),
+                ("CPU", "cpu"),
+                ("GPU (Vulkan)", "gpu"),
+            ):
+                control.addItem(label, value)
+            current = self._pending.get("filter_backends", {}).get(ident, "auto")
+            control.setCurrentIndex(max(0, control.findData(current)))
+            control.setToolTip(
+                "Per-filter compute path. Default follows Settings → Default filter backend.")
+            control.currentIndexChanged.connect(
+                lambda _index, i=ident, c=control: self._set_backend(i, c.currentData()))
+            control.setObjectName("filter_backend")
+            self._parameter_controls["__backend__"] = control
+            form.addRow("Compute backend", control)
         for spec in specs:
             key = spec["key"]
             value = values.get(key, spec["default"])
@@ -383,11 +414,19 @@ class FxManagerDialog(QWidget):
     def _set_default(self, ident, key, value):
         self._pending["filter_defaults"].setdefault(ident, {})[key] = value
 
+    def _set_backend(self, ident, value):
+        backends = self._pending.setdefault("filter_backends", {})
+        if value in (None, "auto"):
+            backends.pop(ident, None)
+        elif value in ("cpu", "gpu"):
+            backends[ident] = value
+
     def _restore_selected_defaults(self):
         item = self._category_list.currentItem()
         if item is not None and item.data(_ROLE) is not None:
             ident = item.data(_ROLE)
             self._pending["filter_defaults"].pop(ident, None)
+            self._pending.get("filter_backends", {}).pop(ident, None)
             self._show_parameters(ident)
 
     def _enabled_changed(self, item):
@@ -481,11 +520,13 @@ class FxManagerDialog(QWidget):
             "enabled_filters": [ident for ident in self._enabled if ident in catalog_ids],
         })
         values = {key: self._pending[key] for key in
-                  ("managed_filters", "filter_categories", "enabled_filters", "filter_defaults")}
+                  ("managed_filters", "filter_categories", "enabled_filters",
+                   "filter_defaults", "filter_backends")}
         if settings.save(values):
             self._saved_filter_state = self._filter_state()
             self._status.setText(
-                "Filter settings saved. Restart Krita for enable/disable changes to apply in the Filter menu.")
+                "Filter settings saved. Backend choice applies on the next filter run; "
+                "restart Krita for enable/disable changes in the Filter menu.")
         else:
             self._status.setText("Could not save TFM filter settings.")
 

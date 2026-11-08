@@ -126,7 +126,7 @@ void KisFilterVibrance::processImpl(KisPaintDeviceSP d, const QRect &r,
 
     const QImage source = fxmanager::readImage(d, r);
     if (source.isNull()) return;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::Vibrance;
         gpu.outputRect = r;

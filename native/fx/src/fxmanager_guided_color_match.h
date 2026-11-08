@@ -697,6 +697,152 @@ inline Lut decodeLut(const QByteArray &bytes)
     return lut;
 }
 
+inline QByteArray inflateStored(const QByteArray &stored)
+{
+    if (stored.isEmpty()) return {};
+    const QByteArray inflated = qUncompress(stored);
+    return inflated.isEmpty() ? stored : inflated;
+}
+
+inline void writeDoubles(QDataStream &stream, const double *values, int count)
+{
+    for (int i = 0; i < count; ++i) stream << values[i];
+}
+
+inline bool readDoubles(QDataStream &stream, double *values, int count)
+{
+    for (int i = 0; i < count; ++i) {
+        stream >> values[i];
+        if (!std::isfinite(values[i])) return false;
+    }
+    return stream.status() == QDataStream::Ok;
+}
+
+// Compact grade. Krita stores filter configuration in kritarc bookmarks, so the
+// 33^3 display grid stays in memory and is rebuilt from this.
+inline QByteArray encodeLook(const LookTransfer &look)
+{
+    if (!look.valid) return {};
+    QByteArray bytes;
+    QDataStream stream(&bytes, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setFloatingPointPrecision(QDataStream::DoublePrecision);
+    stream << quint32(0x474c4b31) << quint16(1) << quint16(LookTransfer::Bins) << quint16(LookTransfer::HueBins);
+    const double scalars[] = {
+        look.align, look.strength, look.chromaAmount, look.luminance, look.neutral,
+        look.shadowColor, look.highlightWarmth, look.keepLocal, look.matchLocal
+    };
+    writeDoubles(stream, scalars, 9);
+    writeDoubles(stream, look.srcCdf, LookTransfer::Bins);
+    writeDoubles(stream, look.refCdf, LookTransfer::Bins);
+    writeDoubles(stream, look.chromaA, LookTransfer::Bins);
+    writeDoubles(stream, look.chromaB, LookTransfer::Bins);
+    writeDoubles(stream, look.srcMeanA, LookTransfer::Bins);
+    writeDoubles(stream, look.srcMeanB, LookTransfer::Bins);
+    writeDoubles(stream, &look.accentA[0][0], LookTransfer::HueBins * LookTransfer::Bins);
+    writeDoubles(stream, &look.accentB[0][0], LookTransfer::HueBins * LookTransfer::Bins);
+    writeDoubles(stream, &look.accentW[0][0], LookTransfer::HueBins * LookTransfer::Bins);
+    return stream.status() == QDataStream::Ok ? bytes : QByteArray();
+}
+
+inline LookTransfer decodeLook(const QByteArray &bytes)
+{
+    LookTransfer look;
+    if (bytes.isEmpty()) return look;
+    QDataStream stream(bytes);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setFloatingPointPrecision(QDataStream::DoublePrecision);
+    quint32 magic = 0; quint16 version = 0, bins = 0, hueBins = 0;
+    stream >> magic >> version >> bins >> hueBins;
+    if (magic != 0x474c4b31 || version != 1 || bins != LookTransfer::Bins || hueBins != LookTransfer::HueBins)
+        return {};
+    double scalars[9] = {};
+    if (!readDoubles(stream, scalars, 9)) return {};
+    look.align = scalars[0];
+    look.strength = scalars[1];
+    look.chromaAmount = scalars[2];
+    look.luminance = scalars[3];
+    look.neutral = scalars[4];
+    look.shadowColor = scalars[5];
+    look.highlightWarmth = scalars[6];
+    look.keepLocal = scalars[7];
+    look.matchLocal = scalars[8];
+    if (!readDoubles(stream, look.srcCdf, LookTransfer::Bins)
+        || !readDoubles(stream, look.refCdf, LookTransfer::Bins)
+        || !readDoubles(stream, look.chromaA, LookTransfer::Bins)
+        || !readDoubles(stream, look.chromaB, LookTransfer::Bins)
+        || !readDoubles(stream, look.srcMeanA, LookTransfer::Bins)
+        || !readDoubles(stream, look.srcMeanB, LookTransfer::Bins)
+        || !readDoubles(stream, &look.accentA[0][0], LookTransfer::HueBins * LookTransfer::Bins)
+        || !readDoubles(stream, &look.accentB[0][0], LookTransfer::HueBins * LookTransfer::Bins)
+        || !readDoubles(stream, &look.accentW[0][0], LookTransfer::HueBins * LookTransfer::Bins))
+        return {};
+    look.valid = stream.status() == QDataStream::Ok && stream.atEnd();
+    return look.valid ? look : LookTransfer{};
+}
+
+inline QByteArray encodeLightness(const LightnessStats &source, const LightnessStats &reference)
+{
+    if (!source.valid && !reference.valid) return {};
+    QByteArray bytes;
+    QDataStream stream(&bytes, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setFloatingPointPrecision(QDataStream::DoublePrecision);
+    stream << quint32(0x474c5331);
+    stream << quint8(source.valid ? 1 : 0) << source.mean << source.stdev;
+    stream << quint8(reference.valid ? 1 : 0) << reference.mean << reference.stdev;
+    return stream.status() == QDataStream::Ok ? bytes : QByteArray();
+}
+
+inline void decodeLightness(const QByteArray &bytes, LightnessStats &source, LightnessStats &reference)
+{
+    source = {};
+    reference = {};
+    if (bytes.isEmpty()) return;
+    QDataStream stream(bytes);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setFloatingPointPrecision(QDataStream::DoublePrecision);
+    quint32 magic = 0;
+    quint8 sourceValid = 0, referenceValid = 0;
+    double sourceMean = 0, sourceStdev = 0, referenceMean = 0, referenceStdev = 0;
+    stream >> magic;
+    if (magic != 0x474c5331) return;
+    stream >> sourceValid >> sourceMean >> sourceStdev >> referenceValid >> referenceMean >> referenceStdev;
+    if (stream.status() != QDataStream::Ok || !stream.atEnd()) return;
+    if (sourceValid && std::isfinite(sourceMean) && std::isfinite(sourceStdev)) {
+        source.mean = sourceMean;
+        source.stdev = sourceStdev;
+        source.valid = true;
+    }
+    if (referenceValid && std::isfinite(referenceMean) && std::isfinite(referenceStdev)) {
+        reference.mean = referenceMean;
+        reference.stdev = referenceStdev;
+        reference.valid = true;
+    }
+}
+
+inline Lut lutForGuidedStorage(const QByteArray &lookBytes,
+                                const QByteArray &legacyLutBytes,
+                                const std::array<Pair, 4> &pairs,
+                                double chroma,
+                                double strength,
+                                double smoothness,
+                                bool alignBrightness,
+                                const LightnessStats &sourceLightness,
+                                const LightnessStats &referenceLightness)
+{
+    const LookTransfer look = decodeLook(lookBytes);
+    if (look.valid) return buildLookLut(look);
+    const Lut legacy = decodeLut(legacyLutBytes);
+    if (legacy.valid) return legacy;
+    return buildLut(pairs, 0.0, chroma, strength, 0.0, smoothness, 1.0, 1.0,
+                    alignBrightness, sourceLightness, referenceLightness);
+}
+
 inline QByteArray encodePairs(const std::array<Pair, 4> &pairs)
 {
     QByteArray bytes;

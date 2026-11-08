@@ -5,7 +5,7 @@ import math
 import os
 import tempfile
 
-from .catalog import FILTERS, FILTER_DEFAULT_SPECS
+from .catalog import FILTERS, FILTER_DEFAULT_SPECS, VULKAN_FILTER_IDS
 
 _OPTIONS = {
     "backend": "auto",
@@ -17,6 +17,7 @@ _OPTIONS = {
     "enabled_filters": [entry["id"] for entry in FILTERS],
     "show_native_filters": True,
     "filter_defaults": {},
+    "filter_backends": {},
 }
 _BACKENDS = {"auto", "cpu", "gpu"}
 _FALLBACKS = {"cpu", "error"}
@@ -189,6 +190,16 @@ def _normalise(values):
         }
 
     result["filter_defaults"] = clean_filter_defaults(values.get("filter_defaults"))
+
+    filter_backends = values.get("filter_backends")
+    cleaned_backends = {}
+    if isinstance(filter_backends, dict):
+        for ident, choice in filter_backends.items():
+            ident = old_ids.get(ident, ident) if isinstance(ident, str) else ident
+            if (isinstance(ident, str) and ident in VULKAN_FILTER_IDS
+                    and isinstance(choice, str) and choice in _BACKENDS and choice != "auto"):
+                cleaned_backends[ident] = choice
+    result["filter_backends"] = cleaned_backends
 
     if isinstance(show_native, bool):
         result["show_native_filters"] = show_native

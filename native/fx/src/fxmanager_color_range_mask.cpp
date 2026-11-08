@@ -81,7 +81,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     image = image.convertToFormat(QImage::Format_ARGB32);
     image.detach(); // Detach before parallel scanLine writes.
 
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::ColorRangeMask;
         gpu.outputRect = applyRect; gpu.channel = static_cast<int>(s.channel);

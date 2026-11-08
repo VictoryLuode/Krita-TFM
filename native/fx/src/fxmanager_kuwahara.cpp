@@ -135,7 +135,7 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     if (source.isNull()) return;
 
     bool rendered = false;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_kuwahara_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;

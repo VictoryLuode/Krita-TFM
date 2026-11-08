@@ -270,7 +270,7 @@ void KisFilterLightLeaks::processImpl(KisPaintDeviceSP d, const QRect &r,
 
     QImage output = fxmanager::readImage(d, outputRect);
     if (output.isNull()) return;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::LightLeaks;
         gpu.outputRect = outputRect;
@@ -344,7 +344,7 @@ void KisFilterLightPatch::processImpl(KisPaintDeviceSP d, const QRect &r,
 
     QImage output = fxmanager::readImage(d, outputRect);
     if (output.isNull()) return;
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::LightPatch;
         gpu.outputRect = outputRect;

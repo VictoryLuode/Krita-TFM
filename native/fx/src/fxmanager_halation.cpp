@@ -207,7 +207,7 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     const QImage source = fxmanager::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
-    if (fxmanager::gpuRequested()) {
+    if (fxmanager::gpuRequested(id().id())) {
         tfm_halation_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;
