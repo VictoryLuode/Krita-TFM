@@ -11,20 +11,6 @@
 
 Custom **menus**, **native filters**, **Advance Selection**, and an **asset library** for Krita — one plugin under **Tools → TFM**.
 
-## Demo
-
-<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="assets/tfm-demo-1.gif" alt="TFM demo 1" width="720"></a>
-
-*Quick Tool / popup actions while painting* — [Demo 1 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4)
-
-<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="assets/tfm-demo-2.gif" alt="TFM demo 2" width="720"></a>
-
-*Asset Library — browse categories and place cutouts* — [Demo 2 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4)
-
-![Quick Tool](assets/tfm-quicktool.jpg)
-
-*Quick Tool popup (shortcut **Q**) — nested filters and TFM actions at the cursor*
-
 ## Highlights
 
 - **Custom menus** — multi-list popups (list or pie), nested items, per-list shortcuts, import / export.
@@ -42,6 +28,20 @@ Custom **menus**, **native filters**, **Advance Selection**, and an **asset libr
 - Advance Selection preview and overlay polish.
 
 Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+## Demo
+
+<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="assets/tfm-demo-1.gif" alt="TFM demo 1" width="720"></a>
+
+*Quick Tool / popup actions while painting* — [Demo 1 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4)
+
+<a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="assets/tfm-demo-2.gif" alt="TFM demo 2" width="720"></a>
+
+*Asset Library — browse categories and place cutouts* — [Demo 2 (mp4)](https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4)
+
+![Quick Tool](assets/tfm-quicktool.jpg)
+
+*Quick Tool popup (shortcut **Q**) — nested filters and TFM actions at the cursor*
 
 ## Install
 
