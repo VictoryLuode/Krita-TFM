@@ -5,14 +5,16 @@ Krita plugin for custom menus, native filters, Advance Selection, an asset libra
 Requires **Krita 5.3** on Windows (Qt5 build). Restart Krita after installing or updating.
 
 <p align="center">
-  <video src="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4" poster="docs/images/tfm-demo-1.jpg" controls preload="metadata" width="720">
-    <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4">Demo 1</a>
-  </video>
-  <br>
-  <video src="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4" poster="docs/images/tfm-demo-2.jpg" controls preload="metadata" width="720">
-    <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4">Demo 2</a>
-  </video>
+  <img src="docs/images/tfm-menus.jpg" alt="TFM Menus" width="720"><br>
+  <img src="docs/images/tfm-filters.jpg" alt="TFM Filters" width="720"><br>
+  <img src="docs/images/tfm-tools.jpg" alt="TFM Tools" width="720"><br>
+  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="docs/images/tfm-demo-1.jpg" alt="TFM demo 1" width="720"></a><br>
+  <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="docs/images/tfm-demo-2.jpg" alt="TFM demo 2" width="720"></a>
 </p>
+
+https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4
+
+https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4
 
 Open **Tools → TFM → Configure TFM** for menus, filters, tools, and backends. **Select → Advance Selection…** (also on the Quick Tool popup) for luminance / color-range selections.
 
