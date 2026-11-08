@@ -5,9 +5,8 @@ Krita plugin for custom menus, native filters, Advance Selection, an asset libra
 Requires **Krita 5.3** on Windows (Qt5 build). Restart Krita after installing or updating.
 
 <p align="center">
-  <img src="docs/images/tfm-menus.jpg" alt="TFM Menus" width="720"><br>
-  <img src="docs/images/tfm-filters.jpg" alt="TFM Filters" width="720"><br>
-  <img src="docs/images/tfm-tools.jpg" alt="TFM Tools" width="720"><br>
+  <img src="docs/images/tfm-overview.jpg" alt="TFM Configure Menus, Filters, Tools" width="720"><br>
+  <img src="docs/images/tfm-quicktool.jpg" alt="TFM Quick Tool popup" width="720"><br>
   <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4"><img src="docs/images/tfm-demo-1.gif" alt="TFM demo 1" width="720"></a><br>
   <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-2.mp4"><img src="docs/images/tfm-demo-2.gif" alt="TFM demo 2" width="720"></a><br>
   <a href="https://github.com/VictoryLuode/Krita-TFM/releases/download/0.1.6/tfm-demo-1.mp4">Demo 1 (mp4)</a>
