@@ -54,4 +54,4 @@ Settings and menu lists live under `<ResourceDirectory>/TFM/`. BiRefNet models f
 
 ## Build from source
 
-See `SOURCE-NOTES.md`. Filter plugin: `python native/fx/build.py`. License: GPL-3.0 (`LICENSE`); Menubelt-derived menu code: `LICENSE-MENUBELT`.
+See `SOURCE-NOTES.md`. Filter plugin: `python native/fx/build.py`. License: GPL-3.0 (`LICENSE`).

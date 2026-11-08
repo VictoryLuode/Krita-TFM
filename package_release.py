@@ -56,7 +56,7 @@ def package_files(staging: Path) -> list[tuple[Path, str]]:
     if missing:
         raise SystemExit("Missing required files (build native first):\n  " + "\n  ".join(missing))
 
-    docs = ("README.md", "RELEASE_NOTES.md", "SOURCE-NOTES.md", "LICENSE", "LICENSE-MENUBELT")
+    docs = ("README.md", "RELEASE_NOTES.md", "SOURCE-NOTES.md", "LICENSE")
     for name in docs:
         source = ROOT / name
         if source.is_file():

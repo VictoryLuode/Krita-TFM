@@ -1,6 +1,6 @@
 # Source and license notes
 
-TFM (Tool & Filter & Menu) unifies the menu manager (formerly Krita-Menubelt), the filter manager and native filters (formerly Krita-fxmanager), and the Advance Selection tool into a single Krita plugin.
+TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native filters, and the Advance Selection tool into a single Krita plugin.
 
 ## Architecture and paths
 
@@ -17,7 +17,7 @@ TFM (Tool & Filter & Menu) unifies the menu manager (formerly Krita-Menubelt), t
 
 ## Provenance and licensing
 
-- `pykrita/tfm/menus/` and `pykrita/tfm/scripts/luminosity_view.py` derive from Krita-Menubelt (GNU GPL v3; see `LICENSE-MENUBELT`).
+- Project license: GNU GPL v3 (`LICENSE`).
 - `native/fx/third_party/` embeds `vision.cpp` and `ggml` (MIT) and `stb` (MIT / public domain dual license). Retain the corresponding license notices when distributing binaries.
 - BiRefNet model files and GIMP/GEGL redistributable DLLs are not part of the default TFM zip; see `docs/gegl-isolated-runtime.md` before bundling them.
 
