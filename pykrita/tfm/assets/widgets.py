@@ -864,4 +864,4 @@ class DropPane(QtWidgets.QWidget):
         self.panel._restore_status()
         self.panel._drop_on_folder(self.panel._current_folder(), event.mimeData())
 
-
+__all__ = [name for name in list(globals()) if not name.startswith("__")]
