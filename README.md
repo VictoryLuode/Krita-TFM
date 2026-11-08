@@ -6,13 +6,18 @@ Requires **Krita 5.3** on Windows (Qt5 build). Restart Krita after installing or
 
 ## Install (prebuilt)
 
-1. Close Krita.
-2. Copy `pykrita/tfm/` and `pykrita/tfm.desktop` into your Krita **resource** `pykrita/` folder.
-3. Copy `actions/tfm.action` into the resource `actions/` folder.
-4. Copy `kritatfm.dll` and `tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder. Keep both files in the same directory.
-5. Start Krita and enable **TFM** under Settings → Manage Resources → Python Plugin Manager if needed.
+Close Krita first. From a release zip (`python package_release.py` builds `dist/TFM-<version>.zip`):
+
+1. Copy everything under `resource/` into your Krita **resource** directory.
+2. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder. Keep both files in the same directory.
+3. Start Krita and enable **TFM** under Settings → Manage Resources → Python Plugin Manager if needed.
 
 Settings and menu lists live under `<ResourceDirectory>/TFM/`. BiRefNet models for Background Removal are optional and go under `TFM/background-removal/models/`.
+
+## Release helpers
+
+- `python verify.py` — `__version__` must match the newest `X.Y.Z` git tag.
+- `python package_release.py` — zip resource files plus the current `build/native-5.3/bin` DLL and worker.
 
 ## Filter backends
 

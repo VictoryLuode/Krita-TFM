@@ -1,4 +1,10 @@
-"""Stage TFM into an empty, explicitly selected Krita resource directory."""
+"""Stage TFM Python resources into an empty, isolated Krita resource directory.
+
+This only copies the resource-side package (pykrita/tfm, desktop file, actions,
+and tfm_color_range.dll). Native filter binaries kritatfm.dll and
+tfm_vulkan_worker.exe must be installed separately into the Krita install
+lib/kritaplugins/ folder, or packed with package_release.py.
+"""
 import argparse
 import hashlib
 import os

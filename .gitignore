@@ -5,6 +5,7 @@ __pycache__/
 
 # Build outputs, candidate staging, and local backups
 /build/
+/dist/
 /build-*.log
 /backups/
 /native-candidates/
