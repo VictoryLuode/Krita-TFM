@@ -1,7 +1,7 @@
 from .qtcompat import (Qt, QPoint, QSize, QTimer, QBuffer, QIODevice, QStandardPaths, QIcon, QPixmap, QPainter, QImage, QImageReader, QAction, QApplication, QLineEdit, QMenu, QStyle, QInputDialog)
 """Compact native search-history UI and asynchronous favorite-page persistence."""
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from quick_image_search.task_runtime import BoundedExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -94,7 +94,7 @@ class SearchLibraryMixin:
         self._grid_save_timer.setInterval(250)
         self._grid_save_timer.timeout.connect(self.flush_grid_size)
         self.favorite_cache = FavoriteCache(root / 'pages')
-        self._cache_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='search-page-cache')
+        self._cache_executor = BoundedExecutor(max_workers=1, thread_name_prefix='search-page-cache')
         self._cache_error = ''
         self._cache_suppressed = set()
         self._page_thumbnails = OrderedDict()

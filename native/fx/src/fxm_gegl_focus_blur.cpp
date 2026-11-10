@@ -152,20 +152,6 @@ bool FxmGeglFocusBlur::configurationAllowedForMask(KisFilterConfigurationSP) con
 KisFilterConfigurationSP FxmGeglFocusBlur::defaultConfiguration(KisResourcesInterfaceSP resourcesInterface) const
 {
     KisFilterConfigurationSP c = factoryConfiguration(resourcesInterface);
-    c->setProperty("blur_type", QStringLiteral("gaussian"));
-    c->setProperty("blur_radius", 25.0);
-    c->setProperty("highlight_factor", 0.0);
-    c->setProperty("highlight_threshold_low", 0.0);
-    c->setProperty("highlight_threshold_high", 1.0);
-    c->setProperty("shape", QStringLiteral("circle"));
-    c->setProperty("x", 0.5);
-    c->setProperty("y", 0.5);
-    c->setProperty("radius", 0.75);
-    c->setProperty("focus", 0.25);
-    c->setProperty("midpoint", 0.5);
-    c->setProperty("aspect_ratio", 0.0);
-    c->setProperty("rotation", 0.0);
-    c->setProperty("high_quality", false);
 
     const QRect defFrame = DefaultReferenceFrame();
     c->setProperty("frame_x", defFrame.x());
@@ -173,6 +159,7 @@ KisFilterConfigurationSP FxmGeglFocusBlur::defaultConfiguration(KisResourcesInte
     c->setProperty("frame_width", defFrame.width());
     c->setProperty("frame_height", defFrame.height());
     c->setProperty("frame_initialized", false);
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c);
     return c;
 }

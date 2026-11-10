@@ -7,6 +7,14 @@
 #include "fxmanager_clipboard_color_match.h"
 #include "fxmanager_guided_color_match_filter.h"
 #include "fxmanager_background_removal.h"
+#include "fxmanager_color_temperature.h"
+#include "fxmanager_vibrance.h"
+#include "fxmanager_halation.h"
+#include "fxmanager_flare.h"
+#include "fxmanager_kuwahara.h"
+#include "fxm_gegl_motion_blur.h"
+#include "fxm_gegl_focus_blur.h"
+#include "filter_metadata.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -98,5 +106,34 @@ int main(int argc, char **argv) try {
     c = defaults(mask);
     require(c->getBool("preserve_rgb"), "unsupported preserve_rgb setting unexpectedly overlaid");
     std::cout << "Independent config non-overwrite and XML roundtrip PASS\n";
+    KisFilterColorTemperature temperature; KisFilterVibrance vibrance;
+    KisFilterHalation halation; KisFilterLensFlare flare; KisFilterAnamorphicFlare anamorphic;
+    KisFilterKuwahara kuwahara; FxmGeglFocusBlur focus;
+    FxmGeglMotionBlur circular(FxmGeglMotionBlur::Variant::Circular), zoom(FxmGeglMotionBlur::Variant::Zoom);
+    QVector<const KisFilter *> all{&bloom, &grain, &lens, &vignette, &mask, &statistical, &guided,
+        &background, &temperature, &vibrance, &halation, &flare, &anamorphic, &kuwahara, &focus, &circular, &zoom};
+    int checked = 0;
+    for (const auto *filter : all) {
+        write(QJsonObject{});
+        auto baseline = defaults(*filter);
+        const QString fid = tfm_metadata::canonicalId(filter->id());
+        for (const auto &spec : tfm_metadata::parameters()) {
+            if (spec.filter != fid) continue;
+            require(baseline->getProperty(spec.key) == spec.value, "factory default differs: " + fid + "." + spec.key);
+            QJsonValue invalid = QStringLiteral("__invalid_parameter__");
+            if (spec.type == "enum") invalid = 12.5;
+            write(settings(fid, {{spec.key, invalid}}));
+            auto invalidConfig = defaults(*filter);
+            require(invalidConfig->getProperty(spec.key) == spec.value, "invalid type accepted: " + fid + "." + spec.key);
+            if (spec.editable && (spec.type == "number" || spec.type == "integer")) {
+                write(settings(fid, {{spec.key, spec.max + 1}}));
+                require(defaults(*filter)->getProperty(spec.key) == spec.value, "out-of-range accepted: " + spec.key);
+                write(settings(QString("fxmanager_") + fid.mid(4), {{spec.key, spec.min}}));
+                require(near(defaults(*filter)->getDouble(spec.key), spec.min), "legacy alias/min rejected: " + spec.key);
+            }
+            ++checked;
+        }
+    }
+    std::cout << "All 17 filters: " << checked << " parameter defaults/types/ranges/aliases PASS\n";
     return 0;
 } catch (const std::exception &e) { std::cerr << "FAIL: " << e.what() << std::endl; return 1; }

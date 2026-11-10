@@ -1,9 +1,13 @@
 #include "fxmanager_processing.h"
+#include "filter_metadata.h"
+#include "float_profile_transform.h"
+#include "pointwise_math.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -25,6 +29,8 @@
 #include <KoColorModelStandardIds.h>
 #include <KoColorSpace.h>
 #include <KoColorSpaceRegistry.h>
+#include <KoColorProfile.h>
+#include <KoUpdater.h>
 
 namespace fxmanager {
 namespace {
@@ -200,9 +206,35 @@ QString requestedBackend(const QString &filterId)
 }
 }
 
-bool gpuRequested(const QString &filterId)
+namespace {
+int configuredThreadCount();
+qint64 autoGpuThreshold(const QString &filterId)
 {
-    return requestedBackend(filterId) != QLatin1String("cpu");
+    const QString id=canonicalFilterId(filterId);
+    // End-to-end U8, one CPU thread, RTX 5090; see docs/quality-performance.md.
+    // The conservative cold-start crossover was observed at 5120 squared.
+    if (id == QLatin1String("tfm_vibrance") && configuredThreadCount() <= 1) return 5120LL*5120;
+    if (id == QLatin1String("tfm_vibrance") || id == QLatin1String("tfm_color_temperature")
+        || id == QLatin1String("tfm_filmgrain") || id == QLatin1String("tfm_vignette")
+        || id == QLatin1String("tfm_color_range_mask"))
+        return 128LL*1024*1024/4+1; // No measured GPU win within the U8 buffer budget.
+    return 0;
+}
+}
+
+bool gpuRequested(const QString &filterId, qint64 pixels)
+{
+    const QString requested=requestedBackend(filterId);
+    if (requested == QLatin1String("cpu")) return false;
+    if (requested == QLatin1String("gpu")) return true;
+    return pixels < 0 || pixels >= autoGpuThreshold(filterId);
+}
+
+QString cpuBackendReason(const QString &filterId, qint64 pixels)
+{
+    if (requestedBackend(filterId) == QLatin1String("auto") && pixels >= 0 && pixels < autoGpuThreshold(filterId))
+        return QStringLiteral("Auto: CPU selected by measured image-size threshold");
+    return QStringLiteral("CPU selected");
 }
 
 void reportBackend(const QString &filter, const QString &actual, const QString &reason, const QString &device)
@@ -279,82 +311,32 @@ void applyFilterDefaults(const QString &filterId, KisFilterConfigurationSP confi
     }
     if (values.isEmpty()) return;
 
-    auto number = [&](const char *key, double min, double max, bool integer = false) {
-        const QJsonValue value = values.value(QLatin1String(key));
-        if (!value.isDouble()) return;
-        const double n = value.toDouble();
-        if (!std::isfinite(n) || n < min || n > max || (integer && std::floor(n) != n)) return;
-        if (integer) config->setProperty(key, int(n)); else config->setProperty(key, n);
-    };
-    auto boolean = [&](const char *key) {
-        const QJsonValue value = values.value(QLatin1String(key));
-        if (value.isBool()) config->setProperty(key, value.toBool());
-    };
-    auto choice = [&](const char *key, std::initializer_list<const char *> options) {
-        const QJsonValue value = values.value(QLatin1String(key));
-        if (!value.isString()) return;
-        const QString text = value.toString();
-        for (const char *option : options) if (text == QLatin1String(option)) { config->setProperty(key, text); return; }
-    };
-    if (filterId == QLatin1String("tfm_bloom") || filterId == QLatin1String("fxmanager_bloom")) {
-        number("threshold",0,1); number("radius",1,64); number("strength",0,2); number("diffusion",0,1); number("softness",0,1);
-    } else if (filterId == QLatin1String("tfm_filmgrain") || filterId == QLatin1String("fxmanager_filmgrain")) {
-        choice("preset",{"8mm_caffenol","8mm_home_movie","super_8","16mm_broadcast","16mm_indie_cinema","35mm_portra_400","super_35","70mm_cinema","custom"});
-        number("amount",0,1); number("size",0.5,8); number("seed",0,999,true); boolean("monochrome");
-    } else if (filterId == QLatin1String("tfm_lens_distortion") || filterId == QLatin1String("fxmanager_lens_distortion")) {
-        choice("mode",{"radial","horizontal"}); number("distortion",-1,1); number("dispersion",0,1); boolean("jitter"); boolean("fit");
-    } else if (filterId == QLatin1String("tfm_vignette") || filterId == QLatin1String("fxmanager_vignette")) {
-        number("factor",0,1); number("feather",0,1); number("corner_roundness",0,1); number("scale_x",0.0001,4); number("scale_y",0.0001,4); number("offset_x",-2,2); number("offset_y",-2,2); number("angle",-180,180);
-    } else if (filterId == QLatin1String("tfm_clipboard_color_match") || filterId == QLatin1String("fxmanager_clipboard_color_match")) {
-        choice("reference_source",{"clipboard","file"}); number("match_strength",0,1); number("luminance",0,2); number("color_intensity",0,2); number("fade",0,1); number("tone_distribution",0,1); number("tonal_color",0,1); number("color_correlation",0,1); number("gain_limit",1,8); number("shift_limit",0,100); number("variance_floor",0.1,10); boolean("gamut_protection");
-    } else if (filterId == QLatin1String("tfm_guided_color_match") || filterId == QLatin1String("fxmanager_guided_color_match")) {
-        number("align_brightness",0,1); number("match_strength",0,1); number("chroma",0,2); number("keep_local",0,1); number("match_local",0,1); number("smoothness",0,1);
-    } else if (filterId == QLatin1String("tfm_background_removal") || filterId == QLatin1String("fxmanager_background_removal")) {
-        choice("model",{"BiRefNet-lite-F16.gguf","BiRefNet-dynamic-F16.gguf"}); choice("backend",{"cpu","gpu"}); choice("output_mode",{"cutout","grayscale_mask"}); choice("foreground_mode",{"fast_mask","refined_foreground"}); number("preserve_foreground",0,100,true); number("mask_contrast",-100,100,true);
-    } else if (filterId == QLatin1String("tfm_halation") || filterId == QLatin1String("fxmanager_halation")) {
-        number("threshold",0,1); number("radius",1,200); number("intensity",0,4);
-        number("tint",0,1); number("blend",0,1); number("quality",8,64);
-        boolean("channel_r"); boolean("channel_g"); boolean("channel_b");
-        choice("glow_mode",{"color","channels"});
-    } else if (filterId == QLatin1String("tfm_color_range_mask") || filterId == QLatin1String("fxmanager_color_range_mask")) {
-        choice("channel",{"gray","r","g","b","hue","saturation"}); number("range_min",0,1); number("range_max",0,1); number("softness",0,0.5); boolean("invert");
-    } else if (filterId == QLatin1String("tfm_motion_blur_circular") || filterId == QLatin1String("fxmanager_motion_blur_circular")) {
-        number("center_x",-1,2); number("center_y",-1,2); number("angle",0,360);
-    } else if (filterId == QLatin1String("tfm_motion_blur_zoom") || filterId == QLatin1String("fxmanager_motion_blur_zoom")) {
-        number("center_x",-1,2); number("center_y",-1,2); number("factor",-10,1);
-    } else if (filterId == QLatin1String("tfm_focus_blur") || filterId == QLatin1String("fxmanager_focus_blur")) {
-        choice("blur_type",{"gaussian","lens"});
-        number("blur_radius",0,200);
-        number("highlight_factor",0,1);
-        number("highlight_threshold_low",0,1);
-        number("highlight_threshold_high",0,1);
-        choice("shape",{"circle","square","diamond","horizontal","vertical"});
-        number("x",-1,2); number("y",-1,2);
-        number("radius",0,3);
-        number("focus",0,1);
-        number("midpoint",0,1);
-        number("aspect_ratio",-1,1);
-        number("rotation",-180,180);
-        boolean("high_quality");
-    } else if (filterId == QLatin1String("tfm_color_temperature") || filterId == QLatin1String("fxmanager_color_temperature")) {
-        number("temperature", 2000, 12000); number("tint", -100, 100); number("blend", 0, 1); number("preserve_luminance", 0, 1);
-    } else if (filterId == QLatin1String("tfm_vibrance") || filterId == QLatin1String("fxmanager_vibrance")) {
-        number("vibrance", -100, 100); number("saturation", -100, 100); number("skin_protect", 0, 1); number("protect_highlights", 0, 1); number("blend", 0, 1);
-    } else if (filterId == QLatin1String("tfm_kuwahara") || filterId == QLatin1String("fxmanager_kuwahara")) {
-        number("size", 1, 12, true); number("iterations", 1, 4, true);
-    } else if (filterId == QLatin1String("tfm_lens_flare") || filterId == QLatin1String("fxmanager_lens_flare")) {
-        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 1, 6); number("intensity", 0, 4); number("tint", 0, 1); number("sources", 1, 8, true); number("blend", 0, 1);
-    } else if (filterId == QLatin1String("tfm_anamorphic_flare") || filterId == QLatin1String("fxmanager_anamorphic_flare")) {
-        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 0.05, 2); number("aspect", 0.002, 0.2); number("intensity", 0, 4); number("tint", 0, 1); number("sources", 1, 8, true); number("blend", 0, 1);
-    } else if (filterId == QLatin1String("tfm_light_rays") || filterId == QLatin1String("fxmanager_light_rays")) {
-        number("threshold", 0, 1); number("length", 0.01, 1); number("decay", 0.1, 6); number("intensity", 0, 4); number("blend", 0, 1);
-    } else if (filterId == QLatin1String("tfm_light_leaks") || filterId == QLatin1String("fxmanager_light_leaks")) {
-        choice("leak_type", {"wash_horizontal", "wash_vertical", "glow_top_left", "glow_bottom_right", "edge_ring", "diagonal"});
-        choice("blend", {"screen", "add", "lighten"});
-        number("angle", -180, 180); number("scale_x", 0.1, 4); number("scale_y", 0.1, 4); number("hue", -180, 180); number("opacity", 0, 100);
-    } else if (filterId == QLatin1String("tfm_light_patch") || filterId == QLatin1String("fxmanager_light_patch")) {
-        number("density", 1, 60, true); number("darkness", 0, 1); number("lightness", 0, 4);
+    const QString canonical = tfm_metadata::canonicalId(filterId);
+    for (const auto &spec : tfm_metadata::parameters()) {
+        if (spec.filter != canonical || !spec.editable) continue;
+        const QJsonValue value = values.value(spec.key);
+        if (spec.type == QLatin1String("bool")) {
+            if (value.isBool()) config->setProperty(spec.key, value.toBool());
+        } else if (spec.type == QLatin1String("enum")) {
+            if (value.isString() && spec.options.contains(value.toString()))
+                config->setProperty(spec.key, value.toString());
+        } else if (value.isDouble()) {
+            const double number = value.toDouble();
+            const bool integer = spec.type == QLatin1String("integer");
+            if (!std::isfinite(number) || number < spec.min || number > spec.max ||
+                (integer && std::floor(number) != number)) continue;
+            if (integer) config->setProperty(spec.key, int(number));
+            else config->setProperty(spec.key, number);
+        }
     }
+}
+
+void applyBuiltinDefaults(const QString &filterId, KisFilterConfigurationSP config)
+{
+    if (!config) return;
+    const QString canonical = tfm_metadata::canonicalId(filterId);
+    for (const auto &spec : tfm_metadata::parameters())
+        if (spec.filter == canonical) config->setProperty(spec.key, spec.value);
 }
 
 namespace {
@@ -386,17 +368,24 @@ int workerCount(int rows)
     return std::clamp(std::min(configured > 0 ? configured : 1, rows), 1, 32);
 }
 
+thread_local bool insideBand = false;
+
 class BandJob final : public QRunnable
 {
 public:
-    BandJob(std::function<void(int, int)> work, int y0, int y1, QSemaphore *done)
+    BandJob(std::function<void(int, int)> work, int y0, int y1, std::shared_ptr<QSemaphore> done)
         : m_work(std::move(work)), m_y0(y0), m_y1(y1), m_done(done) { setAutoDelete(true); }
-    void run() override { m_work(m_y0, m_y1); m_done->release(); }
+    void run() override {
+        insideBand = true;
+        m_work(m_y0, m_y1);
+        insideBand = false;
+        m_done->release();
+    }
 private:
     std::function<void(int, int)> m_work;
     int m_y0;
     int m_y1;
-    QSemaphore *m_done;
+    std::shared_ptr<QSemaphore> m_done;
 };
 
 } // namespace
@@ -426,6 +415,17 @@ const KoColorSpace *floatWorkingColorSpace()
     return space && space->pixelSize() == 4 * sizeof(float) ? space : nullptr;
 }
 
+bool needsExtendedSrgbTransfer(const KoColorSpace *space)
+{
+    // ICC sampled TRCs clamp values outside [0,1]. For Krita's standard sRGB
+    // float storage use its analytic extended transfer and a depth-only
+    // conversion instead. Other profiles still use the colour engine.
+    const auto *standard=KoColorSpaceRegistry::instance()->p709SRGBProfile();
+    return space && space->colorModelId()==RGBAColorModelID
+        && (space->colorDepthId()==Float16BitsColorDepthID || space->colorDepthId()==Float32BitsColorDepthID)
+        && standard && space->profile() && *space->profile()==*standard;
+}
+
 } // namespace
 
 FloatRgbaImage readFloatImage(KisPaintDeviceSP device, const QRect &rect)
@@ -433,8 +433,16 @@ FloatRgbaImage readFloatImage(KisPaintDeviceSP device, const QRect &rect)
     FloatRgbaImage out;
     if (!device || rect.isEmpty()) return out;
     const KoColorSpace *cs = device->colorSpace();
-    const KoColorSpace *working = floatWorkingColorSpace();
+    const bool extended=needsExtendedSrgbTransfer(cs);
+    const KoColorSpace *working = extended
+        ? KoColorSpaceRegistry::instance()->colorSpace(RGBAColorModelID.id(),Float32BitsColorDepthID.id(),cs->profile())
+        : floatWorkingColorSpace();
     if (!cs || !working) return out;
+    const bool floatStorage = cs->colorModelId() == RGBAColorModelID &&
+        (cs->colorDepthId() == Float16BitsColorDepthID || cs->colorDepthId() == Float32BitsColorDepthID);
+    FloatProfileTransform profileTransform;
+    const bool customCurve = floatStorage && !extended && cs->profile() && !cs->profile()->isLinear();
+    const bool matrixFloat = customCurve && profileTransform.initialize(cs->profile(), working->profile());
 
     const qint64 count = qint64(rect.width()) * rect.height();
     if (count <= 0 || count > 268435456LL ||
@@ -445,7 +453,24 @@ FloatRgbaImage readFloatImage(KisPaintDeviceSP device, const QRect &rect)
     QVector<quint8> raw(int(count * cs->pixelSize()));
     device->readBytes(raw.data(), rect.x(), rect.y(), rect.width(), rect.height());
     out.pixels.resize(int(count * 4));
-    if (!cs->convertPixelsTo(raw.constData(),
+    if (customCurve && !matrixFloat) {
+        QVector<float> channels(4);
+        for (int i=0;i<count;++i) {
+            cs->normalisedChannelsValue(raw.constData()+i*cs->pixelSize(),channels);
+            for(int c=0;c<3;++c) if(channels[c]<0 || channels[c]>1) {
+                qWarning() << "TFM: HDR ICC LUT/unsupported TRC conversion refused; original pixels retained";
+                return {};
+            }
+        }
+    }
+    if(extended || matrixFloat) {
+        QVector<float> channels(4);
+        for(int i=0;i<count;++i) {
+            cs->normalisedChannelsValue(raw.constData()+i*cs->pixelSize(),channels);
+            std::copy_n(channels.constData(),4,out.pixels.data()+i*4);
+            if(matrixFloat) profileTransform.toWorking(out.pixels.data()+i*4);
+        }
+    } else if (!cs->convertPixelsTo(raw.constData(),
                             reinterpret_cast<quint8 *>(out.pixels.data()),
                             working, quint32(count),
                             KoColorConversionTransformation::internalRenderingIntent(),
@@ -455,7 +480,35 @@ FloatRgbaImage readFloatImage(KisPaintDeviceSP device, const QRect &rect)
     out.width = rect.width();
     out.height = rect.height();
     out.linearHdr = true;
+    if(extended) for(int i=0;i<out.pixels.size();i+=4)
+        for(int c=0;c<3;++c) out.pixels[i+c]=pointwise::decode(out.pixels[i+c]);
     return out;
+}
+
+RawFloatRgbaData readDataFloatRgba(KisPaintDeviceSP device, const QRect &rect)
+{
+    RawFloatRgbaData out;
+    if (!device || rect.isEmpty()) return out;
+    const KoColorSpace *cs = device->colorSpace();
+    if (!cs) return out;
+
+    const qint64 count = qint64(rect.width()) * rect.height();
+    if (count <= 0 || count > 268435456LL ||
+        count * cs->pixelSize() > std::numeric_limits<int>::max()) return out;
+
+    // Position/Depth AOVs are data, not colours. Prefer a raw F32 dump when the
+    // layer already stores RGBA float so ICC conversion cannot warp XYZ.
+    if (cs->colorModelId() == RGBAColorModelID
+            && cs->colorDepthId() == Float32BitsColorDepthID
+            && cs->pixelSize() == 4 * sizeof(float)) {
+        out.pixels.resize(int(count * 4));
+        device->readBytes(reinterpret_cast<quint8 *>(out.pixels.data()),
+                          rect.x(), rect.y(), rect.width(), rect.height());
+        out.width = rect.width();
+        out.height = rect.height();
+        return out;
+    }
+    return {};
 }
 
 bool writeFloatImage(KisPaintDeviceSP device, const FloatRgbaImage &image, const QRect &rect)
@@ -463,15 +516,46 @@ bool writeFloatImage(KisPaintDeviceSP device, const FloatRgbaImage &image, const
     if (!device || image.isNull() || rect.isEmpty() || !image.linearHdr) return false;
     if (image.width != rect.width() || image.height != rect.height()) return false;
     const KoColorSpace *cs = device->colorSpace();
-    const KoColorSpace *working = floatWorkingColorSpace();
+    const bool extended=needsExtendedSrgbTransfer(cs);
+    const KoColorSpace *working = extended
+        ? KoColorSpaceRegistry::instance()->colorSpace(RGBAColorModelID.id(),Float32BitsColorDepthID.id(),cs->profile())
+        : floatWorkingColorSpace();
     if (!cs || !working) return false;
+    const bool floatStorage = cs->colorModelId() == RGBAColorModelID &&
+        (cs->colorDepthId() == Float16BitsColorDepthID || cs->colorDepthId() == Float32BitsColorDepthID);
+    FloatProfileTransform profileTransform;
+    const bool customCurve = floatStorage && !extended && cs->profile() && !cs->profile()->isLinear();
+    const bool matrixFloat = customCurve && profileTransform.initialize(cs->profile(), working->profile());
 
     const qint64 count = qint64(rect.width()) * rect.height();
     if (count <= 0 || count > 268435456LL ||
         count * cs->pixelSize() > std::numeric_limits<int>::max()) return false;
 
     QVector<quint8> raw(int(count * cs->pixelSize()));
-    if (!working->convertPixelsTo(reinterpret_cast<const quint8 *>(image.pixels.constData()),
+    QVector<float> encoded;
+    const float *source=image.pixels.constData();
+    if(customCurve && !matrixFloat) {
+        for(int i=0;i<image.pixels.size();i+=4) for(int c=0;c<3;++c) if(image.pixels[i+c]<0 || image.pixels[i+c]>1) {
+            qWarning() << "TFM: HDR ICC LUT/unsupported TRC output refused; original pixels retained";
+            return false;
+        }
+    }
+    if(extended || matrixFloat) {
+        encoded=image.pixels;
+        float *values=encoded.data();
+        for(int i=0;i<encoded.size();i+=4) {
+            if(matrixFloat) profileTransform.fromWorking(values+i);
+            else for(int c=0;c<3;++c) values[i+c]=pointwise::encode(values[i+c]);
+        }
+        source=encoded.constData();
+    }
+    if(extended || matrixFloat) {
+        QVector<float> channels(4);
+        for(int i=0;i<count;++i) {
+            std::copy_n(source+i*4,4,channels.data());
+            cs->fromNormalisedChannelsValue(raw.data()+i*cs->pixelSize(),channels);
+        }
+    } else if (!working->convertPixelsTo(reinterpret_cast<const quint8 *>(source),
                                  raw.data(), cs, quint32(count),
                                  KoColorConversionTransformation::internalRenderingIntent(),
                                  KoColorConversionTransformation::internalConversionFlags())) return false;
@@ -480,21 +564,86 @@ bool writeFloatImage(KisPaintDeviceSP device, const FloatRgbaImage &image, const
     return true;
 }
 
+bool requiresFloatProcessing(KisPaintDeviceSP device)
+{
+    return device && device->colorSpace()->colorDepthId() != Integer8BitsColorDepthID;
+}
+
+EncodedRgbaImage EncodedRgbaImage::copy(const QRect &rect) const
+{
+    if(isNull() || rect.isEmpty() || !QRect(0,0,width,height).contains(rect)) return {};
+    EncodedRgbaImage out{rect.width(),rect.height(),QVector<float>(rect.width()*rect.height()*4)};
+    for(int y=0;y<rect.height();++y)
+        std::copy_n(pixels.constData()+4*((rect.y()+y)*width+rect.x()),rect.width()*4,out.pixels.data()+4*y*rect.width());
+    return out;
+}
+
+EncodedRgbaImage readEncodedImage(KisPaintDeviceSP device, const QRect &rect)
+{
+    auto linear=readFloatImage(device,rect);
+    if(linear.isNull()) return {};
+    EncodedRgbaImage out{linear.width,linear.height,std::move(linear.pixels)};
+    for(int i=0;i<out.pixels.size();i+=4)
+        for(int c=0;c<3;++c) out.pixels[i+c]=pointwise::encode(out.pixels[i+c]);
+    return out;
+}
+
+bool writeEncodedImage(KisPaintDeviceSP device, const EncodedRgbaImage &image, const QRect &rect)
+{
+    if(image.isNull()) return false;
+    FloatRgbaImage linear;
+    linear.width=image.width; linear.height=image.height; linear.pixels=image.pixels;
+    for(int i=0;i<linear.pixels.size();i+=4)
+        for(int c=0;c<3;++c) linear.pixels[i+c]=pointwise::decode(linear.pixels[i+c]);
+    return writeFloatImage(device,linear,rect);
+}
+
+bool transformEncoded(KisPaintDeviceSP device, const QRect &rect, const QString &filter,
+                      KoUpdater *updater, const std::function<void(float *, int, int)> &transform)
+{
+    if(updater && updater->interrupted()) return false;
+    auto output=readEncodedImage(device,rect);
+    if(output.isNull()) {
+        reportBackend(filter,QStringLiteral("cpu"),QStringLiteral("Float colour conversion unavailable; pixels unchanged"));
+        return false;
+    }
+    // Detach on the caller thread before parallel writers take disjoint rows.
+    float *pixels=output.pixels.data();
+    parallelRows(output.height,[&](int y0,int y1) {
+        for(int y=y0;y<y1;++y) {
+            if(updater && updater->interrupted()) return;
+            for(int x=0;x<output.width;++x)
+                transform(pixels+4*(y*output.width+x),rect.x()+x,rect.y()+y);
+        }
+    });
+    if(updater && updater->interrupted()) return false;
+    const bool written=writeEncodedImage(device,output,rect);
+    reportBackend(filter,QStringLiteral("cpu"),written
+        ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+        : QStringLiteral("Float output conversion failed; pixels unchanged"));
+    if(written && updater) updater->setProgress(100);
+    return written;
+}
+
 void parallelRows(int rows, const std::function<void(int, int)> &body)
 {
     const int workers = workerCount(rows);
-    if (workers <= 1) { body(0, rows); return; }
-    static QThreadPool pool;
-    pool.setMaxThreadCount(workers);
-    QSemaphore done(0);
+    if (workers <= 1 || insideBand) { body(0, rows); return; }
+    // One fixed concurrency cap for this plugin, not a resized pool per patch.
+    // Krita already schedules tiles; the default remains a single CPU worker.
+    static QThreadPool *pool = [] {
+        auto *value = new QThreadPool;
+        value->setMaxThreadCount(workerCount(32));
+        return value;
+    }();
+    auto done = std::make_shared<QSemaphore>(0);
     const int band = (rows + workers - 1) / workers;
     int launched = 0;
     for (int start = 0; start < rows; start += band) {
-        pool.start(new BandJob(body, start, std::min(rows, start + band), &done));
+        pool->start(new BandJob(body, start, std::min(rows, start + band), done));
         ++launched;
     }
-    done.acquire(launched);
-    pool.waitForDone();
+    done->acquire(launched);
 }
 
 double deterministicNoise(int x, int y, int seed, int channel)

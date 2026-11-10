@@ -22,21 +22,19 @@ KisFilterConfigurationSP KisFilterGuidedColorMatch::defaultConfiguration(KisReso
 {
     auto config=factoryConfiguration(resources);
     config->setProperty("guided_version",1);
-    config->setProperty("align_brightness",1.0);
-    config->setProperty("match_strength",1.0);
+
     config->setProperty("luminance",0.0);
-    config->setProperty("chroma",1.0);
-    config->setProperty("keep_local",1.0);
-    config->setProperty("match_local",0.0);
+
     config->setProperty("shadow_color",1.0);
     config->setProperty("highlight_warmth",1.0);
     config->setProperty("neutral_protection",0.0);
-    config->setProperty("smoothness",0.35);
+    
     config->setProperty("guided_pairs",QByteArray());
     config->setProperty("guided_look",QByteArray());
     config->setProperty("guided_lightness",QByteArray());
     config->setProperty("guided_lut",QByteArray());
     config->setProperty("guided_lut_valid",false);
+    fxmanager::applyBuiltinDefaults(id().id(), config);
     fxmanager::applyFilterDefaults(id().id(), config); return config;
 }
 KisConfigWidget *KisFilterGuidedColorMatch::createConfigurationWidget(QWidget *parent,const KisPaintDeviceSP device,bool) const
@@ -60,6 +58,7 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
     const KisFilterConfigurationSP config,KoUpdater *updater) const
 {
     if(!device || rect.isEmpty() || !config || !config->getBool("guided_lut_valid",false)) return;
+    if(updater && updater->interrupted()) return;
     // One grid per stored grade. Tiles of the same apply reuse it.
     const QByteArray lookBytes=fxmanager::guided::inflateStored(config->getProperty("guided_look").toByteArray());
     const QByteArray legacyBytes=fxmanager::guided::inflateStored(config->getProperty("guided_lut").toByteArray());
@@ -78,6 +77,7 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
     }
     thread_local QByteArray cachedKey;
     thread_local fxmanager::guided::Lut cachedLut;
+    thread_local bool cachedIdentity=false;
     if(key!=cachedKey || !cachedLut.valid) {
         fxmanager::guided::LightnessStats sourceStats,referenceStats;
         fxmanager::guided::decodeLightness(lightBytes,sourceStats,referenceStats);
@@ -85,18 +85,29 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
             lookBytes,legacyBytes,fxmanager::guided::decodePairs(pairBytes),
             chroma,strength,smoothness,align,sourceStats,referenceStats);
         cachedKey=key;
+        cachedIdentity=cachedLut.isIdentity();
     }
     if(!cachedLut.valid) return;
+    if(cachedIdentity) { if(updater) updater->setProgress(100); return; }
     const auto &lut=cachedLut;
+    if(fxmanager::requiresFloatProcessing(device)) {
+        fxmanager::transformEncoded(device,rect,id().id(),updater,[&](float *p,int,int) {
+            if(p[3]<=0.0f) return;
+            const auto mapped=lut.sampleFloat({p[0],p[1],p[2]});
+            for(int c=0;c<3;++c) p[c]=float(mapped[c]);
+        });
+        return;
+    }
     // The current host returns native ARGB32; undo the legacy helper swap.
     const QImage source=fxmanager::readImage(device,rect).rgbSwapped();
     if(source.isNull()) return;
     QImage output;
     QString gpuReason, gpuDevice;
     const bool wantGpu = fxmanager::gpuRequested(id().id());
-    if (wantGpu && tfm_guided_gpu::render(source, lut, output, gpuReason, gpuDevice)) {
+    if (wantGpu && tfm_guided_gpu::render(source, lut, output, gpuReason, gpuDevice, [updater] { return updater && updater->interrupted(); })) {
         fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
     } else {
+        if(updater && updater->interrupted()) return;
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"),
             wantGpu ? gpuReason : QStringLiteral("CPU selected"));
         output = source.copy();
@@ -105,6 +116,7 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
         const int width=output.width();
         // Host already tiles this filter; stay single-threaded inside a patch.
         for(int y=0;y<output.height();++y) {
+            if(updater && updater->interrupted()) return;
             QRgb *row=reinterpret_cast<QRgb*>(bits+y*stride);
             for(int x=0;x<width;++x) {
                 const QRgb pixel=row[x];
@@ -114,6 +126,7 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
             }
         }
     }
+    if(updater && updater->interrupted()) return;
     fxmanager::writeImage(device,output.rgbSwapped(),rect);
     if(updater) updater->setProgress(100);
 }

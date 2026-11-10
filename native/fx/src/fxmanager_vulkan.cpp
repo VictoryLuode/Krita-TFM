@@ -11,6 +11,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <limits>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -52,31 +54,110 @@ struct Worker {
 
 Worker &worker()
 {
-    static Worker instance;
-    return instance;
+    static Worker *instance = new Worker;
+    return *instance;
 }
 
-std::mutex &gate()
+std::timed_mutex &gate()
 {
-    static std::mutex mutex;
-    return mutex;
+    static auto *mutex = new std::timed_mutex;
+    return *mutex;
 }
 
-std::condition_variable &idleCv()
+std::condition_variable_any &idleCv()
 {
-    static std::condition_variable cv;
-    return cv;
+    static auto *cv = new std::condition_variable_any;
+    return *cv;
 }
 
-bool pipeIo(HANDLE handle, void *data, std::size_t size, std::size_t &moved, bool writing)
+using Status = FxManagerVulkan::Status;
+using Clock = std::chrono::steady_clock;
+
+std::chrono::milliseconds timeout(const char *variable, long fallback)
 {
+    const char *value = std::getenv(variable);
+    if (!value || !*value) return std::chrono::milliseconds(fallback);
+    char *end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    // Diagnostic settings cannot disable bounded waits.
+    return std::chrono::milliseconds(end && !*end && parsed >= 1 && parsed <= 3600000 ? parsed : fallback);
+}
+
+struct Operation {
+    std::function<bool()> cancelled;
+    Clock::time_point deadline;
+    Status status = Status::Success;
+
+    bool interrupted()
+    {
+        if (status != Status::Success) return true;
+        if (cancelled && cancelled()) status = Status::Cancelled;
+        else if (Clock::now() >= deadline) status = Status::Timeout;
+        return status != Status::Success;
+    }
+    FxManagerVulkan::Result result(std::string error) const
+    {
+        switch (status) {
+        case Status::Cancelled: error = "Vulkan operation cancelled"; break;
+        case Status::Timeout: error = "Vulkan worker deadline exceeded"; break;
+        case Status::ProcessExited: error = "Vulkan worker exited or disconnected"; break;
+        default: break;
+        }
+        return {status, std::move(error)};
+    }
+};
+
+bool pipeIo(HANDLE handle, void *data, std::size_t size, std::size_t &moved,
+            bool writing, Operation &operation)
+{
+    moved = 0;
+    if (operation.interrupted()) return false;
+    OVERLAPPED pending{};
+    pending.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!pending.hEvent) { operation.status = Status::Unavailable; return false; }
     DWORD count = 0;
     const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(size, 1u << 20));
-    const BOOL ok = writing
-        ? WriteFile(handle, data, chunk, &count, nullptr)
-        : ReadFile(handle, data, chunk, &count, nullptr);
-    if (!ok) return false;
+    BOOL ok = writing ? WriteFile(handle, data, chunk, &count, &pending)
+                      : ReadFile(handle, data, chunk, &count, &pending);
+    if (!ok && GetLastError() == ERROR_IO_PENDING) {
+        HANDLE events[2] = {pending.hEvent, worker().process};
+        while (!operation.interrupted()) {
+            const DWORD wait = WaitForMultipleObjects(worker().process ? 2 : 1, events, FALSE, 20);
+            if (wait == WAIT_OBJECT_0) break;
+            if (wait == WAIT_OBJECT_0 + 1) { operation.status = Status::ProcessExited; break; }
+            if (wait == WAIT_FAILED) { operation.status = Status::ProtocolError; break; }
+        }
+        if (operation.status != Status::Success) CancelIoEx(handle, &pending);
+        // Drain the cancelled kernel request before releasing its stack buffer/event.
+        ok = GetOverlappedResult(handle, &pending, &count, TRUE);
+    }
+    CloseHandle(pending.hEvent);
+    if (!ok || !count) {
+        if (operation.status == Status::Success) operation.status = Status::ProcessExited;
+        return false;
+    }
+    if (operation.interrupted()) return false;
     moved = count;
+    return true;
+}
+
+// Anonymous pipes cannot do overlapped I/O. Only the parent endpoint is
+// overlapped; the owned worker keeps its ordinary stdin/stdout protocol.
+bool createPipePair(HANDLE &parent, HANDLE &child, bool parentReads,
+                    SECURITY_ATTRIBUTES &inherit)
+{
+    static std::atomic<unsigned long> sequence{0};
+    const std::wstring name = L"\\\\.\\pipe\\tfm-vulkan-" + std::to_wstring(GetCurrentProcessId())
+        + L"-" + std::to_wstring(++sequence);
+    parent = CreateNamedPipeW(name.c_str(), (parentReads ? PIPE_ACCESS_INBOUND : PIPE_ACCESS_OUTBOUND)
+        | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        1, 1u << 20, 1u << 20, 0, nullptr);
+    if (parent == INVALID_HANDLE_VALUE) { parent = nullptr; return false; }
+    child = CreateFileW(name.c_str(), parentReads ? GENERIC_WRITE : GENERIC_READ,
+                        0, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (child == INVALID_HANDLE_VALUE) { child = nullptr; CloseHandle(parent); parent = nullptr; return false; }
+    // CreateFile connected before ConnectNamedPipe; no blocking connect needed.
     return true;
 }
 
@@ -144,16 +225,17 @@ void abandonProcess()
 void stopWorker()
 {
     Worker &current = worker();
+    Operation operation{{}, Clock::now() + std::chrono::milliseconds(200)};
     if (current.toWorker) {
         auto write = [&](const void *data, std::size_t size, std::size_t &moved) {
-            return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true);
+            return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true, operation);
         };
         tfm_vulkan_ipc::writeMagic(write);
         tfm_vulkan_ipc::writeU32(write, tfm_vulkan_ipc::kShutdown);
     }
     current.closePipes();
     if (current.process) {
-        if (WaitForSingleObject(current.process, 3000) != WAIT_OBJECT_0)
+        if (WaitForSingleObject(current.process, 300) != WAIT_OBJECT_0)
             TerminateProcess(current.process, 1);
         WaitForSingleObject(current.process, 1000);
     }
@@ -165,7 +247,7 @@ void ensureIdleThread()
     static std::once_flag once;
     std::call_once(once, [] {
         std::thread([] {
-            std::unique_lock<std::mutex> lock(gate());
+            std::unique_lock<std::timed_mutex> lock(gate());
             for (;;) {
                 idleCv().wait(lock, [] { return worker().idleArmed; });
                 const auto token = worker().generation;
@@ -199,11 +281,11 @@ void disarmIdle()
     idleCv().notify_all();
 }
 
-bool readHello(std::string &error)
+bool readHello(std::string &error, Operation &operation)
 {
     Worker &current = worker();
     auto read = [&](void *data, std::size_t size, std::size_t &moved) {
-        return pipeIo(current.fromWorker, data, size, moved, false);
+        return pipeIo(current.fromWorker, data, size, moved, false, operation);
     };
     std::uint32_t kind = 0, ok = 0, float64 = 0, nameLen = 0, errorLen = 0;
     if (!tfm_vulkan_ipc::readMagic(read) || !tfm_vulkan_ipc::readU32(read, kind) || kind != tfm_vulkan_ipc::kHello
@@ -225,6 +307,7 @@ bool readHello(std::string &error)
     }
     current.float64 = float64 != 0;
     if (!ok) {
+        operation.status = Status::Unavailable;
         if (error.empty()) error = "Vulkan worker failed to create a device";
         return false;
     }
@@ -232,8 +315,9 @@ bool readHello(std::string &error)
     return true;
 }
 
-bool ensureWorker(std::string &error)
+bool ensureWorker(std::string &error, Operation &operation)
 {
+    if (operation.interrupted()) return false;
     if (const char *disabled = std::getenv("TFM_VULKAN_DISABLE")) {
         if (disabled[0] && disabled[0] != '0') {
             error = "Vulkan disabled by TFM_VULKAN_DISABLE";
@@ -261,8 +345,8 @@ bool ensureWorker(std::string &error)
         if (nul) CloseHandle(nul);
         childInRead = childInWrite = childOutRead = childOutWrite = nul = nullptr;
     };
-    if (!CreatePipe(&childInRead, &childInWrite, &inherit, 1u << 20)
-        || !CreatePipe(&childOutRead, &childOutWrite, &inherit, 1u << 20)) {
+    if (!createPipePair(childInWrite, childInRead, false, inherit)
+        || !createPipePair(childOutRead, childOutWrite, true, inherit)) {
         cleanupHandles();
         error = "Could not create the Vulkan worker pipes";
         return false;
@@ -337,7 +421,8 @@ bool ensureWorker(std::string &error)
     current.toWorker = childInWrite;
     current.fromWorker = childOutRead;
     childInWrite = childOutRead = nullptr;
-    if (!readHello(error)) {
+    if (!readHello(error, operation)) {
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
@@ -346,14 +431,14 @@ bool ensureWorker(std::string &error)
 
 bool sendDispatch(const std::vector<std::uint32_t> &spirv, const void *inputData, std::size_t inputSize,
                   const void *parametersData, std::size_t parametersSize, std::size_t outputSize,
-                  const FxManagerVulkan::Dispatch &config, std::vector<std::uint8_t> &outputData, std::string &error)
+                  const FxManagerVulkan::Dispatch &config, std::vector<std::uint8_t> &outputData, std::string &error, Operation &operation)
 {
     Worker &current = worker();
     auto write = [&](const void *data, std::size_t size, std::size_t &moved) {
-        return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true);
+        return pipeIo(current.toWorker, const_cast<void *>(data), size, moved, true, operation);
     };
     auto read = [&](void *data, std::size_t size, std::size_t &moved) {
-        return pipeIo(current.fromWorker, data, size, moved, false);
+        return pipeIo(current.fromWorker, data, size, moved, false, operation);
     };
     const std::uint32_t groups[3] = {config.groupsX, config.groupsY, config.groupsZ};
     const std::uint32_t bindings[3] = {config.inputBinding, config.outputBinding, config.parametersBinding};
@@ -369,6 +454,7 @@ bool sendDispatch(const std::vector<std::uint32_t> &spirv, const void *inputData
         || (inputSize && !tfm_vulkan_ipc::writeExact(write, inputData, inputSize))
         || (parametersSize && !tfm_vulkan_ipc::writeExact(write, parametersData, parametersSize))) {
         error = "Could not send a Vulkan job";
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
@@ -377,6 +463,7 @@ bool sendDispatch(const std::vector<std::uint32_t> &spirv, const void *inputData
         || !tfm_vulkan_ipc::readU32(read, ok)
         || !tfm_vulkan_ipc::readU32(read, nameLen) || nameLen > 4096) {
         error = "Vulkan worker ended during the job";
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
@@ -384,25 +471,31 @@ bool sendDispatch(const std::vector<std::uint32_t> &spirv, const void *inputData
     if ((nameLen && !tfm_vulkan_ipc::readExact(read, current.name.data(), nameLen))
         || !tfm_vulkan_ipc::readU32(read, errorLen) || errorLen > (1u << 20)) {
         error = "Vulkan worker ended during the job";
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
     error.assign(errorLen, '\0');
     if (errorLen && !tfm_vulkan_ipc::readExact(read, error.data(), errorLen)) {
         error = "Vulkan worker ended during the job";
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
     if (!ok) {
+        operation.status = Status::Unavailable;
         if (error.empty()) error = "Vulkan dispatch failed";
         return false;
     }
-    outputData.resize(outputSize);
-    if (outputSize && !tfm_vulkan_ipc::readExact(read, outputData.data(), outputSize)) {
+    std::vector<std::uint8_t> staged(outputSize);
+    if (outputSize && !tfm_vulkan_ipc::readExact(read, staged.data(), outputSize)) {
         error = "Vulkan worker returned a short image";
+        if (operation.status == Status::Success) operation.status = Status::ProtocolError;
         abandonProcess();
         return false;
     }
+    if (operation.interrupted()) { abandonProcess(); return false; }
+    outputData.swap(staged);
     return true;
 }
 
@@ -416,7 +509,7 @@ FxManagerVulkan::~FxManagerVulkan() = default;
 void FxManagerVulkan::shutdown()
 {
     std::lock_guard<std::mutex> self(m_mutex);
-    std::lock_guard<std::mutex> lock(gate());
+    std::lock_guard<std::timed_mutex> lock(gate());
     ++worker().generation;
     disarmIdle();
     stopWorker();
@@ -424,41 +517,45 @@ void FxManagerVulkan::shutdown()
 
 void FxManagerVulkan::scheduleIdleShutdown()
 {
-    std::lock_guard<std::mutex> lock(gate());
+    std::lock_guard<std::timed_mutex> lock(gate());
     armIdle();
 }
 
 bool FxManagerVulkan::initialize(std::string *errorOut)
 {
-    std::lock_guard<std::mutex> self(m_mutex);
-    std::lock_guard<std::mutex> lock(gate());
+    Operation operation{{}, Clock::now() + timeout("TFM_VULKAN_STARTUP_TIMEOUT_MS", 10000)};
+    std::unique_lock<std::timed_mutex> lock(gate(), std::defer_lock);
+    while (!lock.try_lock_for(std::chrono::milliseconds(20))) {
+        if (operation.interrupted()) { if (errorOut) *errorOut = operation.result({}).message; return false; }
+    }
     ++worker().generation;
     disarmIdle();
     std::string error;
-    const bool ok = ensureWorker(error);
-    if (!ok && errorOut) *errorOut = error;
-    if (ok && errorOut) errorOut->clear();
+    const bool ok = ensureWorker(error, operation);
+    if (ok) armIdle();
+    else if (operation.status == Status::Success) operation.status = Status::Unavailable;
+    if (errorOut) *errorOut = ok ? std::string() : operation.result(error).message;
     return ok;
 }
 
 bool FxManagerVulkan::isInitialized() const
 {
     std::lock_guard<std::mutex> self(m_mutex);
-    std::lock_guard<std::mutex> lock(gate());
+    std::lock_guard<std::timed_mutex> lock(gate());
     return worker().ready;
 }
 
 std::string FxManagerVulkan::deviceName() const
 {
     std::lock_guard<std::mutex> self(m_mutex);
-    std::lock_guard<std::mutex> lock(gate());
+    std::lock_guard<std::timed_mutex> lock(gate());
     return worker().name;
 }
 
 bool FxManagerVulkan::supportsShaderFloat64() const
 {
     std::lock_guard<std::mutex> self(m_mutex);
-    std::lock_guard<std::mutex> lock(gate());
+    std::lock_guard<std::timed_mutex> lock(gate());
     return worker().ready && worker().float64;
 }
 
@@ -466,18 +563,25 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
                                const void *inputData, std::size_t inputSize,
                                const void *parametersData, std::size_t parametersSize,
                                std::size_t outputSize, const Dispatch &config,
-                               std::vector<std::uint8_t> &outputData,
-                               std::string *errorOut)
+                               std::vector<std::uint8_t> &outputData, std::string *errorOut)
 {
-    std::lock_guard<std::mutex> self(m_mutex);
-    auto fail = [&](const std::string &message) {
-        if (errorOut) *errorOut = message;
-        return false;
-    };
+    const Result result = dispatchResult(spirv, inputData, inputSize, parametersData,
+                                         parametersSize, outputSize, config, outputData);
+    if (errorOut) *errorOut = result.message;
+    return bool(result);
+}
+
+FxManagerVulkan::Result FxManagerVulkan::dispatchResult(const std::vector<std::uint32_t> &spirv,
+                               const void *inputData, std::size_t inputSize,
+                               const void *parametersData, std::size_t parametersSize,
+                               std::size_t outputSize, const Dispatch &config,
+                               std::vector<std::uint8_t> &outputData)
+{
+    auto fail = [](const std::string &message) { return Result{Status::ProtocolError, message}; };
     constexpr std::size_t budget = 128ull * 1024 * 1024;
     if (inputSize > budget || outputSize > budget || parametersSize > budget)
         return fail("Vulkan buffer exceeds 128 MiB processing budget");
-    if (spirv.empty() || spirv.front() != 0x07230203u || (spirv.size() * sizeof(std::uint32_t)) % 4 != 0)
+    if (spirv.size() > budget / sizeof(std::uint32_t) || spirv.empty() || spirv.front() != 0x07230203u || (spirv.size() * sizeof(std::uint32_t)) % 4 != 0)
         return fail("Invalid SPIR-V module (expected 32-bit words with SPIR-V magic)");
     if (!inputData && inputSize) return fail("inputData is null while inputSize is non-zero");
     if (!parametersData && parametersSize) return fail("parametersData is null while parametersSize is non-zero");
@@ -491,16 +595,33 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
     if (inputSize > 0xffffffffu || parametersSize > 0xffffffffu || outputSize > 0xffffffffu)
         return fail("Vulkan buffer exceeds 128 MiB processing budget");
 
-    std::string error;
-    {
-        std::lock_guard<std::mutex> lock(gate());
-        ++worker().generation;
-        disarmIdle();
-        if (!ensureWorker(error)) return fail(error);
-        if (!sendDispatch(spirv, inputData, inputSize, parametersData, parametersSize, outputSize, config, outputData, error))
-            return fail(error);
+    Operation operation{config.cancelled, Clock::now() + timeout("TFM_VULKAN_STARTUP_TIMEOUT_MS", 10000)};
+    if (operation.interrupted()) return operation.result({});
+    std::unique_lock<std::timed_mutex> lock(gate(), std::defer_lock);
+    // Waiting for another filter belongs to this request's computation budget.
+    operation.deadline = Clock::now() + timeout("TFM_VULKAN_DISPATCH_TIMEOUT_MS", 120000);
+    while (!lock.try_lock_for(std::chrono::milliseconds(20))) {
+        if (operation.interrupted()) return operation.result({});
     }
-    scheduleIdleShutdown();
-    if (errorOut) errorOut->clear();
-    return true;
+    ++worker().generation;
+    disarmIdle();
+    operation.deadline = Clock::now() + timeout("TFM_VULKAN_STARTUP_TIMEOUT_MS", 10000);
+    try {
+        std::string error;
+        if (!ensureWorker(error, operation)) {
+            if (operation.status == Status::Success) operation.status = Status::Unavailable;
+            return operation.result(error);
+        }
+        operation.deadline = Clock::now() + timeout("TFM_VULKAN_DISPATCH_TIMEOUT_MS", 120000);
+        const bool ok = sendDispatch(spirv, inputData, inputSize, parametersData, parametersSize,
+                                      outputSize, config, outputData, error, operation);
+        if (worker().ready) armIdle();
+        if (!ok) return operation.result(error);
+        return {};
+    } catch (const std::exception &) {
+        // Allocation/thread-start failures after sending may leave unread protocol
+        // bytes. Never return this connection to the next request or leave idle off.
+        abandonProcess();
+        return {Status::Unavailable, "Vulkan client resource allocation failed"};
+    }
 }

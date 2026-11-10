@@ -24,13 +24,12 @@ class BirefnetContractTests(unittest.TestCase):
 
     def test_build_wires_pinned_vision_backend(self):
         cmake = (SRC / "CMakeLists.txt").read_text(encoding="utf-8")
-        build = (ROOT / "scratch" / "build-fxmanager.py").read_text(encoding="utf-8")
+        build = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn("fxmanager_background_removal.cpp", cmake)
         self.assertIn("FXMANAGER_VISIONCPP_ROOT", cmake)
-        self.assertIn('"build-qt5-candidate.py"', build)
-        candidate = (ROOT / "scratch" / "build-qt5-candidate.py").read_text(encoding="utf-8")
-        self.assertIn("Missing existing library", candidate)
-        self.assertIn("LINK_LIBRARIES", candidate)
+        self.assertIn("Missing existing library", build)
+        self.assertIn("LINK_LIBRARIES", build)
+        self.assertIn("BUILD_WITH_QT6:BOOL=OFF", build)
         self.assertIn("FXMANAGER_GGML_ROOT", cmake)
         self.assertTrue((ROOT / "third_party" / "visioncpp").is_dir())
         self.assertTrue((ROOT / "third_party" / "ggml").is_dir())

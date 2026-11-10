@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from krita import Krita
 
 from .drop_router import DRAG_FORMAT
+from quick_image_search.task_runtime import Token, task_scope, Cancelled
+from quick_image_search.network import request_bytes
 from .status_indicator import StatusIndicator
 
 MAX_BYTES = 24 * 1024 * 1024
@@ -44,9 +46,7 @@ def translate_to_english(text, proxy=''):
     query = urllib.parse.urlencode({'q': text, 'langpair': 'zh-CN|en'})
     request = urllib.request.Request('https://api.mymemory.translated.net/get?' + query,
                                      headers={'Accept': 'application/json'})
-    handlers = [urllib.request.ProxyHandler({'http': proxy, 'https': proxy})] if proxy else []
-    with urllib.request.build_opener(*handlers).open(request, timeout=12) as response:
-        data = response.read(65537)
+    data = request_bytes(request, timeout=12, limit=65536, proxy=proxy)
     if len(data) > 65536:
         raise ValueError('翻译响应过大，请稍后重试。')
     try:
@@ -156,14 +156,8 @@ def download_image(url, referer='', proxy=''):
     headers = {'User-Agent': 'Mozilla/5.0'}
     if referer:
         headers['Referer'] = validate_remote_url(referer)
-    handlers: list[urllib.request.BaseHandler] = [SafeRedirect()]
-    if proxy:
-        handlers.append(urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
-    opener = urllib.request.build_opener(*handlers)
-    with opener.open(urllib.request.Request(url, headers=headers), timeout=15) as response:
-        data = response.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise ValueError('Image download exceeds the 24 MB limit')
+    data = request_bytes(urllib.request.Request(url, headers=headers), timeout=15,
+                         limit=MAX_BYTES, proxy=proxy, validate=validate_remote_url)
     return data
 
 
@@ -175,10 +169,17 @@ class Job(QThread):
     def __init__(self, operation):
         super().__init__()
         self.operation = operation
+        self.token = Token()
+
+    def requestInterruption(self):
+        self.token.cancel()
+        super().requestInterruption()
 
     def run(self):
         try:
-            result = self.operation(self)
+            with task_scope(self.token):
+                result = self.operation(self)
+                self.token.check()
             if not self.isInterruptionRequested():
                 self.done.emit(result)
         except Exception as error:

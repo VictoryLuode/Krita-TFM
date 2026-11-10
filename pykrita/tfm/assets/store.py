@@ -1,5 +1,6 @@
 """Folder tree of asset library entries next to the other TFM data files."""
 
+from tfm_diagnostics import record_error
 import json
 import os
 import re
@@ -18,6 +19,10 @@ _RESERVED = {
 
 class AssetError(Exception):
     """An asset-library change the panel can show directly."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        record_error("asset.operation", message)
 
 
 def default_assets_dir():
@@ -346,14 +351,14 @@ def _rename_path(source, destination):
 _ORDER_FILE = ".tfm-order.json"
 
 
-def merged_children(root, parent_rel):
+def merged_children(root, parent_rel, order=None):
     """Ordered children of one folder: saved order, then new folders at the end."""
     parent_rel = _clean_rel(parent_rel)
     names = _direct_folder_names(root, parent_rel)
     known = set(names)
     result = []
     seen = set()
-    for entry in _load_order(root).get(parent_rel, []):
+    for entry in (_load_order(root) if order is None else order).get(parent_rel, []):
         if entry["type"] == "folder":
             name = entry["name"]
             if name in known and name not in seen:

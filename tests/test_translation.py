@@ -1,3 +1,4 @@
+from i18n import tr
 import threading
 import time
 import io
@@ -49,10 +50,10 @@ def test_translation_request_uses_documented_english_pair_and_decodes_entities(m
     assert hasattr(M, 'translate_to_english'), 'Missing keyword translation client'
     calls = []
     payload = {'responseStatus': 200, 'responseData': {'translatedText': 'worn &amp; cracked wall'}}
-    def open_request(request, timeout):
+    def open_request(request, timeout, **kwargs):
         calls.append((request.full_url, timeout))
-        return io.BytesIO(json.dumps(payload).encode('utf-8'))
-    monkeypatch.setattr(M.urllib.request, 'build_opener', lambda *handlers: types.SimpleNamespace(open=open_request))
+        return json.dumps(payload).encode('utf-8')
+    monkeypatch.setitem(M.translate_to_english.__globals__, 'request_bytes', open_request)
     assert M.translate_to_english('破旧的混凝土墙面') == 'worn & cracked wall'
     url, timeout = calls[0]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
@@ -110,7 +111,7 @@ def test_failed_translation_preserves_chinese_and_successful_retry_clears_error(
         wait_for(lambda: p._translation_job is None)
         assert p.search_input.text() == '墙面'
         assert p.translate_button.isEnabled()
-        assert '翻译失败' in p.status.text()
+        assert tr('Translation failed', '翻译失败') in p.status.text()
         monkeypatch.setattr(M, 'translate_to_english', lambda *args: 'wall')
         p.translate_button.click()
         wait_for(lambda: p._translation_job is None)
@@ -142,7 +143,7 @@ def test_translation_is_available_while_an_image_job_is_running(monkeypatch):
 @pytest.mark.parametrize('payload', [b'<html>blocked</html>', b'[]', b'[[[null]]]', b'x' * 65537],
                          ids=['html', 'empty', 'null-segment', 'oversized'])
 def test_invalid_translation_responses_are_reported_without_fake_text(monkeypatch, payload):
-    monkeypatch.setattr(M.urllib.request, 'build_opener', lambda *handlers: types.SimpleNamespace(open=lambda *args, **kwargs: io.BytesIO(payload)))
+    monkeypatch.setitem(M.translate_to_english.__globals__, 'request_bytes', lambda *args, **kwargs: payload)
     with pytest.raises(ValueError):
         M.translate_to_english('墙面')
 
@@ -160,6 +161,6 @@ def test_non_chinese_and_oversized_input_do_not_send_requests(monkeypatch):
 def test_service_quota_message_must_not_be_used_as_a_translation(monkeypatch):
     payload = {'responseStatus': 429, 'quotaFinished': True,
                'responseData': {'translatedText': 'YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY'}}
-    monkeypatch.setattr(M.urllib.request, 'build_opener', lambda *handlers: types.SimpleNamespace(open=lambda *args, **kwargs: io.BytesIO(json.dumps(payload).encode())))
+    monkeypatch.setitem(M.translate_to_english.__globals__, 'request_bytes', lambda *args, **kwargs: json.dumps(payload).encode())
     with pytest.raises(ValueError, match='额度'):
         M.translate_to_english('墙面')

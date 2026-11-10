@@ -27,14 +27,8 @@ KisFilterVignette::KisFilterVignette()
 KisFilterConfigurationSP KisFilterVignette::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
     auto c = factoryConfiguration(r);
-    c->setProperty("factor", 1.0);
-    c->setProperty("feather", 0.4);
-    c->setProperty("corner_roundness", 1.0);
-    c->setProperty("scale_x", 0.8);
-    c->setProperty("scale_y", 0.8);
-    c->setProperty("offset_x", 0.0);
-    c->setProperty("offset_y", 0.0);
-    c->setProperty("angle", 0.0);
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c); return c;
 }
 
@@ -46,7 +40,7 @@ KisConfigWidget *KisFilterVignette::createConfigurationWidget(QWidget *p, const 
 void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
                                     const KisFilterConfigurationSP c, KoUpdater *u) const
 {
-    if (r.isEmpty() || !d) return;
+    if (r.isEmpty() || !d || (u && u->interrupted())) return;
     const double factor = std::clamp(c ? c->getDouble("factor", c->getDouble("intensity", 1.0)) : 1.0, 0.0, 1.0);
     const double feather = std::clamp(c ? c->getDouble("feather", c->getDouble("smoothness", 0.4)) : 0.4, 0.0, 1.0);
     const double roundness = std::clamp(c ? c->getDouble("corner_roundness", c->getDouble("roundness", 1.0)) : 1.0, 0.0, 1.0);
@@ -62,11 +56,43 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
     const QRect outputRect = r.intersected(frame);
     if (outputRect.isEmpty()) return;
 
+    const double width = std::max(1, frame.width());
+    const double height = std::max(1, frame.height());
+    const double angleRadians = angle * 3.14159265358979323846 / 180.0;
+    const double cosAngle = std::cos(angleRadians);
+    const double sinAngle = std::sin(angleRadians);
+
+    const auto attenuation=[&](double imageX,double imageY) {
+        const double normalizedX = (imageX / width) - 0.5 - offsetX;
+        const double normalizedY = (imageY / height) - 0.5 - offsetY;
+        const double rotatedX = (normalizedX * cosAngle + normalizedY * sinAngle) / scaleX;
+        const double rotatedY = (-normalizedX * sinAngle + normalizedY * cosAngle) / scaleY;
+        const double centeredX = std::abs(rotatedX) * 2.0;
+        const double centeredY = std::abs(rotatedY) * 2.0;
+        const double squareDistance = std::max(centeredX, centeredY);
+        const double ellipseDistance = std::hypot(centeredX, centeredY);
+        const double distance = squareDistance * (1.0 - roundness) + ellipseDistance * roundness;
+        const double edge = feather <= 1e-6
+            ? (distance >= 1.0 ? 1.0 : 0.0)
+            : std::clamp((distance - (1.0 - feather)) / feather, 0.0, 1.0);
+        const double mask = edge * factor;
+        const double factorOut = 1.0 - mask;
+        return factorOut;
+    };
+    if(factor==0.0) { if(u) u->setProgress(100); return; }
+    if(fxmanager::requiresFloatProcessing(d)) {
+        fxmanager::transformEncoded(d,outputRect,id().id(),u,[&](float *p,int x,int y) {
+            const double gain=attenuation(x-frame.x()+0.5,y-frame.y()+0.5);
+            for(int channel=0;channel<3;++channel) p[channel]=float(p[channel]*gain);
+        });
+        return;
+    }
+
     // Vignette is pointwise: only the current output area is needed. The
     // centre and aspect ratio still come from the complete frame.
     const QImage source = fxmanager::readImage(d, outputRect);
     if (source.isNull()) return;
-    if (fxmanager::gpuRequested(id().id())) {
+    if (fxmanager::gpuRequested(id().id(),qint64(r.width())*r.height())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::Vignette;
         gpu.outputRect = outputRect; gpu.frame = frame;
@@ -74,23 +100,19 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
         gpu.scaleX = float(scaleX); gpu.scaleY = float(scaleY); gpu.offsetX = float(offsetX);
         gpu.offsetY = float(offsetY); gpu.angle = float(angle);
         QImage output; QString reason, device;
-        if (tfm_pointwise_gpu::render(source, gpu, output, reason, device)) {
+        if (tfm_pointwise_gpu::render(source, gpu, output, reason, device, [u] { return u && u->interrupted(); })) {
+            if(u && u->interrupted()) return;
             fxmanager::writeImage(d, output, outputRect);
             fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
             if (u) u->setProgress(100);
             return;
         }
+        if(u && u->interrupted()) return;
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), fxmanager::cpuBackendReason(id().id(),qint64(r.width())*r.height()));
     }
     QImage output(outputRect.size(), QImage::Format_ARGB32);
-
-    const double width = std::max(1, frame.width());
-    const double height = std::max(1, frame.height());
-    const double angleRadians = angle * 3.14159265358979323846 / 180.0;
-    const double cosAngle = std::cos(angleRadians);
-    const double sinAngle = std::sin(angleRadians);
 
     fxmanager::parallelRows(output.height(), [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
@@ -99,20 +121,7 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
             const QRgb *sourceRow = reinterpret_cast<const QRgb *>(source.constScanLine(y));
             for (int x = 0; x < output.width(); ++x) {
                 const double imageX = outputRect.x() - frame.x() + x + 0.5;
-                const double normalizedX = (imageX / width) - 0.5 - offsetX;
-                const double normalizedY = (imageY / height) - 0.5 - offsetY;
-                const double rotatedX = (normalizedX * cosAngle + normalizedY * sinAngle) / scaleX;
-                const double rotatedY = (-normalizedX * sinAngle + normalizedY * cosAngle) / scaleY;
-                const double centeredX = std::abs(rotatedX) * 2.0;
-                const double centeredY = std::abs(rotatedY) * 2.0;
-                const double squareDistance = std::max(centeredX, centeredY);
-                const double ellipseDistance = std::hypot(centeredX, centeredY);
-                const double distance = squareDistance * (1.0 - roundness) + ellipseDistance * roundness;
-                const double edge = feather <= 1e-6
-                    ? (distance >= 1.0 ? 1.0 : 0.0)
-                    : std::clamp((distance - (1.0 - feather)) / feather, 0.0, 1.0);
-                const double mask = edge * factor;
-                const double factorOut = 1.0 - mask;
+                const double factorOut=attenuation(imageX,imageY);
                 const QRgb pixel = sourceRow[x];
                 row[x] = qRgba(int(qRed(pixel) * factorOut), int(qGreen(pixel) * factorOut),
                                int(qBlue(pixel) * factorOut), qAlpha(pixel));
@@ -120,6 +129,7 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
         }
     });
 
+    if(u && u->interrupted()) return;
     fxmanager::writeImage(d, output, outputRect);
     if (u) u->setProgress(100);
 }

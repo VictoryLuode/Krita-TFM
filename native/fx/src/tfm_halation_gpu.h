@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <QImage>
 #include <QRect>
 #include <QString>
@@ -29,6 +31,6 @@ struct Parameters {
 // Processes the whole srcRect and returns an image of the same size.
 // Returns false without modifying output when Vulkan is unavailable.
 bool render(const QImage &source, const Parameters &parameters,
-            QImage &output, QString &reason, QString &deviceName);
+            QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_halation_gpu

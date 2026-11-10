@@ -7,7 +7,6 @@ import types
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-tempfile.tempdir = os.environ.get('TMPDIR') or str(Path(__file__).resolve().parents[3] / 'tmp')
 from qt_test_binding import QByteArray, QBuffer, QIODevice, Qt
 from qt_test_binding import QColor, QImage
 from qt_test_binding import QApplication, QDockWidget
@@ -16,7 +15,6 @@ APP = QApplication.instance() or QApplication([])
 FAKE = types.ModuleType('krita')
 FAKE.DockWidget = QDockWidget
 FAKE.Krita = type('Krita', (), {'instance': staticmethod(lambda: types.SimpleNamespace(activeDocument=lambda: None))})
-sys.modules['krita'] = FAKE
 PATH = Path(__file__).resolve().parents[1] / 'pykrita' / 'quick_image_search' / 'docker.py'
 MODULE = None
 if PATH.exists():
@@ -26,7 +24,15 @@ if PATH.exists():
     spec = importlib.util.spec_from_file_location(package.__name__ + '.docker', PATH)
     MODULE = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = MODULE
-    spec.loader.exec_module(MODULE)
+    previous_krita = sys.modules.get('krita')
+    sys.modules['krita'] = FAKE
+    try:
+        spec.loader.exec_module(MODULE)
+    finally:
+        if previous_krita is None:
+            sys.modules.pop('krita', None)
+        else:
+            sys.modules['krita'] = previous_krita
 
 class ImageSearchTests(unittest.TestCase):
     def setUp(self):

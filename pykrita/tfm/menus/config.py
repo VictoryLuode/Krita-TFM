@@ -10,6 +10,7 @@ After loading, items are normalised to dicts {"id", "label"} internally.
 
 import json
 import os
+from tfm_diagnostics import record_error
 import tempfile
 import traceback
 
@@ -104,7 +105,7 @@ def _migrate_legacy_config():
         temporary = None
         print("tfm: migrated menu config from menubelt -> TFM/config.json")
     except (OSError, ValueError, UnicodeError) as error:
-        print("tfm: menu config migrate failed: %s" % error)
+        record_error("menu.migrate", error, path=LEGACY_CONFIG_FILE)
     finally:
         if temporary:
             try:
@@ -429,7 +430,7 @@ def load_config():
         except FileNotFoundError:
             continue
         except (OSError, ValueError, UnicodeError) as error:
-            print("tfm: could not read menu config %s: %s" % (path, error))
+            record_error("menu.load", error, path=path)
             continue
         raw_lists = data.get("lists")
         lists = _clean_lists(raw_lists)
@@ -468,7 +469,7 @@ def save_config(popup_shortcut, lists):
             data["overrides"] = overrides
         return _write_raw(data)
     except (OSError, ValueError, TypeError) as e:
-        print(f"failed to save config: {e}")
+        record_error("menu.save", e, path=CONFIG_FILE)
         return False
 
 
@@ -503,7 +504,7 @@ def _write_raw(data):
         temporary = None
         return True
     except (OSError, ValueError, TypeError) as e:
-        print(f"failed to write config: {e}")
+        record_error("menu.write", e, path=CONFIG_FILE)
         return False
     finally:
         if temporary:
@@ -599,7 +600,7 @@ def catalog_actions():
             if oid:
                 out.append((oid, text or oid))
     except Exception as e:
-        print(f"failed to enumerate actions: {e}")
+        record_error("menu.enumerate_actions", e)
     out.sort(key=lambda x: x[1].lower())
     return out
 
@@ -662,128 +663,14 @@ def load_action_categories():
     return mapping
 
 
-def run_composite_op(op_id):
-    """Set the active layer's blend mode by its Krita id (setBlendingMode)."""
-    if not isinstance(op_id, str) or not op_id:
-        return
-    try:
-        doc = Krita.instance().activeDocument()
-    except Exception:
-        return
-    if doc is None:
-        return
-    node = doc.activeNode()
-    if node is not None:
-        try:
-            node.setBlendingMode(op_id)
-        except Exception as e:
-            print(f"setBlendingMode error: {e}")
 
 
-def run_brush_blend(op_id):
-    """Set the active brush painting blend mode (View.setCurrentBlendingMode)."""
-    if not isinstance(op_id, str) or not op_id:
-        return
-    try:
-        win = Krita.instance().activeWindow()
-    except Exception:
-        return
-    if win is None:
-        return
-    for view in win.views():
-        try:
-            view.setCurrentBlendingMode(op_id)
-            return
-        except Exception:
-            continue
 
 
-def run_brush_value(spec):
-    """Set a quick brush value. spec = 'opacity:N' | 'flow:N' | 'size:N'."""
-    if not isinstance(spec, str) or ":" not in spec:
-        return
-    kind, num = spec.split(":", 1)
-    try:
-        val = float(num)
-    except (TypeError, ValueError):
-        return
-    try:
-        win = Krita.instance().activeWindow()
-    except Exception:
-        return
-    if win is None:
-        return
-    for view in win.views():
-        try:
-            if kind == "opacity":
-                view.setPaintingOpacity(val / 100.0)
-            elif kind == "flow":
-                view.setPaintingFlow(val / 100.0)
-            elif kind == "size":
-                view.setBrushSize(val)
-            else:
-                return
-            return
-        except Exception:
-            continue
 
 
-def run_set_color(hex_str, target):
-    """Set the active foreground/background colour from a #rrggbb hex string."""
-    if not isinstance(hex_str, str) or not hex_str.startswith("#"):
-        return
-    try:
-        from .qtcompat import QColor
-        from krita import ManagedColor
-        qc = QColor(hex_str)
-        if not qc.isValid():
-            return
-        col = ManagedColor.fromQColor(qc)
-        win = Krita.instance().activeWindow()
-        if win is None:
-            return
-        for view in win.views():
-            try:
-                if target == "bg":
-                    view.setBackGroundColor(col)
-                else:
-                    view.setForeGroundColor(col)
-                return
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"set color error: {e}")
 
 
-def run_brush(name):
-    """Set the active Krita brush preset by its name (View.activateResource)."""
-    if not isinstance(name, str) or not name:
-        return
-    try:
-        presets = Krita.instance().resources("preset")
-        resource = presets.get(name)
-        if resource is None:
-            # fallback: legacy configs stored the preset filename
-            for p in presets.values():
-                try:
-                    if p.filename() == name:
-                        resource = p
-                        break
-                except Exception:
-                    continue
-        if resource is None:
-            return
-        window = Krita.instance().activeWindow()
-        if window is None:
-            return
-        for view in window.views():
-            try:
-                view.activateResource(resource)
-                return
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"run_brush error: {e}")
 
 
 # ---------- Script library (menu items that run a .py file) ----------
@@ -800,147 +687,26 @@ print("Hello from TFM:", document.name())
 '''
 
 
-def ensure_scripts_dir():
-    """Create the user script library folder if needed; returns its path."""
-    try:
-        os.makedirs(SCRIPTS_DIR, exist_ok=True)
-    except OSError as e:
-        print(f"TFM: cannot create {SCRIPTS_DIR}: {e}")
-    return SCRIPTS_DIR
 
 
-def bundled_scripts_dir():
-    return os.path.join(os.path.dirname(PLUGIN_DIR), "scripts")
 
 
-def list_scripts():
-    """Return unique [(filename, label)] entries from user and bundled libraries."""
-    entries = {}
-    for directory in (bundled_scripts_dir(), SCRIPTS_DIR):
-        try:
-            for fn in os.listdir(directory):
-                if fn.lower().endswith(".py") and not fn.startswith("_"):
-                    entries[fn] = (fn, fn[:-3])
-        except OSError:
-            pass
-    return sorted(entries.values(), key=lambda pair: pair[1].lower())
 
 
-def script_filename(name):
-    """Normalise a user supplied script name into a library file name."""
-    fn = os.path.basename(str(name or "").strip())
-    if fn.lower().endswith(".py"):
-        fn = fn[:-3].strip() + ".py"
-    elif fn:
-        fn += ".py"
-    return fn
 
 
-def script_path(name):
-    fn = script_filename(name)
-    user_path = os.path.join(SCRIPTS_DIR, fn)
-    if os.path.isfile(user_path):
-        return user_path
-    return os.path.join(bundled_scripts_dir(), fn)
 
 
-def read_script(name):
-    try:
-        with open(script_path(name), "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
 
 
-def write_script(name, code):
-    """Create/overwrite a library script. Returns the stored file name ('' on failure)."""
-    fn = script_filename(name)
-    if not fn:
-        return ""
-    ensure_scripts_dir()
-    try:
-        with open(os.path.join(SCRIPTS_DIR, fn), "w", encoding="utf-8", newline="\n") as f:
-            f.write(code if code is not None else "")
-        return fn
-    except OSError as e:
-        print(f"TFM: cannot write script {fn}: {e}")
-        return ""
 
 
-def delete_script(name):
-    try:
-        os.remove(os.path.join(SCRIPTS_DIR, script_filename(name)))
-        return True
-    except OSError as e:
-        print(f"TFM: cannot delete script {name}: {e}")
-        return False
 
 
-def rename_script(old, new):
-    """Rename a library script. Returns the new file name ('' on failure)."""
-    old_fn, new_fn = script_filename(old), script_filename(new)
-    if not old_fn or not new_fn or old_fn == new_fn:
-        return ""
-    if os.path.exists(os.path.join(SCRIPTS_DIR, new_fn)) or os.path.exists(os.path.join(bundled_scripts_dir(), new_fn)):
-        return ""
-    try:
-        os.replace(os.path.join(SCRIPTS_DIR, old_fn), os.path.join(SCRIPTS_DIR, new_fn))
-        return new_fn
-    except OSError as e:
-        print(f"TFM: cannot rename {old_fn}: {e}")
-        return ""
 
 
-def _report(title, text):
-    """Show a short error dialog and never fail while doing so."""
-    print(f"TFM: {title}: {text}")
-    try:
-        from .qtcompat import QMessageBox, exec_
-        box = QMessageBox()
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("TFM")
-        box.setText(title)
-        box.setInformativeText(text)
-        exec_(box)
-    except Exception:
-        pass
 
 
-def run_script(name):
-    """Run a library script, with Krita handles injected into its namespace."""
-    fn = script_filename(name)
-    if not fn:
-        return
-    path = script_path(fn)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            code = f.read()
-    except OSError as e:
-        _report("Script not found", f"{fn}\n{e}")
-        return
-
-    app = Krita.instance()
-    doc = app.activeDocument()
-    win = app.activeWindow()
-    try:
-        view = win.activeView() if win is not None else None
-    except Exception:
-        view = None
-    node = doc.activeNode() if doc is not None else None
-    namespace = {
-        "__name__": "__tfm_script__",
-        "__file__": path,
-        "Krita": Krita, "krita": app, "app": app,
-        "document": doc, "doc": doc,
-        "window": win, "view": view,
-        "layer": node, "node": node,
-    }
-    try:
-        exec(compile(code, path, "exec"), namespace)
-    except Exception:
-        traceback.print_exc()
-        lines = [ln for ln in traceback.format_exc().strip().splitlines() if ln.strip()]
-        _report("Script failed", "%s\n\n%s" % (fn, "\n".join(lines[-2:])))
 
 
 # ---------- Refresh notification (reload Tools menu / Docker / shortcuts after editing) ----------
@@ -959,3 +725,7 @@ def notify_refresh():
             cb()
         except Exception as e:
             print(f"refresh callback failed: {e}")
+
+# Compatibility exports: callers and saved action identifiers remain unchanged.
+from .actions import run_brush, run_brush_blend, run_brush_value, run_composite_op, run_set_color
+from .scripts import _report, bundled_scripts_dir, delete_script, ensure_scripts_dir, list_scripts, read_script, rename_script, run_script, script_filename, script_path, write_script

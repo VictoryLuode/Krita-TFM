@@ -1,3 +1,4 @@
+from i18n import tr
 import threading,time
 import test_docker as fixture
 from test_grid_menu import entry,finish
@@ -52,7 +53,7 @@ def test_similarity_can_be_clicked_while_busy_and_runs_after_current_job():
     try:
         p.display_results([entry()])
         p.run_job(lambda job:gate.wait(2),lambda result:None,lock_grid=False)
-        action=next(a for a in p.build_context_menu(p.grid.item(0)).actions() if a.text()=='查找相似图片')
+        action=next(a for a in p.build_context_menu(p.grid.item(0)).actions() if a.text()==tr('Find similar images', '查找相似图片'))
         assert action.isEnabled(),'A background image job must not disable similarity'
         action.trigger();assert browser.calls==0
         gate.set();end=time.monotonic()+3

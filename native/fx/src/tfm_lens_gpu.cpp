@@ -24,7 +24,7 @@ static_assert(offsetof(ShaderParameters, distortion) == 52, "Lens shader float l
 
 bool render(const QImage &source, const QRect &frame, const QRect &outputRect,
             bool horizontal, double distortion, double dispersion, bool fit, bool jitter,
-            QImage &output, QString &reason, QString &deviceName)
+            QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
     deviceName.clear();
@@ -66,19 +66,16 @@ bool render(const QImage &source, const QRect &frame, const QRect &outputRect,
         static FxManagerVulkan *instance = new FxManagerVulkan();
         FxManagerVulkan &vulkan = *instance;
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(outputRect.width()) + 15u) / 16u;
         dispatch.groupsY = (std::uint32_t(outputRect.height()) + 15u) / 16u;
         std::vector<std::uint8_t> result;
-        std::string error;
-        if (!vulkan.initialize(&error)) {
-            reason = QString::fromStdString(error);
-            return false;
-        }
         static const std::vector<std::uint32_t> shader(std::begin(kLensSpv), std::end(kLensSpv));
-        if (!vulkan.dispatch(shader, source.constBits(), inputBytes, &params, sizeof(params),
-                             outputBytes, dispatch, result, &error)) {
-            reason = QString::fromStdString(error);
+        const auto outcome = vulkan.dispatchResult(shader, source.constBits(), inputBytes, &params, sizeof(params),
+                             outputBytes, dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
             return false;
         }
         if (result.size() != outputBytes) {

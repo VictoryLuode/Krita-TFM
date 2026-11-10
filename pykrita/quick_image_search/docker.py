@@ -10,7 +10,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import wait, FIRST_COMPLETED
+from quick_image_search.task_runtime import BoundedExecutor, register_owner
 
 from krita import DockWidget, Krita
 try:
@@ -85,6 +86,9 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.busy = False
         self.generation = 0
         self.jobs = set()
+        self._shutdown_done = threading.Event()
+        self._cleanup_started = False
+        self._thumbnail_executor = BoundedExecutor(max_workers=4, thread_name_prefix="search-thumbnail")
         self.preview_dialog = None
         self._pending_preview = None
         self._preview_navigation = False
@@ -158,9 +162,11 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.init_favorite_tabs(buttons)
         self.status = TransientStatus()
         self.status_text = QLabel('')
-        self.status_text.setWordWrap(False)
         apply_muted_label(self.status_text)
-        self.status_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.status_text.setWordWrap(False)
+        self.status_text.setMinimumWidth(0)
+        self.status_text.setFixedHeight(max(22, self.status_text.fontMetrics().lineSpacing()))
+        self.status_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.status.details_requested.connect(self.show_status_menu)
         _set_status = self.status.setText
 
@@ -201,7 +207,8 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self.grid.more_requested.connect(self.load_more)
         self.grid.retry_requested.connect(self.retry_thumbnail)
         self.grid.verticalScrollBar().valueChanged.connect(self.scroll_changed)
-        QApplication.instance().aboutToQuit.connect(self.shutdown)
+        register_owner(self, QApplication.instance())
+        self.destroyed.connect(lambda: self._begin_cleanup())
         self.update_source_controls()
         self._sync_grid_empty_state()
         if self.search_store.last_error:
@@ -418,6 +425,9 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self.reset_profile_button.setEnabled(not self.busy and not self._closing)
 
     def run_job(self, operation, success, background=False, lock_grid=True, on_failure=None):
+        if self._closing:
+            return None
+        generation = self.generation
         if not background:
             self.busy = True
             self.search_button.setEnabled(True)
@@ -435,12 +445,16 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             released = True
             if not background:
                 self.busy = False
+                if self._closing:
+                    return
                 self.search_button.setEnabled(True)
                 self.update_source_controls()
                 self.grid.setEnabled(True)
 
         def completed(result):
             release()
+            if self._closing or generation != self.generation or job.isInterruptionRequested():
+                return
             success(result)
             self.resume_pending_search()
             self.resume_gallery_back()
@@ -449,6 +463,8 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             self.resume_paging()
         def failed(message):
             release()
+            if self._closing or generation != self.generation or job.isInterruptionRequested():
+                return
             if not background:
                 self.status.setText(tr('Failed: ', '失败：') + message)
             if on_failure is not None:
@@ -464,6 +480,12 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
             release()
             self.jobs.discard(job)
             _WORKERS.discard(job)
+            if not self._closing:
+                self.resume_pending_search()
+                self.resume_gallery_back()
+                self.resume_library()
+                self.resume_similarity()
+                self.resume_paging()
         job.finished.connect(finished)
         job.start()
         return job
@@ -485,6 +507,9 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         self._pending_gallery_back = False
         if self.busy:
             self._pending_query = request
+            self.generation += 1
+            for job in list(self.jobs):
+                job.requestInterruption()
             self.status.setText(tr(
                 'Search queued; the latest request will run after the current job…',
                 '搜索已排队，当前任务完成后执行最后一次提交…',
@@ -598,20 +623,34 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
                     return generation, index, self.thumbnail_bytes(entry), 0, ''
                 except Exception as error:
                     return generation, index, b'', 0, str(error)
-            pool = ThreadPoolExecutor(max_workers=4)
-            futures = [pool.submit(fetch, base_index + index, entry) for index, entry in enumerate(fresh)]
+            futures = set()
+            entries = iter(enumerate(fresh))
+            def submit_next():
+                if job.isInterruptionRequested():
+                    return
+                pair = next(entries, None)
+                if pair is not None:
+                    index, entry = pair
+                    futures.add(self._thumbnail_executor.submit(fetch, base_index+index, entry))
+            for _ in range(4):
+                submit_next()
             try:
-                for future in as_completed(futures):
-                    if job.isInterruptionRequested():
-                        break
-                    try:
-                        result = future.result()
-                        if result is not None:
-                            job.thumbnail.emit(result)
-                    except Exception:
-                        continue
+                while futures and not job.isInterruptionRequested():
+                    done, _ = wait(futures, timeout=.05, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        futures.remove(future)
+                        if job.isInterruptionRequested():
+                            break
+                        try:
+                            result = future.result()
+                            if result is not None:
+                                job.thumbnail.emit(result)
+                        except Exception:
+                            pass
+                        submit_next()
             finally:
-                pool.shutdown(wait=True, cancel_futures=True)
+                for future in futures:
+                    future.cancel()
         job = Job(thumbnails)
         self.jobs.add(job)
         _WORKERS.add(job)
@@ -992,27 +1031,64 @@ class ImageSearchDocker(DockWidget, SearchLibraryMixin, GalleryExperienceMixin):
         finally:
             menu.deleteLater()
 
-    def shutdown(self):
+    def closeEvent(self, event):
+        # Closing a dock hides it; it may be reopened. Cancel its current work
+        # and discard queued deliveries, but keep reusable services alive.
+        self.flush_grid_size()
+        self.flush_favorite_snapshot()
+        self.generation += 1
+        self._pending_query = self._pending_similar = self._pending_library = None
+        self.stop_adjacent_prefetch()
+        for job in list(self.jobs):
+            job.requestInterruption()
+        super().closeEvent(event)
+
+    def shutdown(self, deadline=None):
         if self._closing:
             return
         self.flush_grid_size()
         self.flush_favorite_snapshot()
         self._closing = True
+        self.generation += 1
         self._snapshot_timer.stop()
         self._cache_status_timer.stop()
+        self._grid_save_timer.stop()
         self.stop_adjacent_prefetch()
         self._pending_preview = None
         if self.preview_dialog is not None:
             self.preview_dialog.close()
-        self._pending_similar = None
-        self._pending_library = None
+        self._pending_similar = self._pending_library = self._pending_query = None
         self._back_stack.clear()
-        self._pending_query = None
+        self._begin_cleanup(deadline)
+
+    def _begin_cleanup(self, deadline=None):
+        # Also safe from QObject.destroyed: never access a child widget here.
+        if self._cleanup_started:
+            return
+        self._cleanup_started = True
+        self._closing = True
+        self.generation += 1
         jobs = list(self.jobs)
         for job in jobs:
             job.requestInterruption()
-        for job in jobs:
-            job.wait(45000)
-        if not any(job.isRunning() for job in jobs) and self.browser is not None and hasattr(self.browser, 'close'):
-            self.browser.close()
-        self._cache_executor.shutdown(wait=True)
+        self._thumbnail_executor.shutdown(wait=False)
+        self._cache_executor.shutdown(wait=False)
+        end = deadline if deadline is not None else time.monotonic()+3
+        browser = self.browser
+        done = self._shutdown_done
+        def cleanup():
+            try:
+                # This wait is outside the GUI thread and shares one deadline.
+                for job in jobs:
+                    job.wait(max(0, int((end-time.monotonic())*1000)))
+                if browser is not None and hasattr(browser, 'close'):
+                    from .backend import Backend
+                    if isinstance(browser, Backend):
+                        browser.close(deadline=end)
+                    elif not any(job.isRunning() for job in jobs):
+                        browser.close()
+                self._thumbnail_executor.shutdown(wait=True, deadline=end)
+                self._cache_executor.shutdown(wait=True, deadline=end)
+            finally:
+                done.set()
+        threading.Thread(target=cleanup, name='search-shutdown', daemon=True).start()

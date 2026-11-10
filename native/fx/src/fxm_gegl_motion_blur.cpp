@@ -271,19 +271,14 @@ bool FxmGeglMotionBlur::configurationAllowedForMask(KisFilterConfigurationSP) co
 KisFilterConfigurationSP FxmGeglMotionBlur::defaultConfiguration(KisResourcesInterfaceSP resourcesInterface) const
 {
     KisFilterConfigurationSP c = factoryConfiguration(resourcesInterface);
-    c->setProperty("center_x", 0.5);
-    c->setProperty("center_y", 0.5);
-    if (m_variant == Variant::Circular) {
-        c->setProperty("angle", 20.0);
-    } else {
-        c->setProperty("factor", 0.1);
-    }
+
     const QRect defFrame = DefaultReferenceFrame();
     c->setProperty("frame_x", defFrame.x());
     c->setProperty("frame_y", defFrame.y());
     c->setProperty("frame_width", defFrame.width());
     c->setProperty("frame_height", defFrame.height());
     c->setProperty("frame_initialized", false);
+    fxmanager::applyBuiltinDefaults(id(), c);
     fxmanager::applyFilterDefaults(id(), c);
     return c;
 }
@@ -339,16 +334,20 @@ KisConfigWidget *FxmGeglMotionBlur::createConfigurationWidget(QWidget *parent, c
 void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
                                   const KisFilterConfigurationSP config, KoUpdater *progressUpdater) const
 {
-    if (!device || rect.isEmpty()) return;
+    if (!device || rect.isEmpty() || (progressUpdater && progressUpdater->interrupted())) return;
+    const bool circular = m_variant == Variant::Circular;
+    const double angle = circular ? std::clamp(config ? config->getDouble("angle", 20.0) : 20.0, 0.0, 360.0) : 20.0;
+    const double factor = !circular ? std::clamp(config ? config->getDouble("factor", 0.1) : 0.1, -10.0, 1.0) : 0.1;
+    if((circular && angle==0.0) || (!circular && factor==0.0)) {
+        if(progressUpdater) progressUpdater->setProgress(100);
+        return;
+    }
     const QRect frame = resolveReferenceFrame(config);
     const double gx = frame.x() + (config ? config->getDouble("center_x", 0.5) : 0.5) * frame.width();
     const double gy = frame.y() + (config ? config->getDouble("center_y", 0.5) : 0.5) * frame.height();
     const QRect read = neededRect(rect, config, 0);
     const qint64 n = qint64(read.width()) * read.height();
     if (read.isEmpty() || n <= 0) return;
-    const bool circular = m_variant == Variant::Circular;
-    const double angle = circular ? std::clamp(config ? config->getDouble("angle", 20.0) : 20.0, 0.0, 360.0) : 20.0;
-    const double factor = !circular ? std::clamp(config ? config->getDouble("factor", 0.1) : 0.1, -10.0, 1.0) : 0.1;
     KisPaintDeviceSP snapshot = new KisPaintDevice(device->colorSpace());
     snapshot->prepareClone(device);
     const auto defaultImage = fxmanager::readFloatImage(snapshot, QRect(0, 0, 1, 1));
@@ -366,7 +365,7 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
         fxmanager::FloatRgbaImage gpuOutput;
         QString gpuDevice;
         if (tfm_motion_gpu::render(dense, stored, defaultImage, read, rect, frame,
-                                   circular, gx, gy, angle, factor, gpuOutput, backendReason, gpuDevice)) {
+                                   circular, gx, gy, angle, factor, gpuOutput, backendReason, gpuDevice, [progressUpdater] { return progressUpdater && progressUpdater->interrupted(); })) {
             if (progressUpdater && progressUpdater->interrupted()) return;
             if (fxmanager::writeFloatImage(device, gpuOutput, rect)) {
                 fxmanager::reportBackend(id(), QStringLiteral("gpu"), QString(), gpuDevice);
@@ -376,6 +375,7 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
             backendReason = QStringLiteral("Motion GPU image write failed");
         }
     }
+    if(progressUpdater && progressUpdater->interrupted()) return;
     // An explicit CPU choice has no failure reason; all other fallback cases
     // preserve the existing immutable snapshot and sampler below.
     fxmanager::reportBackend(id(), QStringLiteral("cpu"), backendReason);
@@ -418,6 +418,9 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
         const double a=(samples==1?0.0:(-1.0+2.0*i/(samples-1)))*angle*kPi/360.0;
         cosine[i]=std::cos(a);sine[i]=std::sin(a);
     }
+    KisPaintDeviceSP staged=new KisPaintDevice(device->colorSpace());
+    staged->prepareClone(device);
+    qint64 completedPixels=0;
     constexpr int outputSide=256;
     for(int top=rect.top();top<=rect.bottom();top+=outputSide) for(int left=rect.left();left<=rect.right();left+=outputSide){
         const QRect tile(left,top,std::min(outputSide,rect.right()-left+1),std::min(outputSide,rect.bottom()-top+1));
@@ -425,7 +428,9 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
         float *outputPixels=out.pixels.data();
         std::atomic<bool> failed{false};
         auto rows = [&](int y0,int y1) {
-        for(int y=y0;y<y1;++y) for(int x=0;x<tile.width();++x){
+        for(int y=y0;y<y1;++y) {
+        if(progressUpdater && progressUpdater->interrupted()) return;
+        for(int x=0;x<tile.width();++x){
             const double px=tile.x()+x,py=tile.y()+y;
             double rgba[4]={};
             double coverageWeight=0.0;
@@ -477,14 +482,19 @@ void FxmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
                 for(int c=0;c<3;++c)pixel[c]=rgba[3]!=0.0?float(rgba[c]/rgba[3]):0.0f;
             }
         }
+        }
         };
         // Dense source is immutable; sparse LRU access remains serial.
         if(!dense.isNull()) fxmanager::parallelRows(tile.height(),rows);
         else rows(0,tile.height());
         if(failed.load())return;
         if(progressUpdater && progressUpdater->interrupted())return;
-        fxmanager::writeFloatImage(device,out,tile);
+        if(!fxmanager::writeFloatImage(staged,out,tile)) return;
+        completedPixels+=qint64(tile.width())*tile.height();
+        if(progressUpdater) progressUpdater->setProgress(int(99*completedPixels/(qint64(rect.width())*rect.height())));
     }
+    if(progressUpdater && progressUpdater->interrupted()) return;
+    KisPainter::copyAreaOptimized(rect.topLeft(),staged,device,rect);
     if (progressUpdater) progressUpdater->setProgress(100);
 }
 

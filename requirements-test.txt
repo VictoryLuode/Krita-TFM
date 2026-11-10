@@ -1,0 +1,3 @@
+# Primary supported host: Python 3.13 / Qt5. Install in an isolated environment.
+pytest==9.0.2
+PyQt5==5.15.11

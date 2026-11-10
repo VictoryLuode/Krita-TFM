@@ -33,4 +33,7 @@ __pycache__/
 /deps/
 /Krita-Master-5.3.4.1/
 *.kra~
+*.kra-autosave.kra
 /tests/*.kra
+/test-kra/.*.kra-autosave.kra
+/test-kra/render/

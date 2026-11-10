@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <QImage>
 #include <filter/kis_filter_category_ids.h>
 #include <filter/kis_filter_configuration.h>
@@ -68,6 +69,40 @@ void runCpuPass(QImage &output, const QImage &source, const KuwaharaParams &p)
     fxmanager::parallelRows(output.height(), [&](int y0, int y1) { classicBand(output, source, y0, y1, p.radius); });
 }
 
+fxmanager::EncodedRgbaImage floatPass(const fxmanager::EncodedRgbaImage &source,
+                                    int radius, KoUpdater *updater)
+{
+    auto output=source;
+    float *dst=output.pixels.data();
+    const float *src=source.pixels.constData();
+    fxmanager::parallelRows(source.height,[&](int y0,int y1) {
+        for(int y=y0;y<y1;++y) {
+            if(updater && updater->interrupted()) return;
+            for(int x=0;x<source.width;++x) {
+                double best=std::numeric_limits<double>::infinity();
+                for(int quadrant=0;quadrant<4;++quadrant) {
+                    const int sx=(quadrant&1) ? 1 : -1, sy=(quadrant&2) ? 1 : -1;
+                    double sum[3]={}, squares[3]={};
+                    for(int dy=0;dy<=radius;++dy) for(int dx=0;dx<=radius;++dx) {
+                        const float *p=src+4*(std::clamp(y+dy*sy,0,source.height-1)*source.width+std::clamp(x+dx*sx,0,source.width-1));
+                        for(int c=0;c<3;++c) { sum[c]+=p[c]; squares[c]+=double(p[c])*p[c]; }
+                    }
+                    const double inv=1.0/((radius+1)*(radius+1));
+                    double variance=0;
+                    for(int c=0;c<3;++c) { sum[c]*=inv; variance+=squares[c]*inv-sum[c]*sum[c]; }
+                    // Keep full precision: the U8 variance tie quantizer would
+                    // erase real differences in a high-depth smooth gradient.
+                    if(variance<best) {
+                        best=variance;
+                        for(int c=0;c<3;++c) dst[4*(y*source.width+x)+c]=float(sum[c]);
+                    }
+                }
+            }
+        }
+    });
+    return output;
+}
+
 } // namespace
 
 KisFilterKuwahara::KisFilterKuwahara()
@@ -83,8 +118,8 @@ KisFilterKuwahara::KisFilterKuwahara()
 KisFilterConfigurationSP KisFilterKuwahara::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
     auto c = factoryConfiguration(r);
-    c->setProperty("size", 2.0);
-    c->setProperty("iterations", 1.0);
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c);
     return c;
 }
@@ -99,7 +134,8 @@ KisConfigWidget *KisFilterKuwahara::createConfigurationWidget(QWidget *p, const 
 
 QRect KisFilterKuwahara::neededRect(const QRect &rect, const KisFilterConfigurationSP c, int) const
 {
-    const int halo = int(std::clamp(c ? c->getDouble("size", 2.0) : 2.0, 1.0, 12.0));
+    const int halo = int(std::clamp(c ? c->getDouble("size", 2.0) : 2.0, 1.0, 12.0))
+        * int(std::clamp(c ? c->getDouble("iterations", 1.0) : 1.0, 1.0, 4.0));
     return rect.adjusted(-halo, -halo, halo, halo);
 }
 
@@ -114,7 +150,7 @@ QRect KisFilterKuwahara::changedRect(const QRect &rect, const KisFilterConfigura
 void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
                                     const KisFilterConfigurationSP c, KoUpdater *u) const
 {
-    if (r.isEmpty() || !d) return;
+    if (r.isEmpty() || !d || (u && u->interrupted())) return;
     KuwaharaParams params;
     params.radius = int(std::clamp(c ? c->getDouble("size", 2.0) : 2.0, 1.0, 12.0));
     params.iterations = int(std::clamp(c ? c->getDouble("iterations", 1.0) : 1.0, 1.0, 4.0));
@@ -125,12 +161,28 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     const QRect outputRect = r.intersected(frame);
     if (outputRect.isEmpty()) return;
 
-    const QRect srcRect = outputRect.adjusted(-params.radius, -params.radius, params.radius, params.radius).intersected(frame);
+    const int halo=params.radius*params.iterations;
+    const QRect srcRect = outputRect.adjusted(-halo, -halo, halo, halo).intersected(frame);
     // Later regions would otherwise sample the neighbourhood an earlier region
     // already smoothed and blur it a second time. Read the transaction baseline.
     KisPaintDeviceSP pristine = new KisPaintDevice(d->colorSpace());
     pristine->prepareClone(d);
     KisPainter::copyAreaOptimizedOldData(srcRect.topLeft(), d, pristine, srcRect);
+    if(fxmanager::requiresFloatProcessing(d)) {
+        auto current=fxmanager::readEncodedImage(pristine,srcRect);
+        if(current.isNull()) return;
+        for(int pass=0;pass<params.iterations;++pass) {
+            current=floatPass(current,params.radius,u);
+            if(u && u->interrupted()) return;
+        }
+        const auto cropped=current.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
+        const bool written=fxmanager::writeEncodedImage(d,cropped,outputRect);
+        fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),written
+            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        if(written && u) u->setProgress(100);
+        return;
+    }
     const QImage source = fxmanager::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
@@ -145,9 +197,10 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
         bool ok = true;
         for (int pass = 0; pass < params.iterations && ok; ++pass) {
             QImage passOutput;
-            ok = tfm_kuwahara_gpu::render(current, gpu, passOutput, reason, device);
+            ok = tfm_kuwahara_gpu::render(current, gpu, passOutput, reason, device, [u] { return u && u->interrupted(); });
             if (ok) current = passOutput;
         }
+        if(u && u->interrupted()) return;
         if (ok) {
             const QImage cropped = current.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                                 outputRect.width(), outputRect.height());
@@ -167,9 +220,11 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
         QImage next(current.size(), QImage::Format_ARGB32);
         runCpuPass(next, current, params);
         current = next;
+        if(u && u->interrupted()) return;
     }
     const QImage cropped = current.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                         outputRect.width(), outputRect.height());
+    if(u && u->interrupted()) return;
     fxmanager::writeImage(d, cropped, outputRect);
     if (u) u->setProgress(100);
 }

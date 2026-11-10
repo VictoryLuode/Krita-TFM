@@ -9,7 +9,6 @@
 #include "fxmanager_kuwahara.h"
 #include "fxmanager_halation.h"
 #include "fxmanager_flare.h"
-#include "fxmanager_light_effects.h"
 #include "fxmanager_lens_distortion.h"
 #include "fxmanager_processing.h"
 #include "fxmanager_vibrance.h"
@@ -47,9 +46,6 @@ FxManagerPlugin::FxManagerPlugin(QObject *parent, const QVariantList &)
     addEnabled<KisFilterHalation>(manager, QStringLiteral("tfm_halation"));
     addEnabled<KisFilterLensFlare>(manager, QStringLiteral("tfm_lens_flare"));
     addEnabled<KisFilterAnamorphicFlare>(manager, QStringLiteral("tfm_anamorphic_flare"));
-    addEnabled<KisFilterLightRays>(manager, QStringLiteral("tfm_light_rays"));
-    addEnabled<KisFilterLightLeaks>(manager, QStringLiteral("tfm_light_leaks"));
-    addEnabled<KisFilterLightPatch>(manager, QStringLiteral("tfm_light_patch"));
     addEnabled<KisFilterColorRangeMask>(manager, QStringLiteral("tfm_color_range_mask"));
     addEnabled<KisFilterClipboardColorMatch>(manager, QStringLiteral("tfm_clipboard_color_match"));
     addEnabled<KisFilterGuidedColorMatch>(manager, QStringLiteral("tfm_guided_color_match"));

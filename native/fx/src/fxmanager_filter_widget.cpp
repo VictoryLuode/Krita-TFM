@@ -1,6 +1,6 @@
 #include "fxmanager_filter_widget.h"
+#include "filter_metadata.h"
 #include "fxmanager_drag_spinbox.h"
-#include <cmath>
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
@@ -19,6 +19,14 @@ FxManagerFilterWidget::FxManagerFilterWidget(const QString &id,
     : KisConfigWidget(parent), m_id(id), m_specs(sliders), m_presets(presets)
 {
     auto *layout = new QFormLayout(this);
+    // Layout and translated labels stay handwritten; values/ranges have one source.
+    for (auto &spec : m_specs) {
+        if (const auto *meta = tfm_metadata::parameter(id, spec.key)) {
+            spec.min = meta->min; spec.max = meta->max; spec.value = meta->value.toDouble();
+        }
+    }
+    for (auto &spec : m_presets)
+        if (const auto *meta = tfm_metadata::parameter(id, spec.key)) spec.value = meta->value.toString();
     for (const auto &preset : m_presets) {
         auto *combo = new QComboBox(this);
         for (const auto &option : preset.options) combo->addItem(option.second, option.first);
@@ -38,7 +46,8 @@ FxManagerFilterWidget::FxManagerFilterWidget(const QString &id,
     }
     for (const auto &toggle : toggles) {
         auto *check = new QCheckBox(toggle.label, this);
-        check->setChecked(toggle.value);
+        const auto *meta = tfm_metadata::parameter(id, toggle.key);
+        check->setChecked(meta ? meta->value.toBool() : toggle.value);
         m_toggles.insert(toggle.key, check);
         layout->addRow(check);
         connect(check, &QCheckBox::toggled, this, &KisConfigWidget::sigConfigurationItemChanged);
@@ -47,7 +56,8 @@ FxManagerFilterWidget::FxManagerFilterWidget(const QString &id,
         auto *button = new QPushButton(this);
         button->setMinimumWidth(72);
         m_colors.insert(color.key, button);
-        m_colorValues.insert(color.key, color.value);
+        const auto *meta = tfm_metadata::parameter(id, color.key);
+        m_colorValues.insert(color.key, meta ? meta->value.toString() : color.value);
         layout->addRow(color.label, button);
         connect(button, &QPushButton::clicked, this, [this, key = color.key]() {
             const QColor picked = QColorDialog::getColor(QColor(m_colorValues.value(key)), this, i18n("Ray colour"));
@@ -69,11 +79,12 @@ void FxManagerFilterWidget::updateModeControls()
 {
     // Halation exposes two mutually exclusive control groups. Keep the
     // inactive group visibly disabled so a click cannot appear to do nothing.
-    QComboBox *mode = m_combos.value(QStringLiteral("glow_mode"));
-    if (!mode) return;
-    const bool channelMode = mode->currentData().toString() == QLatin1String("channels");
-    for (auto it = m_toggles.cbegin(); it != m_toggles.cend(); ++it) it.value()->setEnabled(channelMode);
-    for (auto it = m_colors.cbegin(); it != m_colors.cend(); ++it) it.value()->setEnabled(!channelMode);
+    if (QComboBox *mode = m_combos.value(QStringLiteral("glow_mode"))) {
+        const bool channelMode = mode->currentData().toString() == QLatin1String("channels");
+        for (auto it = m_toggles.cbegin(); it != m_toggles.cend(); ++it) it.value()->setEnabled(channelMode);
+        for (auto it = m_colors.cbegin(); it != m_colors.cend(); ++it) it.value()->setEnabled(!channelMode);
+        return;
+    }
 }
 
 void FxManagerFilterWidget::refreshSwatch(const QString &key)
@@ -106,19 +117,6 @@ void FxManagerFilterWidget::setConfiguration(const KisPropertiesConfigurationSP 
         const QString fallback = (m_id == QLatin1String("tfm_halation") && it.key() == QLatin1String("glow_mode"))
             ? QStringLiteral("color") : QString();
         QString stored = config->getString(it.key(), fallback);
-        if (m_id == QLatin1String("tfm_light_leaks") && it.key() == QLatin1String("leak_type")
-                && it.value()->findData(stored) < 0) {
-            static const char *names[] = {
-                "wash_horizontal", "wash_vertical", "glow_top_left",
-                "glow_bottom_right", "edge_ring", "diagonal",
-            };
-            bool ok = false;
-            int numeric = stored.toInt(&ok);
-            if (!ok) numeric = int(std::lround(config->getDouble(it.key(), 0.0)));
-            numeric %= 6;
-            if (numeric < 0) numeric += 6;
-            stored = QLatin1String(names[numeric]);
-        }
         const int index = it.value()->findData(stored);
         if (index >= 0) it.value()->setCurrentIndex(index);
     }
@@ -127,7 +125,7 @@ void FxManagerFilterWidget::setConfiguration(const KisPropertiesConfigurationSP 
         m_boxes.value(spec.key)->setValue(config->getDouble(spec.key, fallback));
     }
     for (auto it = m_toggles.cbegin(); it != m_toggles.cend(); ++it) {
-        const bool fallback = (m_id == QLatin1String("tfm_halation")) ? true : false;
+        const bool fallback = m_id == QLatin1String("tfm_halation");
         it.value()->setChecked(config->getBool(it.key(), fallback));
     }
     for (auto it = m_colors.cbegin(); it != m_colors.cend(); ++it) {

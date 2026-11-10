@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <QImage>
 #include <filter/kis_filter_category_ids.h>
 #include <filter/kis_filter_configuration.h>
@@ -62,105 +63,10 @@ QRgb sampleBilinear(const QImage &image, double x, double y)
     };
     return qRgba(mix(0), mix(1), mix(2), mix(3));
 }
-}
-
-KisFilterLensDistortion::KisFilterLensDistortion()
-    : KisFilter(id(), FiltersCategoryArtisticId, i18n("&Lens Distortion..."))
+template <typename Read, typename Write>
+void renderLens(const QRect &frame,const QRect &outputRect,bool horizontal,double distortion,
+                double dispersion,bool fit,bool jitter,KoUpdater *updater,Read read,Write write)
 {
-    setSupportsAdjustmentLayers(true);
-    setColorSpaceIndependence(FULLY_INDEPENDENT);
-    // A radial mapper samples arbitrary pixels from the whole image. Processing
-    // isolated Krita patches would create one lens per patch (a tiled result).
-    setSupportsThreading(false);
-}
-KisFilterConfigurationSP KisFilterLensDistortion::defaultConfiguration(KisResourcesInterfaceSP r) const
-{
-    auto configuration = factoryConfiguration(r);
-    configuration->setProperty("mode", "radial");
-    configuration->setProperty("distortion", 0.0);
-    configuration->setProperty("dispersion", 0.0);
-    configuration->setProperty("jitter", false);
-    configuration->setProperty("fit", false);
-    fxmanager::applyFilterDefaults(id().id(), configuration); return configuration;
-}
-KisConfigWidget *KisFilterLensDistortion::createConfigurationWidget(QWidget *parent,
-                                                                     const KisPaintDeviceSP,
-                                                                     bool) const
-{
-    return new LensDistortionConfigurationWidget(id().id(), parent);
-}
-
-bool KisFilterLensDistortion::needsTransparentPixels(const KisFilterConfigurationSP, const KoColorSpace *) const
-{
-    return true;
-}
-
-QRect KisFilterLensDistortion::neededRect(const QRect &rect,
-                                          const KisFilterConfigurationSP,
-                                          int) const
-{
-    // Lens Distortion samples outside the output patch. Request a bounded
-    // halo around it so patch edges do not become transparent seams, while
-    // avoiding the unbounded rectangle that can explode group projections.
-    const int marginX = std::max(1, rect.width());
-    const int marginY = std::max(1, rect.height());
-    return rect.adjusted(-marginX, -marginY, marginX, marginY);
-}
-
-void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
-                                          const QRect &rect,
-                                          const KisFilterConfigurationSP configuration,
-                                          KoUpdater *updater) const
-{
-    if (rect.isEmpty() || !device) return;
-
-    const QString mode = configuration ? configuration->getString("mode", "radial") : QStringLiteral("radial");
-    const double distortion = std::clamp(
-        configuration ? configuration->getDouble("distortion", 0.0) : 0.0,
-        kMinimumDistortion,
-        1.0);
-    const double dispersion = std::clamp(
-        configuration ? configuration->getDouble("dispersion", 0.0) : 0.0,
-        0.0,
-        1.0);
-    const bool horizontal = mode == QStringLiteral("horizontal");
-    const bool fit = configuration && configuration->getBool("fit", false);
-    const bool jitter = configuration && configuration->getBool("jitter", false);
-    if ((!horizontal && std::abs(distortion) < 1e-9 && dispersion < 1e-9)
-        || (horizontal && dispersion < 1e-9)) return;
-
-    QRect frame = device->defaultBounds()->bounds();
-    if (frame.isEmpty()) frame = device->extent();
-    if (frame.isEmpty()) frame = rect;
-    const QRect outputRect = rect.intersected(frame);
-    if (outputRect.isEmpty()) return;
-
-    // Filter layers call processImpl once per region and write each result back
-    // into the device, so a later region would sample the pixels an earlier
-    // region already distorted and bend the frame more than once. Read the
-    // transaction baseline instead of the live device.
-    KisPaintDeviceSP pristine = new KisPaintDevice(device->colorSpace());
-    pristine->prepareClone(device);
-    KisPainter::copyAreaOptimizedOldData(frame.topLeft(), device, pristine, frame);
-    const QImage source = fxmanager::readImage(pristine, frame);
-    if (source.isNull()) return;
-    if (fxmanager::gpuRequested(id().id())) {
-        QImage gpuOutput;
-        QString reason;
-        QString gpuDevice;
-        if (tfm_lens_gpu::render(source, frame, outputRect, horizontal, distortion,
-                                 dispersion, fit, jitter, gpuOutput, reason, gpuDevice)) {
-            fxmanager::writeImage(device, gpuOutput, outputRect);
-            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
-            if (updater) updater->setProgress(100);
-            return;
-        }
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
-    } else {
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
-    }
-    QImage output(outputRect.size(), QImage::Format_ARGB32);
-
     const double width = frame.width();
     const double height = frame.height();
     const double centerX = width * 0.5;
@@ -187,23 +93,23 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
     // local to the requested rect and write only that rect back. Rows are
     // independent (source is read-only, each worker owns whole output rows),
     // so the band pass can run in parallel without touching host tiling.
-    fxmanager::parallelRows(output.height(), [&](int y0, int y1) {
+    fxmanager::parallelRows(outputRect.height(), [&](int y0, int y1) {
     for (int y = y0; y < y1; ++y) {
-        QRgb *row = reinterpret_cast<QRgb *>(output.scanLine(y));
+        if(updater && updater->interrupted()) return;
         const double imageY = outputRect.y() - frame.y() + y + 0.5;
-        for (int x = 0; x < output.width(); ++x) {
+        for (int x = 0; x < outputRect.width(); ++x) {
             const double imageX = outputRect.x() - frame.x() + x + 0.5;
 
             if (horizontal) {
                 // execute_horizontal_distortion_cpu(): normalized sample offsets.
                 const double normalizedX = imageX / width;
                 const double normalizedY = imageY / height;
-                const QRgb red = sampleBilinear(source, (normalizedX + horizontalDispersion) * width - 0.5, imageY - 0.5);
-                const QRgb green = sampleBilinear(source, imageX - 0.5, imageY - 0.5);
-                const QRgb blue = sampleBilinear(source, (normalizedX - horizontalDispersion) * width - 0.5, imageY - 0.5);
-                const int alpha = int(std::lround((qAlpha(red) + qAlpha(green) + qAlpha(blue)) / 3.0));
+                const auto red = read((normalizedX + horizontalDispersion) * width - 0.5, imageY - 0.5);
+                const auto green = read(imageX - 0.5, imageY - 0.5);
+                const auto blue = read((normalizedX - horizontalDispersion) * width - 0.5, imageY - 0.5);
+                const double alpha = (red[3]+green[3]+blue[3])/3.0;
                 Q_UNUSED(normalizedY);
-                row[x] = qRgba(qRed(red), qGreen(green), qBlue(blue), alpha);
+                write(x,y,{red[0],green[1],blue[2],alpha});
                 continue;
             }
 
@@ -215,7 +121,7 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
             if (chromatic[0] * distanceSquared > 1.0
                 || chromatic[1] * distanceSquared > 1.0
                 || chromatic[2] * distanceSquared > 1.0) {
-                row[x] = qRgba(0, 0, 0, 0);
+                write(x,y,{0,0,0,0});
                 continue;
             }
 
@@ -249,18 +155,18 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
                 const double amount = chromatic[end] - chromatic[start];
                 for (int i = 0; i < steps; ++i) {
                     const double increment = (i + (jitter
-                        ? (fxmanager::deterministicNoise(x, y, start * steps + i, 71) + 1.0) * 0.5
+                        ? (fxmanager::deterministicNoise(int(imageX-0.5), int(imageY-0.5), start * steps + i, 71) + 1.0) * 0.5
                         : 0.5)) / steps;
                     const double value = chromatic[start] + increment * amount;
                     const double channelScale = 1.0 / (1.0 + std::sqrt(std::max(0.0, 1.0 - value * distanceSquared)));
                     const double sampleX = (uvx * channelScale + 0.5) * width - 0.5;
                     const double sampleY = (uvy * channelScale + 0.5) * height - 0.5;
-                    const QRgb pixel = sampleBilinear(source, sampleX, sampleY);
-                    const int startValue = start == 0 ? qRed(pixel) : qGreen(pixel);
-                    const int endValue = end == 1 ? qGreen(pixel) : qBlue(pixel);
+                    const auto pixel = read(sampleX, sampleY);
+                    const double startValue = pixel[start];
+                    const double endValue = pixel[end];
                     accumulated[start] += (1.0 - increment) * startValue;
                     accumulated[end] += increment * endValue;
-                    accumulated[3] += qAlpha(pixel);
+                    accumulated[3] += pixel[3];
                 }
             };
             integrate(0, 1, stepsRed);
@@ -270,13 +176,151 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
             accumulated[1] *= 2.0 / stepsGreen;
             accumulated[2] *= 2.0 / stepsBlue;
             accumulated[3] /= stepsGreen;
-            row[x] = qRgba(std::clamp(int(std::lround(accumulated[0])), 0, 255),
-                           std::clamp(int(std::lround(accumulated[1])), 0, 255),
-                           std::clamp(int(std::lround(accumulated[2])), 0, 255),
-                           std::clamp(int(std::lround(accumulated[3])), 0, 255));
+            write(x,y,{accumulated[0],accumulated[1],accumulated[2],accumulated[3]});
         }
     }
     });
+}
+
+}
+
+KisFilterLensDistortion::KisFilterLensDistortion()
+    : KisFilter(id(), FiltersCategoryArtisticId, i18n("&Lens Distortion..."))
+{
+    setSupportsAdjustmentLayers(true);
+    setColorSpaceIndependence(FULLY_INDEPENDENT);
+    // A radial mapper samples arbitrary pixels from the whole image. Processing
+    // isolated Krita patches would create one lens per patch (a tiled result).
+    setSupportsThreading(false);
+}
+KisFilterConfigurationSP KisFilterLensDistortion::defaultConfiguration(KisResourcesInterfaceSP r) const
+{
+    auto configuration = factoryConfiguration(r);
+
+    fxmanager::applyBuiltinDefaults(id().id(), configuration);
+    fxmanager::applyFilterDefaults(id().id(), configuration); return configuration;
+}
+KisConfigWidget *KisFilterLensDistortion::createConfigurationWidget(QWidget *parent,
+                                                                     const KisPaintDeviceSP,
+                                                                     bool) const
+{
+    return new LensDistortionConfigurationWidget(id().id(), parent);
+}
+
+bool KisFilterLensDistortion::needsTransparentPixels(const KisFilterConfigurationSP, const KoColorSpace *) const
+{
+    return true;
+}
+
+QRect KisFilterLensDistortion::neededRect(const QRect &rect,
+                                          const KisFilterConfigurationSP,
+                                          int) const
+{
+    // Lens Distortion samples outside the output patch. Request a bounded
+    // halo around it so patch edges do not become transparent seams, while
+    // avoiding the unbounded rectangle that can explode group projections.
+    const int marginX = std::max(1, rect.width());
+    const int marginY = std::max(1, rect.height());
+    return rect.adjusted(-marginX, -marginY, marginX, marginY);
+}
+
+void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
+                                          const QRect &rect,
+                                          const KisFilterConfigurationSP configuration,
+                                          KoUpdater *updater) const
+{
+    if (rect.isEmpty() || !device || (updater && updater->interrupted())) return;
+
+    const QString mode = configuration ? configuration->getString("mode", "radial") : QStringLiteral("radial");
+    const double distortion = std::clamp(
+        configuration ? configuration->getDouble("distortion", 0.0) : 0.0,
+        kMinimumDistortion,
+        1.0);
+    const double dispersion = std::clamp(
+        configuration ? configuration->getDouble("dispersion", 0.0) : 0.0,
+        0.0,
+        1.0);
+    const bool horizontal = mode == QStringLiteral("horizontal");
+    const bool fit = configuration && configuration->getBool("fit", false);
+    const bool jitter = configuration && configuration->getBool("jitter", false);
+    if ((!horizontal && std::abs(distortion) < 1e-9 && dispersion < 1e-9)
+        || (horizontal && dispersion < 1e-9)) return;
+
+    QRect frame = device->defaultBounds()->bounds();
+    if (frame.isEmpty()) frame = device->extent();
+    if (frame.isEmpty()) frame = rect;
+    const QRect outputRect = rect.intersected(frame);
+    if (outputRect.isEmpty()) return;
+
+    // Filter layers call processImpl once per region and write each result back
+    // into the device, so a later region would sample the pixels an earlier
+    // region already distorted and bend the frame more than once. Read the
+    // transaction baseline instead of the live device.
+    KisPaintDeviceSP pristine = new KisPaintDevice(device->colorSpace());
+    pristine->prepareClone(device);
+    KisPainter::copyAreaOptimizedOldData(frame.topLeft(), device, pristine, frame);
+    if(fxmanager::requiresFloatProcessing(device)) {
+        const auto source=fxmanager::readEncodedImage(pristine,frame);
+        if(source.isNull()) return;
+        fxmanager::EncodedRgbaImage output{outputRect.width(),outputRect.height(),QVector<float>(outputRect.width()*outputRect.height()*4)};
+        const float *src=source.pixels.constData();
+        float *dst=output.pixels.data();
+        renderLens(frame,outputRect,horizontal,distortion,dispersion,fit,jitter,updater,
+            [&](double x,double y) {
+                std::array<double,4> value{};
+                if(x<-.5 || y<-.5 || x>source.width-.5 || y>source.height-.5) return value;
+                const double sx=std::clamp(x,0.0,double(source.width-1)),sy=std::clamp(y,0.0,double(source.height-1));
+                const int x0=int(sx),y0=int(sy),x1=std::min(x0+1,source.width-1),y1=std::min(y0+1,source.height-1);
+                const double fx=sx-x0,fy=sy-y0;
+                for(int c=0;c<4;++c) {
+                    const double top=(1-fx)*src[4*(y0*source.width+x0)+c]+fx*src[4*(y0*source.width+x1)+c];
+                    const double bottom=(1-fx)*src[4*(y1*source.width+x0)+c]+fx*src[4*(y1*source.width+x1)+c];
+                    value[c]=(1-fy)*top+fy*bottom;
+                }
+                return value;
+            },[&](int x,int y,std::array<double,4> value) {
+                for(int c=0;c<4;++c) dst[4*(y*output.width+x)+c]=float(value[c]);
+            });
+        if(updater && updater->interrupted()) return;
+        const bool written=fxmanager::writeEncodedImage(device,output,outputRect);
+        fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),written
+            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        if(written && updater) updater->setProgress(100);
+        return;
+    }
+    const QImage source = fxmanager::readImage(pristine, frame);
+    if (source.isNull()) return;
+    if (fxmanager::gpuRequested(id().id())) {
+        QImage gpuOutput;
+        QString reason;
+        QString gpuDevice;
+        if (tfm_lens_gpu::render(source, frame, outputRect, horizontal, distortion,
+                                 dispersion, fit, jitter, gpuOutput, reason, gpuDevice, [updater] { return updater && updater->interrupted(); })) {
+            if(updater && updater->interrupted()) return;
+            fxmanager::writeImage(device, gpuOutput, outputRect);
+            fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+            if (updater) updater->setProgress(100);
+            return;
+        }
+        if(updater && updater->interrupted()) return;
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+    } else {
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+    }
+    QImage output(outputRect.size(), QImage::Format_ARGB32);
+
+    uchar *outputBits=output.bits();
+    const int stride=output.bytesPerLine();
+    renderLens(frame,outputRect,horizontal,distortion,dispersion,fit,jitter,updater,
+        [&](double x,double y) {
+            const auto p=sampleBilinear(source,x,y);
+            return std::array<double,4>{double(qRed(p)),double(qGreen(p)),double(qBlue(p)),double(qAlpha(p))};
+        },[&](int x,int y,std::array<double,4> value) {
+            auto channel=[&](int c) { return std::clamp(int(std::lround(value[c])),0,255); };
+            reinterpret_cast<QRgb*>(outputBits+y*stride)[x]=qRgba(channel(0),channel(1),channel(2),channel(3));
+        });
+    if(updater && updater->interrupted()) return;
 
     fxmanager::writeImage(device, output, outputRect);
     if (updater) updater->setProgress(100);

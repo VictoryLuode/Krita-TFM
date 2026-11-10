@@ -1,3 +1,4 @@
+from i18n import tr
 from types import SimpleNamespace
 from qt_test_binding import Qt
 from qt_test_binding import QImage
@@ -19,7 +20,7 @@ def test_preview_context_import_uses_captured_native_target_without_clipboard_or
         p.drop_router = SimpleNamespace(current_import_target=lambda: target,
                                       import_file=lambda path, mode, destination: calls.append((path, mode, destination)))
         menu = p.build_preview_menu()
-        assert [a.text() for a in menu.actions()] == ['插入为图层', '插入为参考图']
+        assert [a.text() for a in menu.actions()] == [tr('Insert as layer', '插入为图层'), tr('Insert as reference', '插入为参考图')]
         assert all(a.isEnabled() for a in menu.actions())
         menu.actions()[1].trigger()
         assert len(calls) == 1 and calls[0][1:] == ('reference', target)

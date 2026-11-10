@@ -1,9 +1,13 @@
 #pragma once
 
+#include <functional>
+
 #include <QImage>
 #include <QRect>
 #include <QString>
 #include <QVector>
+
+namespace fxmanager { struct EncodedRgbaImage; }
 
 namespace tfm_flare_gpu {
 
@@ -40,10 +44,11 @@ struct Parameters {
 // large highlight does not fill every slot. Shared by all three flare filters
 // so the GPU and CPU paths agree on where the light comes from.
 QVector<FlareSource> detectSources(const QImage &source, double threshold, int maxSources);
+QVector<FlareSource> detectSources(const fxmanager::EncodedRgbaImage &source, double threshold, int maxSources);
 
 // Processes the whole srcRect and returns an image of the same size.
 // Returns false without modifying output when Vulkan is unavailable.
 bool render(const QImage &source, const Parameters &parameters,
-            QImage &output, QString &reason, QString &deviceName);
+            QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_flare_gpu

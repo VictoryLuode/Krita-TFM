@@ -6,7 +6,10 @@ def test_pinterest_never_enables_a_browser_window_button():
     panel=fixture.MODULE.ImageSearchDocker()
     panel.source.setCurrentIndex(1)
     panel.status.setText('失败：Provider requires verification or login')
-    assert not panel.build_status_menu().actions()
+    menu = panel.build_status_menu()
+    assert len(menu.actions()) == 1  # Profile reset is independent of provider.
+    assert not panel.verify_button.isEnabled()
+    menu.deleteLater()
     import time
     from qt_test_binding import QTest
     panel.run_job(lambda job: None, lambda result: None)
@@ -14,7 +17,10 @@ def test_pinterest_never_enables_a_browser_window_button():
     while panel.busy and time.monotonic()<deadline:
         QTest.qWait(10)
     assert not panel.busy
-    assert not panel.build_status_menu().actions()
+    menu = panel.build_status_menu()
+    assert len(menu.actions()) == 1
+    assert not panel.verify_button.isEnabled()
+    menu.deleteLater()
     panel.source.setCurrentIndex(0)
     menu = panel.build_status_menu()
     assert menu.actions()[0].isEnabled()

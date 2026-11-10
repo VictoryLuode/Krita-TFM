@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <list>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -159,6 +160,7 @@ struct FxManagerVulkan::Impl
     {
         if (device) {
             if (deviceWaitIdle) deviceWaitIdle(device);
+            clearCaches();
             if (commandPool && destroyCommandPool) destroyCommandPool(device, commandPool, nullptr);
             if (destroyDevice) destroyDevice(device, nullptr);
             device = nullptr;
@@ -262,6 +264,45 @@ struct FxManagerVulkan::Impl
     }
 
     struct Buffer { VkBuffer handle = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; VkDeviceSize size = 0; };
+
+    Buffer inputBuffer, outputBuffer, parameterBuffer;
+    struct CachedPipeline {
+        std::vector<std::uint32_t> words;
+        std::uint32_t inputBinding, outputBinding, parametersBinding;
+        bool hasParameters;
+        VkShaderModule shader = VK_NULL_HANDLE;
+        VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+    };
+    std::list<CachedPipeline> pipelines;
+
+    void destroyPipelineObject(CachedPipeline &p)
+    {
+        if (p.pipeline) destroyPipeline(device, p.pipeline, nullptr);
+        if (p.layout) destroyPipelineLayout(device, p.layout, nullptr);
+        if (p.setLayout) destroyDescriptorSetLayout(device, p.setLayout, nullptr);
+        if (p.shader) destroyShaderModule(device, p.shader, nullptr);
+    }
+
+    void clearCaches()
+    {
+        for (auto &p : pipelines) destroyPipelineObject(p);
+        pipelines.clear();
+        destroyBufferObject(inputBuffer);
+        destroyBufferObject(outputBuffer);
+        destroyBufferObject(parameterBuffer);
+    }
+
+    bool reserveBuffer(std::size_t size, Buffer &buffer, std::string &error)
+    {
+        const std::size_t needed = std::max<std::size_t>(4, size);
+        if (buffer.handle && buffer.size >= needed) return true;
+        const std::size_t capacity = std::min<std::size_t>(128ULL*1024*1024,
+            std::max<std::size_t>(needed, buffer.size*2));
+        destroyBufferObject(buffer);
+        return makeBuffer(capacity, buffer, error);
+    }
 
     void destroyBufferObject(Buffer &b)
     {
@@ -452,11 +493,12 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
         return fail("Descriptor binding numbers must be distinct");
 
     using Buffer = Impl::Buffer;
-    Buffer input, output, parameters;
+    Buffer &input = m_impl->inputBuffer, &output = m_impl->outputBuffer, &parameters = m_impl->parameterBuffer;
     VkShaderModule shader = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    bool ownsPipeline = true;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkCommandBuffer command = nullptr;
     VkFence fence = VK_NULL_HANDLE;
@@ -465,46 +507,73 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
         if (fence) m_impl->destroyFence(m_impl->device, fence, nullptr);
         if (command) m_impl->freeCommandBuffers(m_impl->device, m_impl->commandPool, 1, &command);
         if (descriptorPool) m_impl->destroyDescriptorPool(m_impl->device, descriptorPool, nullptr);
-        if (pipeline) m_impl->destroyPipeline(m_impl->device, pipeline, nullptr);
-        if (pipelineLayout) m_impl->destroyPipelineLayout(m_impl->device, pipelineLayout, nullptr);
-        if (setLayout) m_impl->destroyDescriptorSetLayout(m_impl->device, setLayout, nullptr);
-        if (shader) m_impl->destroyShaderModule(m_impl->device, shader, nullptr);
-        m_impl->destroyBufferObject(parameters);
-        m_impl->destroyBufferObject(output);
-        m_impl->destroyBufferObject(input);
+        if (ownsPipeline) {
+            if (pipeline) m_impl->destroyPipeline(m_impl->device, pipeline, nullptr);
+            if (pipelineLayout) m_impl->destroyPipelineLayout(m_impl->device, pipelineLayout, nullptr);
+            if (setLayout) m_impl->destroyDescriptorSetLayout(m_impl->device, setLayout, nullptr);
+            if (shader) m_impl->destroyShaderModule(m_impl->device, shader, nullptr);
+        }
     };
     auto failCleanup = [&](const std::string &message) { cleanup(); return fail(message); };
 
-    if (!m_impl->makeBuffer(inputSize, input, error) || !m_impl->makeBuffer(outputSize, output, error)
-        || (parametersSize && !m_impl->makeBuffer(parametersSize, parameters, error))) return failCleanup(error);
+    if (!m_impl->reserveBuffer(inputSize, input, error) || !m_impl->reserveBuffer(outputSize, output, error)
+        || (parametersSize && !m_impl->reserveBuffer(parametersSize, parameters, error))) return failCleanup(error);
     if (!m_impl->writeBuffer(input, inputData, inputSize, error)
         || (parametersSize && !m_impl->writeBuffer(parameters, parametersData, parametersSize, error))) return failCleanup(error);
 
-    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, spirv.size() * sizeof(std::uint32_t), spirv.data()};
-    VkResult r = m_impl->createShaderModule(m_impl->device, &shaderInfo, nullptr, &shader);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateShaderModule", r));
-
-    VkDescriptorSetLayoutBinding bindings[3]{};
-    std::uint32_t bindingCount = 0;
-    auto addBinding = [&](std::uint32_t binding) { bindings[bindingCount++] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; };
-    addBinding(config.inputBinding);
-    addBinding(config.outputBinding);
-    if (parametersSize) {
-        if (config.parametersBinding == UINT32_MAX) return failCleanup("parametersBinding must be set when parametersData is provided");
-        addBinding(config.parametersBinding);
+    const std::uint32_t bindingCount = parametersSize ? 3 : 2;
+    if (parametersSize && config.parametersBinding == UINT32_MAX)
+        return failCleanup("parametersBinding must be set when parametersData is provided");
+    for (auto it=m_impl->pipelines.begin(); it!=m_impl->pipelines.end(); ++it) {
+        if (it->words == spirv && it->inputBinding == config.inputBinding
+            && it->outputBinding == config.outputBinding && it->parametersBinding == config.parametersBinding
+            && it->hasParameters == bool(parametersSize)) {
+            shader=it->shader; setLayout=it->setLayout; pipelineLayout=it->layout; pipeline=it->pipeline;
+            ownsPipeline=false;
+            m_impl->pipelines.splice(m_impl->pipelines.end(),m_impl->pipelines,it);
+            break;
+        }
     }
-    std::sort(bindings, bindings + bindingCount, [](const auto &a, const auto &b) { return a.binding < b.binding; });
-    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, bindingCount, bindings};
-    r = m_impl->createDescriptorSetLayout(m_impl->device, &layoutInfo, nullptr, &setLayout);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateDescriptorSetLayout", r));
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &setLayout, 0, nullptr};
-    r = m_impl->createPipelineLayout(m_impl->device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreatePipelineLayout", r));
-    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, shader, "main", nullptr};
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, stage, pipelineLayout, 0, -1};
-    r = m_impl->createComputePipelines(m_impl->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-    if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateComputePipelines", r));
+    VkResult r = VK_SUCCESS;
+    if (!pipeline) {
+        VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, spirv.size() * sizeof(std::uint32_t), spirv.data()};
+        r = m_impl->createShaderModule(m_impl->device, &shaderInfo, nullptr, &shader);
+        if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateShaderModule", r));
+    
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        std::uint32_t usedBindings = 0;
+        auto addBinding = [&](std::uint32_t binding) { bindings[usedBindings++] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; };
+        addBinding(config.inputBinding);
+        addBinding(config.outputBinding);
+        if (parametersSize) {
+            if (config.parametersBinding == UINT32_MAX) return failCleanup("parametersBinding must be set when parametersData is provided");
+            addBinding(config.parametersBinding);
+        }
+        std::sort(bindings, bindings + usedBindings, [](const auto &a, const auto &b) { return a.binding < b.binding; });
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, usedBindings, bindings};
+        r = m_impl->createDescriptorSetLayout(m_impl->device, &layoutInfo, nullptr, &setLayout);
+        if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateDescriptorSetLayout", r));
+    
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &setLayout, 0, nullptr};
+        r = m_impl->createPipelineLayout(m_impl->device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+        if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreatePipelineLayout", r));
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, shader, "main", nullptr};
+        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, stage, pipelineLayout, 0, -1};
+        r = m_impl->createComputePipelines(m_impl->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+        if (r != VK_SUCCESS) return failCleanup(resultMessage("vkCreateComputePipelines", r));
+    
+        // Bound cached shader code too; unusually large caller modules remain
+        // transient. Registered shaders all fit this cache.
+        if (spirv.size()*sizeof(std::uint32_t) <= 1024*1024) {
+            m_impl->pipelines.push_back({spirv,config.inputBinding,config.outputBinding,
+                config.parametersBinding,bool(parametersSize),shader,setLayout,pipelineLayout,pipeline});
+            ownsPipeline=false;
+            while (m_impl->pipelines.size()>16) {
+                m_impl->destroyPipelineObject(m_impl->pipelines.front());
+                m_impl->pipelines.pop_front();
+            }
+        }
+    }
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bindingCount};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 1, &poolSize};
@@ -518,14 +587,14 @@ bool FxManagerVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
     VkDescriptorBufferInfo bufferInfos[3]{};
     VkWriteDescriptorSet writes[3]{};
     std::uint32_t writeCount = 0;
-    auto addWrite = [&](std::uint32_t binding, const Buffer &b) {
-        bufferInfos[writeCount] = {b.handle, 0, b.size};
+    auto addWrite = [&](std::uint32_t binding, const Buffer &b, std::size_t logicalSize) {
+        bufferInfos[writeCount] = {b.handle, 0, std::max<std::size_t>(4,logicalSize)};
         writes[writeCount] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet, binding, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufferInfos[writeCount], nullptr};
         ++writeCount;
     };
-    addWrite(config.inputBinding, input);
-    addWrite(config.outputBinding, output);
-    if (parametersSize) addWrite(config.parametersBinding, parameters);
+    addWrite(config.inputBinding, input, inputSize);
+    addWrite(config.outputBinding, output, outputSize);
+    if (parametersSize) addWrite(config.parametersBinding, parameters, parametersSize);
     m_impl->updateDescriptorSets(m_impl->device, writeCount, writes, 0, nullptr);
 
     VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, m_impl->commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};

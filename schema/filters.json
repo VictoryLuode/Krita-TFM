@@ -1,0 +1,1449 @@
+{
+  "schema_version": 1,
+  "compatibility_notes": [
+    "Public IDs, labels, defaults and ranges match the quality baseline.",
+    "Halation quality accepts fractional legacy defaults; native factory values of quality, Kuwahara size/iterations and flare sources remain double.",
+    "Hidden fields are not exposed in the Python defaults editor."
+  ],
+  "filters": [
+    {
+      "id": "tfm_bloom",
+      "label": "Bloom",
+      "description": "Soft highlight glow around bright areas.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "threshold",
+          "label": "Threshold",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.7,
+          "value_type": "number"
+        },
+        {
+          "key": "radius",
+          "label": "Radius",
+          "min": 1.0,
+          "max": 64.0,
+          "default": 12.0,
+          "value_type": "number"
+        },
+        {
+          "key": "strength",
+          "label": "Strength",
+          "min": 0.0,
+          "max": 2.0,
+          "default": 0.65,
+          "value_type": "number"
+        },
+        {
+          "key": "diffusion",
+          "label": "Diffusion",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "softness",
+          "label": "Softness",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_bloom"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_filmgrain",
+      "label": "Film Grain",
+      "description": "Procedural monochrome grain for film texture.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "preset",
+          "label": "Preset",
+          "default": "super_8",
+          "options": [
+            [
+              "8mm_caffenol",
+              "8 mm Caffenol"
+            ],
+            [
+              "8mm_home_movie",
+              "8 mm Home Movie"
+            ],
+            [
+              "super_8",
+              "Super 8 mm"
+            ],
+            [
+              "16mm_broadcast",
+              "16 mm Broadcast"
+            ],
+            [
+              "16mm_indie_cinema",
+              "16 mm Indie Cinema"
+            ],
+            [
+              "35mm_portra_400",
+              "35 mm Portra 400"
+            ],
+            [
+              "super_35",
+              "Super 35 mm"
+            ],
+            [
+              "70mm_cinema",
+              "70 mm Cinema"
+            ],
+            [
+              "custom",
+              "Custom"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "amount",
+          "label": "Amount",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.18,
+          "value_type": "number"
+        },
+        {
+          "key": "size",
+          "label": "Size",
+          "min": 0.5,
+          "max": 8.0,
+          "default": 2.0,
+          "value_type": "number"
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "min": 0,
+          "max": 999,
+          "default": 17,
+          "value_type": "integer",
+          "factory_type": "integer"
+        },
+        {
+          "key": "monochrome",
+          "label": "Monochrome",
+          "default": true,
+          "value_type": "bool"
+        }
+      ],
+      "aliases": [
+        "fxmanager_filmgrain"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_lens_distortion",
+      "label": "Lens Distortion",
+      "description": "Single-centre radial distortion or horizontal chromatic dispersion.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "mode",
+          "label": "Mode",
+          "default": "radial",
+          "options": [
+            "radial",
+            "horizontal"
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "distortion",
+          "label": "Distortion",
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "dispersion",
+          "label": "Dispersion",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "jitter",
+          "label": "Jitter",
+          "default": false,
+          "value_type": "bool"
+        },
+        {
+          "key": "fit",
+          "label": "Fit",
+          "default": false,
+          "value_type": "bool"
+        }
+      ],
+      "aliases": [
+        "fxmanager_lens_distortion"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_vignette",
+      "label": "Vignette",
+      "description": "Blender-style vignette with factor, feather, shape and transform controls.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "factor",
+          "label": "Factor",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "feather",
+          "label": "Feather",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.4,
+          "value_type": "number"
+        },
+        {
+          "key": "corner_roundness",
+          "label": "Corner Roundness",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "scale_x",
+          "label": "Scale X",
+          "min": 0.0001,
+          "max": 4.0,
+          "default": 0.8,
+          "value_type": "number"
+        },
+        {
+          "key": "scale_y",
+          "label": "Scale Y",
+          "min": 0.0001,
+          "max": 4.0,
+          "default": 0.8,
+          "value_type": "number"
+        },
+        {
+          "key": "offset_x",
+          "label": "Offset X",
+          "min": -2.0,
+          "max": 2.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "offset_y",
+          "label": "Offset Y",
+          "min": -2.0,
+          "max": 2.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "angle",
+          "label": "Angle",
+          "min": -180.0,
+          "max": 180.0,
+          "default": 0.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_vignette"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_color_temperature",
+      "label": "Color Temperature",
+      "description": "Shift white balance by black-body temperature, with a green/magenta tint.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "temperature",
+          "label": "Temperature (K)",
+          "min": 2000.0,
+          "max": 12000.0,
+          "default": 6500.0,
+          "value_type": "number"
+        },
+        {
+          "key": "tint",
+          "label": "Tint (green/magenta)",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "blend",
+          "label": "Blend",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "preserve_luminance",
+          "label": "Preserve Luminance",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_color_temperature"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_vibrance",
+      "label": "Vibrance",
+      "description": "Raise muted colour before saturated colour, with skin and highlight protection.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "vibrance",
+          "label": "Vibrance",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 30.0,
+          "value_type": "number"
+        },
+        {
+          "key": "saturation",
+          "label": "Saturation",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "skin_protect",
+          "label": "Skin Protection",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "protect_highlights",
+          "label": "Protect Highlights",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "blend",
+          "label": "Blend",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_vibrance"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_kuwahara",
+      "label": "Kuwahara",
+      "description": "Edge-preserving paint filter. Each pixel takes the lowest-variance quadrant mean.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "size",
+          "label": "Size",
+          "type": "integer",
+          "min": 1,
+          "max": 12,
+          "default": 2,
+          "value_type": "integer",
+          "factory_type": "number"
+        },
+        {
+          "key": "iterations",
+          "label": "Iterations",
+          "type": "integer",
+          "min": 1,
+          "max": 4,
+          "default": 1,
+          "value_type": "integer",
+          "factory_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_kuwahara"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_halation",
+      "label": "Halation",
+      "description": "Film-style red glow gathered from highlights around bright edges.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "threshold",
+          "label": "Threshold",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.75,
+          "value_type": "number"
+        },
+        {
+          "key": "radius",
+          "label": "Radius",
+          "min": 1.0,
+          "max": 200.0,
+          "default": 24.0,
+          "value_type": "number"
+        },
+        {
+          "key": "intensity",
+          "label": "Intensity",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "tint",
+          "label": "Tint",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "blend",
+          "label": "Blend",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "quality",
+          "label": "Quality",
+          "type": "integer",
+          "min": 8,
+          "max": 64,
+          "default": 32,
+          "value_type": "integer",
+          "factory_type": "number",
+          "override_type": "number"
+        },
+        {
+          "key": "glow_mode",
+          "label": "Mode",
+          "default": "color",
+          "options": [
+            [
+              "color",
+              "Custom Color"
+            ],
+            [
+              "channels",
+              "Channel Mix"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "channel_r",
+          "label": "Red channel",
+          "default": true,
+          "value_type": "bool"
+        },
+        {
+          "key": "channel_g",
+          "label": "Green channel",
+          "default": true,
+          "value_type": "bool"
+        },
+        {
+          "key": "channel_b",
+          "label": "Blue channel",
+          "default": true,
+          "value_type": "bool"
+        },
+        {
+          "key": "glow_color",
+          "label": "Glow Color",
+          "default": "#ff6b38",
+          "value_type": "string",
+          "catalog": false,
+          "editable": false
+        }
+      ],
+      "aliases": [
+        "fxmanager_halation"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_lens_flare",
+      "label": "Lens Flare",
+      "description": "Ghost flare from the brightest highlights, with dispersion along the flare axis.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "threshold",
+          "label": "Threshold",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.85,
+          "value_type": "number"
+        },
+        {
+          "key": "length",
+          "label": "Spread",
+          "min": 0.01,
+          "max": 1.0,
+          "default": 0.35,
+          "value_type": "number"
+        },
+        {
+          "key": "decay",
+          "label": "Ghost Count",
+          "min": 1.0,
+          "max": 6.0,
+          "default": 3.0,
+          "value_type": "number"
+        },
+        {
+          "key": "intensity",
+          "label": "Intensity",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "tint",
+          "label": "Dispersion",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "sources",
+          "label": "Light Sources",
+          "type": "integer",
+          "min": 1,
+          "max": 8,
+          "default": 1,
+          "value_type": "integer",
+          "factory_type": "number"
+        },
+        {
+          "key": "blend",
+          "label": "Blend",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_lens_flare"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_anamorphic_flare",
+      "label": "Anamorphic Flare",
+      "description": "Horizontal anamorphic streak from the brightest highlights.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "threshold",
+          "label": "Threshold",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.85,
+          "value_type": "number"
+        },
+        {
+          "key": "length",
+          "label": "Streak Length",
+          "min": 0.01,
+          "max": 1.0,
+          "default": 0.45,
+          "value_type": "number"
+        },
+        {
+          "key": "decay",
+          "label": "Falloff",
+          "min": 0.05,
+          "max": 2.0,
+          "default": 0.35,
+          "value_type": "number"
+        },
+        {
+          "key": "aspect",
+          "label": "Thickness",
+          "min": 0.002,
+          "max": 0.2,
+          "default": 0.012,
+          "value_type": "number"
+        },
+        {
+          "key": "intensity",
+          "label": "Intensity",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "tint",
+          "label": "Tint",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "sources",
+          "label": "Light Sources",
+          "type": "integer",
+          "min": 1,
+          "max": 8,
+          "default": 2,
+          "value_type": "integer",
+          "factory_type": "number"
+        },
+        {
+          "key": "blend",
+          "label": "Blend",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_anamorphic_flare"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_clipboard_color_match",
+      "label": "Statistical Color Match",
+      "description": "Statistical Lab colour transfer from a clipboard image or file. The reference is analysed by the filter configuration; the target image is not modified until Krita applies the filter.",
+      "category": "Colors",
+      "settings": [
+        {
+          "key": "reference_source",
+          "label": "Source",
+          "type": "enum",
+          "default": "clipboard",
+          "options": [
+            [
+              "clipboard",
+              "Clipboard"
+            ],
+            [
+              "file",
+              "File"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "refresh_reference",
+          "label": "Refresh",
+          "type": "action",
+          "value_type": "action"
+        },
+        {
+          "key": "choose_reference_file",
+          "label": "Choose File…",
+          "type": "action",
+          "value_type": "action"
+        },
+        {
+          "key": "match_strength",
+          "label": "Match Strength",
+          "type": "number",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "luminance",
+          "label": "Luminance",
+          "type": "number",
+          "min": 0.0,
+          "max": 2.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "color_intensity",
+          "label": "Color Intensity",
+          "type": "number",
+          "min": 0.0,
+          "max": 2.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "fade",
+          "label": "Fade",
+          "type": "number",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "preserve_alpha",
+          "label": "Preserve Alpha",
+          "type": "bool",
+          "default": true,
+          "editable": false,
+          "value_type": "bool"
+        },
+        {
+          "key": "tone_distribution",
+          "label": "Tone Distribution",
+          "type": "slider",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "tonal_color",
+          "label": "Tonal Color",
+          "type": "slider",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "color_correlation",
+          "label": "Color Correlation",
+          "type": "slider",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "gain_limit",
+          "label": "Gain Limit",
+          "type": "number",
+          "min": 1.0,
+          "max": 8.0,
+          "default": 2.0,
+          "value_type": "number"
+        },
+        {
+          "key": "shift_limit",
+          "label": "Color Shift Limit",
+          "type": "number",
+          "min": 0.0,
+          "max": 100.0,
+          "default": 51.0,
+          "value_type": "number"
+        },
+        {
+          "key": "variance_floor",
+          "label": "Variance Floor",
+          "type": "number",
+          "min": 0.1,
+          "max": 10.0,
+          "default": 2.55,
+          "value_type": "number"
+        },
+        {
+          "key": "gamut_protection",
+          "label": "sRGB Gamut Protection",
+          "type": "bool",
+          "default": false,
+          "value_type": "bool"
+        },
+        {
+          "key": "reanalyze_target",
+          "label": "Re-analyze Target",
+          "type": "action",
+          "value_type": "action"
+        }
+      ],
+      "aliases": [
+        "fxmanager_clipboard_color_match"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_guided_color_match",
+      "label": "Guided Color Match",
+      "description": "Match a layer to a reference preview: histogram brightness, then the reference colour at that brightness.",
+      "category": "Colors",
+      "settings": [
+        {
+          "key": "align_brightness",
+          "label": "Align Brightness",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "match_strength",
+          "label": "Match Strength",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "chroma",
+          "label": "Chroma",
+          "min": 0.0,
+          "max": 2.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "keep_local",
+          "label": "Keep Source Sub Color",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "match_local",
+          "label": "Match Ref Sub Color",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "smoothness",
+          "label": "Smoothness",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.35,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_guided_color_match"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_background_removal",
+      "label": "Background Removal",
+      "description": "Remove image backgrounds with BiRefNet. Choose a model, compute backend, and foreground refinement mode in Krita's native filter configuration.",
+      "category": "Segmentation",
+      "settings": [
+        {
+          "key": "model",
+          "label": "Model",
+          "default": "BiRefNet-lite-F16.gguf",
+          "options": [
+            [
+              "BiRefNet-lite-F16.gguf",
+              "BiRefNet Lite"
+            ],
+            [
+              "BiRefNet-dynamic-F16.gguf",
+              "BiRefNet Dynamic"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "backend",
+          "label": "Backend",
+          "default": "cpu",
+          "options": [
+            "cpu",
+            "gpu"
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "foreground_mode",
+          "label": "Foreground",
+          "default": "refined_foreground",
+          "options": [
+            [
+              "fast_mask",
+              "Fast Mask"
+            ],
+            [
+              "refined_foreground",
+              "Refined Foreground"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "output_mode",
+          "label": "Output",
+          "default": "cutout",
+          "options": [
+            [
+              "cutout",
+              "Cutout"
+            ],
+            [
+              "grayscale_mask",
+              "Grayscale Mask"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "preserve_foreground",
+          "label": "Preserve Foreground",
+          "type": "integer",
+          "min": 0,
+          "max": 100,
+          "default": 0,
+          "value_type": "integer",
+          "factory_type": "integer"
+        },
+        {
+          "key": "mask_contrast",
+          "label": "Mask Contrast",
+          "type": "integer",
+          "min": -100,
+          "max": 100,
+          "default": 0,
+          "value_type": "integer",
+          "factory_type": "integer"
+        }
+      ],
+      "aliases": [
+        "fxmanager_background_removal"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [],
+        "model_backend": true
+      }
+    },
+    {
+      "id": "tfm_color_range_mask",
+      "label": "Color Range Mask",
+      "description": "Alpha-only mask driven by a selected grayscale or RGB channel range; it changes alpha while preserving RGB when enabled.",
+      "category": "Artistic",
+      "settings": [
+        {
+          "key": "channel",
+          "label": "Channel",
+          "default": "gray",
+          "options": [
+            [
+              "gray",
+              "Gray"
+            ],
+            [
+              "r",
+              "Red"
+            ],
+            [
+              "g",
+              "Green"
+            ],
+            [
+              "b",
+              "Blue"
+            ],
+            [
+              "hue",
+              "Hue"
+            ],
+            [
+              "saturation",
+              "Saturation"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "range_min",
+          "label": "Range Min",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "range_max",
+          "label": "Range Max",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "softness",
+          "label": "Softness",
+          "min": 0.0,
+          "max": 0.5,
+          "default": 0.05,
+          "value_type": "number"
+        },
+        {
+          "key": "invert",
+          "label": "Invert",
+          "default": false,
+          "value_type": "bool"
+        },
+        {
+          "key": "preserve_rgb",
+          "label": "Preserve RGB",
+          "default": true,
+          "editable": false,
+          "value_type": "bool"
+        }
+      ],
+      "aliases": [
+        "fxmanager_color_range_mask"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_motion_blur_circular",
+      "label": "Circular Motion Blur",
+      "description": "Rotational motion blur around a configurable focal center (GEGL motion-blur-circular).",
+      "category": "Blur",
+      "settings": [
+        {
+          "key": "center_x",
+          "label": "Center X",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "center_y",
+          "label": "Center Y",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "angle",
+          "label": "Angle",
+          "min": 0.0,
+          "max": 360.0,
+          "default": 20.0,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_motion_blur_circular"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_motion_blur_zoom",
+      "label": "Zoom Motion Blur",
+      "description": "Fixed document-coordinate radial sampling with bounded support; extreme factors may exceed the processing limit.",
+      "category": "Blur",
+      "settings": [
+        {
+          "key": "center_x",
+          "label": "Center X",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "center_y",
+          "label": "Center Y",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "factor",
+          "label": "Blurring Factor",
+          "min": -10.0,
+          "max": 1.0,
+          "default": 0.1,
+          "value_type": "number"
+        }
+      ],
+      "aliases": [
+        "fxmanager_motion_blur_zoom"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "model_backend": false
+      }
+    },
+    {
+      "id": "tfm_focus_blur",
+      "label": "Focus Blur",
+      "description": "Native CPU depth-of-field / tilt-shift blur. F32 filter masks may show small boundary differences; use a paint layer or adjustment layer for F32 documents.",
+      "category": "Blur",
+      "settings": [
+        {
+          "key": "blur_type",
+          "label": "Blur Type",
+          "default": "gaussian",
+          "options": [
+            [
+              "gaussian",
+              "Gaussian Blur"
+            ],
+            [
+              "lens",
+              "Lens Blur"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "blur_radius",
+          "label": "Blur Radius",
+          "min": 0.0,
+          "max": 200.0,
+          "default": 25.0,
+          "value_type": "number"
+        },
+        {
+          "key": "highlight_factor",
+          "label": "Highlight Factor",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "highlight_threshold_low",
+          "label": "Highlight Threshold (Low)",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "highlight_threshold_high",
+          "label": "Highlight Threshold (High)",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "value_type": "number"
+        },
+        {
+          "key": "shape",
+          "label": "Shape",
+          "default": "circle",
+          "options": [
+            [
+              "circle",
+              "Circle"
+            ],
+            [
+              "square",
+              "Square"
+            ],
+            [
+              "diamond",
+              "Diamond"
+            ],
+            [
+              "horizontal",
+              "Horizontal"
+            ],
+            [
+              "vertical",
+              "Vertical"
+            ]
+          ],
+          "value_type": "enum"
+        },
+        {
+          "key": "x",
+          "label": "Center X",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "y",
+          "label": "Center Y",
+          "min": -1.0,
+          "max": 2.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "radius",
+          "label": "Outer Radius",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.75,
+          "value_type": "number"
+        },
+        {
+          "key": "focus",
+          "label": "Sharpness (Focus)",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.25,
+          "value_type": "number"
+        },
+        {
+          "key": "midpoint",
+          "label": "Transition Midpoint",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.5,
+          "value_type": "number"
+        },
+        {
+          "key": "aspect_ratio",
+          "label": "Aspect Ratio",
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "rotation",
+          "label": "Rotation",
+          "min": -180.0,
+          "max": 180.0,
+          "default": 0.0,
+          "value_type": "number"
+        },
+        {
+          "key": "high_quality",
+          "label": "High Quality",
+          "default": false,
+          "value_type": "bool"
+        }
+      ],
+      "aliases": [
+        "fxmanager_focus_blur"
+      ],
+      "backends": {
+        "cpu": [
+          "U8",
+          "U16",
+          "F16",
+          "F32"
+        ],
+        "vulkan": [],
+        "model_backend": false
+      }
+    }
+  ]
+}

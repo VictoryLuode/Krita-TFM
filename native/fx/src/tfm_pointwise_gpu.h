@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <QImage>
 #include <QRect>
 #include <QString>
@@ -54,6 +56,6 @@ struct Parameters {
 // Processes an ARGB32 QImage without changing its alpha for Film Grain/Vignette.
 // Returns false without modifying output when Vulkan is unavailable or inputs are unsupported.
 bool render(const QImage &source, const Parameters &parameters,
-            QImage &output, QString &reason, QString &deviceName);
+            QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_pointwise_gpu

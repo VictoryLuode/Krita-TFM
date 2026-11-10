@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -15,6 +16,12 @@
 class FxManagerVulkan final
 {
 public:
+    enum class Status { Success, Cancelled, Timeout, ProcessExited, ProtocolError, Unavailable };
+    struct Result {
+        Status status = Status::Success;
+        std::string message;
+        explicit operator bool() const { return status == Status::Success; }
+    };
     struct Dispatch
     {
         // Descriptor set binding numbers for input, output, and optional
@@ -26,6 +33,9 @@ public:
         std::uint32_t groupsX = 1;
         std::uint32_t groupsY = 1;
         std::uint32_t groupsZ = 1;
+        // Polled while acquiring the service, starting the worker and doing I/O.
+        // The callback is only invoked synchronously on the calling thread.
+        std::function<bool()> cancelled;
     };
 
     FxManagerVulkan();
@@ -60,6 +70,14 @@ public:
                   const Dispatch &dispatch,
                   std::vector<std::uint8_t> &outputData,
                   std::string *error = nullptr);
+
+    // Plugin-side structured operation. The worker uses the bool device API
+    // above; no Vulkan driver is loaded by this cancellable IPC client.
+    Result dispatchResult(const std::vector<std::uint32_t> &spirv,
+                          const void *inputData, std::size_t inputSize,
+                          const void *parametersData, std::size_t parametersSize,
+                          std::size_t outputSize, const Dispatch &dispatch,
+                          std::vector<std::uint8_t> &outputData);
 
 private:
     void scheduleIdleShutdown();

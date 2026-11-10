@@ -23,7 +23,6 @@ set(KRITA_FXMANAGER_SOURCES
     fxmanager_kuwahara.cpp
     fxmanager_halation.cpp
     fxmanager_flare.cpp
-    fxmanager_light_effects.cpp
     fxmanager_filter_widget.cpp
     fxmanager_drag_spinbox.cpp
     fxmanager_color_range_mask.cpp
@@ -62,7 +61,6 @@ set(KRITA_FXMANAGER_SOURCES
     tfm_halation_gpu.h
     fxmanager_flare.h
     tfm_flare_gpu.h
-    fxmanager_light_effects.h
     fxmanager_filter_widget.h
     fxmanager_color_range_mask.h
     fxmanager_color_range_mask_widget.h
@@ -97,6 +95,18 @@ endfunction()
 fxmanager_add_inference()
 
 kis_add_library(kritatfm MODULE ${KRITA_FXMANAGER_SOURCES})
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+get_filename_component(TFM_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+add_custom_target(tfm_generated_files
+    COMMAND "${Python3_EXECUTABLE}" "${TFM_REPO_ROOT}/scripts/generate_filter_metadata.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../compile_shaders.py" --all
+    COMMAND "${Python3_EXECUTABLE}" "${TFM_REPO_ROOT}/scripts/generate_filter_metadata.py" --check
+    VERBATIM)
+add_dependencies(kritatfm tfm_generated_files)
+add_executable(tfm_vulkan_worker tfm_vulkan_worker.cpp fxmanager_vulkan_device.cpp)
+target_compile_features(tfm_vulkan_worker PRIVATE cxx_std_17)
+target_include_directories(tfm_vulkan_worker PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/vulkan-headers/include")
+install(TARGETS tfm_vulkan_worker RUNTIME DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
 target_link_libraries(kritatfm PRIVATE kritaui visioncpp)
 target_include_directories(visioncpp PUBLIC
     "${FXMANAGER_VISIONCPP_ROOT}/include"
