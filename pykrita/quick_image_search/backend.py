@@ -22,7 +22,7 @@ class Backend:
             if self._profile_dir is None:
                 raise ValueError('The search backend has not been configured')
             if self._google is None:
-                from .browser import Browser
+                from quick_image_search.browser import Browser
                 self._google = Browser(port=9236, headless=True)
             profile = Path(self._profile_dir)
             self._google.start(str(profile.with_name(profile.name + '-background')), proxy=self._proxy, headless=True)
@@ -60,7 +60,11 @@ class Backend:
         self._verification_open = True
         return result
 
-    def close(self):
+    def close(self, deadline=None):
         for driver in (self._google, self._pinterest):
             if driver is not None:
-                driver.close()
+                from quick_image_search.browser import Browser
+                if isinstance(driver, Browser):
+                    driver.close(deadline=deadline)
+                else:
+                    driver.close()

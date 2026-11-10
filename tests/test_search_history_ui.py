@@ -111,6 +111,10 @@ def test_favorite_cache_restores_thumbnails_without_any_network_and_refresh_fail
     p.favorite_action.trigger()
     record = p.search_store.favorites()[0]
     p.flush_favorite_snapshot()
+    # This case restores a completed cache. Shutdown may intentionally abandon
+    # regenerable queued cache writes, so finish fixture persistence first.
+    p._cache_executor.submit(lambda: None).result(5)
+    assert p.favorite_cache.load(p.favorite_key(record))['thumbnails']
     finish(p)
     backend = Backend()
     def forbidden(*args):

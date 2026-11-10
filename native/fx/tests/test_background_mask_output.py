@@ -9,7 +9,8 @@ class BackgroundMaskOutputTests(unittest.TestCase):
         resolver = SOURCE.split('QString outputMode(', 1)[1].split('QString foregroundMode(', 1)[0]
         self.assertIn('getString("output_mode", QString::fromLatin1(kCutoutOutput))', resolver)
         self.assertIn('? QString::fromLatin1(kGrayscaleMaskOutput) : QString::fromLatin1(kCutoutOutput)', resolver)
-        self.assertIn('config->setProperty("output_mode", QString::fromLatin1(kCutoutOutput))', SOURCE)
+        # Factory defaults are exercised by test_filter_defaults_native.cpp for
+        # all 17 real filters; they now come from generated parameter metadata.
 
     def test_applied_snapshot_round_trips_selection(self):
         widget = SOURCE.split('class BackgroundRemovalConfigurationWidget', 1)[1].split('std::vector<uint8_t> rgbPixels', 1)[0]

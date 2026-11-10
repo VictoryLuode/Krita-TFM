@@ -69,12 +69,23 @@ struct Lut {
         return (((r * Size) + g) * Size + b) * 3 + channel;
     }
 
-    QColor sample(const QColor &color) const
+    bool isIdentity() const
+    {
+        if(!valid) return false;
+        for(int r=0;r<Size;++r) for(int g=0;g<Size;++g) for(int b=0;b<Size;++b) {
+            const int channels[]={r,g,b};
+            for(int c=0;c<3;++c)
+                if(values[index(r,g,b,c)]!=float(channels[c])/float(Size-1)) return false;
+        }
+        return true;
+    }
+
+    std::array<double,3> sampleFloat(std::array<double,3> color, bool retainExtended = true) const
     {
         if (!valid) return color;
-        const double r = std::clamp(double(color.redF()), 0.0, 1.0) * (Size - 1);
-        const double g = std::clamp(double(color.greenF()), 0.0, 1.0) * (Size - 1);
-        const double b = std::clamp(double(color.blueF()), 0.0, 1.0) * (Size - 1);
+        const double r = std::clamp(color[0], 0.0, 1.0) * (Size - 1);
+        const double g = std::clamp(color[1], 0.0, 1.0) * (Size - 1);
+        const double b = std::clamp(color[2], 0.0, 1.0) * (Size - 1);
         const int r0 = std::min(int(r), Size - 2), g0 = std::min(int(g), Size - 2), b0 = std::min(int(b), Size - 2);
         const double fr = r - r0, fg = g - g0, fb = b - b0;
         const auto at = [&](int ri, int gi, int bi, int channel) {
@@ -107,8 +118,20 @@ struct Lut {
         for (int i = 0; i < 4; ++i)
             for (int channel = 0; channel < 3; ++channel)
                 out[channel] += weights[i] * at(corners[i][0], corners[i][1], corners[i][2], channel);
-        return QColor::fromRgbF(std::clamp(out[0], 0.0, 1.0), std::clamp(out[1], 0.0, 1.0), std::clamp(out[2], 0.0, 1.0), color.alphaF());
+        for(int c=0;c<3;++c) {
+            out[c]=std::clamp(out[c],0.0,1.0);
+            // LUTs only define [0,1]; retain out-of-domain source residuals.
+            if(retainExtended) out[c]+=color[c]-std::clamp(color[c],0.0,1.0);
+        }
+        return out;
     }
+    QColor sample(const QColor &color) const
+    {
+        if(!valid) return color;
+        const auto out=sampleFloat({double(color.redF()),double(color.greenF()),double(color.blueF())},false);
+        return QColor::fromRgbF(out[0],out[1],out[2],color.alphaF());
+    }
+
 };
 
 struct LightnessStats {

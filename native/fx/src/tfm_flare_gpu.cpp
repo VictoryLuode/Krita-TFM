@@ -1,4 +1,5 @@
 #include "tfm_flare_gpu.h"
+#include "fxmanager_processing.h"
 #include "fxmanager_vulkan.h"
 #include "tfm_flare_spv.h"
 
@@ -33,21 +34,20 @@ static_assert(offsetof(ShaderParameters, sources) == 48, "Flare sources offset m
 static_assert(offsetof(ShaderParameters, mode) == 8, "Flare mode offset mismatch");
 }
 
-QVector<FlareSource> detectSources(const QImage &source, double threshold, int maxSources)
+template <typename Sample>
+QVector<FlareSource> detectSourcesImpl(int width,int height,double threshold,int maxSources,Sample sample)
 {
     QVector<FlareSource> found;
-    if (source.isNull() || maxSources <= 0) return found;
-    const int step = std::max(1, std::max(source.width(), source.height()) / 192);
-    const int gridW = std::max(1, source.width() / step);
-    const int gridH = std::max(1, source.height() / step);
+    if (width<=0 || height<=0 || maxSources <= 0) return found;
+    const int step = std::max(1, std::max(width, height) / 192);
+    const int gridW = std::max(1, width / step);
+    const int gridH = std::max(1, height / step);
     std::vector<float> luminance(std::size_t(gridW) * gridH, 0.0f);
     for (int gy = 0; gy < gridH; ++gy) {
         for (int gx = 0; gx < gridW; ++gx) {
-            const int px = std::min(source.width() - 1, gx * step);
-            const int py = std::min(source.height() - 1, gy * step);
-            const QRgb p = reinterpret_cast<const QRgb *>(source.constScanLine(py))[px];
-            luminance[std::size_t(gy) * gridW + gx] =
-                float((0.2126 * qRed(p) + 0.7152 * qGreen(p) + 0.0722 * qBlue(p)) / 255.0);
+            const int px = std::min(width - 1, gx * step);
+            const int py = std::min(height - 1, gy * step);
+            luminance[std::size_t(gy) * gridW + gx] = sample(px,py);
         }
     }
     struct Candidate { float value; int gx; int gy; };
@@ -103,8 +103,24 @@ QVector<FlareSource> detectSources(const QImage &source, double threshold, int m
     return found;
 }
 
+QVector<FlareSource> detectSources(const QImage &source,double threshold,int maxSources)
+{
+    return detectSourcesImpl(source.width(),source.height(),threshold,maxSources,[&](int x,int y) {
+        const auto p=reinterpret_cast<const QRgb*>(source.constScanLine(y))[x];
+        return float((0.2126*qRed(p)+0.7152*qGreen(p)+0.0722*qBlue(p))/255.0);
+    });
+}
+QVector<FlareSource> detectSources(const fxmanager::EncodedRgbaImage &source,double threshold,int maxSources)
+{
+    if(source.isNull()) return {};
+    return detectSourcesImpl(source.width,source.height,threshold,maxSources,[&](int x,int y) {
+        const auto *p=source.pixels.constData()+4*(y*source.width+x);
+        return float(0.2126*p[0]+0.7152*p[1]+0.0722*p[2]);
+    });
+}
+
 bool render(const QImage &source, const Parameters &p, QImage &output,
-            QString &reason, QString &deviceName)
+            QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
     deviceName.clear();
@@ -142,16 +158,16 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
         static FxManagerVulkan *instance = new FxManagerVulkan();
         FxManagerVulkan &vulkan = *instance;
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;
         dispatch.groupsY = (std::uint32_t(source.height()) + 15u) / 16u;
         std::vector<std::uint8_t> result;
-        std::string error;
-        if (!vulkan.initialize(&error)) { reason = QString::fromStdString(error); return false; }
-        if (!vulkan.dispatch(std::vector<std::uint32_t>(std::begin(kFlareSpv), std::end(kFlareSpv)),
+        const auto outcome = vulkan.dispatchResult(std::vector<std::uint32_t>(std::begin(kFlareSpv), std::end(kFlareSpv)),
                              source.constBits(), bytes, &params, sizeof(params), bytes,
-                             dispatch, result, &error)) {
-            reason = QString::fromStdString(error);
+                             dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
             return false;
         }
         if (result.size() != bytes) { reason = QStringLiteral("Flare GPU returned an incomplete image"); return false; }

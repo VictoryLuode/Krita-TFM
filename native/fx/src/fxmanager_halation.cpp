@@ -111,6 +111,45 @@ void halationBand(QImage &output, const QImage &source, int y0, int y1, const Ha
 
 } // namespace
 
+namespace {
+fxmanager::EncodedRgbaImage halationFloat(const fxmanager::EncodedRgbaImage &source,
+                                         const HalationParams &p, KoUpdater *updater)
+{
+    auto output=source;
+    auto *dst=output.pixels.data();
+    const auto *src=source.pixels.constData();
+    QVector<QPoint> offsets;
+    for(int i=0;i<p.samples;++i) {
+        const double t=i+0.5, distance=std::sqrt(t/p.samples)*p.radius;
+        offsets.append(QPoint(int(std::cos(t*2.39996323)*distance),int(std::sin(t*2.39996323)*distance)));
+    }
+    const double colours[]={p.colorR,p.colorG,p.colorB};
+    const bool channels[]={p.channelR,p.channelG,p.channelB};
+    fxmanager::parallelRows(source.height,[&](int y0,int y1) {
+        for(int y=y0;y<y1;++y) {
+            if(updater && updater->interrupted()) return;
+            for(int x=0;x<source.width;++x) {
+                double glow[3]={};
+                for(const auto &offset:offsets) {
+                    const auto *pixel=src+4*(std::clamp(y+offset.y(),0,source.height-1)*source.width+std::clamp(x+offset.x(),0,source.width-1));
+                    const double energy=std::max(0.0,0.2126*pixel[0]+0.7152*pixel[1]+0.0722*pixel[2]-p.threshold);
+                    for(int c=0;c<3;++c) glow[c]+=pixel[c]*energy;
+                }
+                auto *pixel=dst+4*(y*source.width+x);
+                for(int c=0;c<3;++c) {
+                    const double tint=p.channelMode ? (channels[c] ? 1.0 : 0.0) : 1.0+(colours[c]-1.0)*p.tintShift;
+                    const double light=std::clamp(glow[c]*tint*p.intensity/p.samples,0.0,1.0);
+                    // Screen's illumination is bounded, while out-of-range
+                    // source energy stays intact instead of clipping to white.
+                    pixel[c]=float(pixel[c]+(1.0-std::clamp(double(pixel[c]),0.0,1.0))*light*p.blend);
+                }
+            }
+        }
+    });
+    return output;
+}
+}
+
 KisFilterHalation::KisFilterHalation()
     : KisFilter(id(), FiltersCategoryArtisticId, i18n("&Halation..."))
 {
@@ -124,17 +163,8 @@ KisFilterHalation::KisFilterHalation()
 KisFilterConfigurationSP KisFilterHalation::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
     auto c = factoryConfiguration(r);
-    c->setProperty("threshold", 0.75);
-    c->setProperty("radius", 24.0);
-    c->setProperty("intensity", 1.0);
-    c->setProperty("tint", 1.0);
-    c->setProperty("blend", 1.0);
-    c->setProperty("quality", 32.0);
-    c->setProperty("glow_color", QStringLiteral("#ff6b38"));
-    c->setProperty("channel_r", true);
-    c->setProperty("channel_g", true);
-    c->setProperty("channel_b", true);
-    c->setProperty("glow_mode", QStringLiteral("color"));
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c);
     return c;
 }
@@ -176,7 +206,7 @@ QRect KisFilterHalation::changedRect(const QRect &rect, const KisFilterConfigura
 void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
                                     const KisFilterConfigurationSP c, KoUpdater *u) const
 {
-    if (r.isEmpty() || !d) return;
+    if (r.isEmpty() || !d || (u && u->interrupted())) return;
     HalationParams params;
     params.threshold = std::clamp(c ? c->getDouble("threshold", 0.75) : 0.75, 0.0, 1.0);
     params.radius = std::clamp(c ? c->getDouble("radius", 24.0) : 24.0, 1.0, 200.0);
@@ -191,6 +221,12 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     params.channelB = !c || c->getBool("channel_b", true);
     params.channelMode = c && c->getString("glow_mode", QStringLiteral("color")) == QLatin1String("channels");
 
+    if(params.blend==0.0 || params.intensity==0.0
+        || (params.channelMode && !params.channelR && !params.channelG && !params.channelB)) {
+        if(u) u->setProgress(100);
+        return;
+    }
+
     QRect frame = d->defaultBounds()->bounds();
     if (frame.isEmpty()) frame = d->extent();
     if (frame.isEmpty()) frame = r;
@@ -204,6 +240,19 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     KisPaintDeviceSP pristine = new KisPaintDevice(d->colorSpace());
     pristine->prepareClone(d);
     KisPainter::copyAreaOptimizedOldData(srcRect.topLeft(), d, pristine, srcRect);
+    if(fxmanager::requiresFloatProcessing(d)) {
+        const auto source=fxmanager::readEncodedImage(pristine,srcRect);
+        if(source.isNull()) return;
+        const auto current=halationFloat(source,params,u);
+        if(u && u->interrupted()) return;
+        const auto cropped=current.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
+        const bool written=fxmanager::writeEncodedImage(d,cropped,outputRect);
+        fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),written
+            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        if(written && u) u->setProgress(100);
+        return;
+    }
     const QImage source = fxmanager::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
@@ -226,7 +275,8 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
         gpu.mode = params.channelMode ? 1 : 0;
         QImage gpuOutput;
         QString reason, device;
-        if (tfm_halation_gpu::render(source, gpu, gpuOutput, reason, device)) {
+        if (tfm_halation_gpu::render(source, gpu, gpuOutput, reason, device, [u] { return u && u->interrupted(); })) {
+            if(u && u->interrupted()) return;
             const QImage cropped = gpuOutput.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                                   outputRect.width(), outputRect.height());
             fxmanager::writeImage(d, cropped, outputRect);
@@ -234,6 +284,7 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
             if (u) u->setProgress(100);
             return;
         }
+        if(u && u->interrupted()) return;
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
@@ -243,6 +294,7 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     fxmanager::parallelRows(current.height(), [&](int y0, int y1) { halationBand(current, source, y0, y1, params); });
     const QImage cropped = current.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                         outputRect.width(), outputRect.height());
+    if(u && u->interrupted()) return;
     fxmanager::writeImage(d, cropped, outputRect);
     if (u) u->setProgress(100);
 }

@@ -192,17 +192,6 @@ def _next_sibling(tree, item):
 
 
 _SEPARATOR_INSET = 10
-_TITLE_BUMP_PT = 3
-
-
-def _title_font(font):
-    scaled = QtGui.QFont(font)
-    scaled.setBold(False)
-    if scaled.pointSizeF() > 0:
-        scaled.setPointSizeF(scaled.pointSizeF() + _TITLE_BUMP_PT)
-    elif scaled.pixelSize() > 0:
-        scaled.setPixelSize(scaled.pixelSize() + 4)
-    return scaled
 
 
 def _marker_gray(palette, selected=False):
@@ -259,24 +248,13 @@ class FolderDelegate(QStyledItemDelegate):
         gray = _marker_gray(styled.palette, selected)
         styled.palette.setColor(QPalette.ColorRole.Text, gray)
         styled.palette.setColor(QPalette.ColorRole.HighlightedText, gray)
-        styled.font = _title_font(styled.font)
         widget = styled.widget
         style = widget.style() if widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, widget)
 
-    def createEditor(self, parent, option, index):
-        editor = super().createEditor(parent, option, index)
-        if editor is not None and index.data(_KIND_ROLE) == "title":
-            editor.setFont(_title_font(option.font))
-        return editor
-
     def sizeHint(self, option, index):
-        kind = index.data(_KIND_ROLE)
-        if kind == "separator":
+        if index.data(_KIND_ROLE) == "separator":
             return QSize(max(1, option.rect.width()), 14)
-        if kind == "title":
-            height = QtGui.QFontMetrics(_title_font(option.font)).height() + 10
-            return QSize(max(1, option.rect.width()), height)
         return super().sizeHint(option, index)
 
 
@@ -767,6 +745,8 @@ class ImageGrid(QListWidget):
         for index in range(self.count()):
             self.item(index).setSizeHint(cell)
         self.doItemsLayout()
+        if hasattr(self.panel, "_thumb_timer"):
+            self.panel._thumb_timer.start()
 
     def _item_size_hint(self):
         if self._view_mode == VIEW_LIST:
@@ -791,6 +771,8 @@ class ImageGrid(QListWidget):
         if self._view_mode == VIEW_LIST:
             self.setUniformItemSizes(True)
         self.doItemsLayout()
+        if hasattr(self.panel, "_thumb_timer"):
+            self.panel._thumb_timer.start()
 
     def startDrag(self, supportedActions):
         del supportedActions

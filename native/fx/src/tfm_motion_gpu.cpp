@@ -32,7 +32,7 @@ bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
             const fxmanager::FloatRgbaImage &defaultImage, const QRect &read,
             const QRect &outputRect, const QRect &frame, bool circular,
             double centerX, double centerY, double angle, double factor,
-            fxmanager::FloatRgbaImage &output, QString &reason, QString &deviceName)
+            fxmanager::FloatRgbaImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     deviceName.clear();
     if (qEnvironmentVariableIntValue("TFM_VULKAN_DISABLE") != 0) {
@@ -91,18 +91,15 @@ bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
         FxManagerVulkan &vulkan = *vulkanInstance;
         static const std::vector<std::uint32_t> shader(std::begin(kMotionSpv), std::end(kMotionSpv));
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(outputRect.width()) + 15) / 16;
         dispatch.groupsY = (std::uint32_t(outputRect.height()) + 15) / 16;
         std::vector<std::uint8_t> bytes;
-        std::string error;
-        if (!vulkan.initialize(&error)) {
-            reason = QString::fromStdString(error);
-            return false;
-        }
-        if (!vulkan.dispatch(shader, source.pixels.constData(), std::size_t(inputBytes),
-                             &params, sizeof(params), std::size_t(outputBytes), dispatch, bytes, &error)) {
-            reason = QString::fromStdString(error);
+        const auto outcome = vulkan.dispatchResult(shader, source.pixels.constData(), std::size_t(inputBytes),
+                             &params, sizeof(params), std::size_t(outputBytes), dispatch, bytes);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
             return false;
         }
         if (bytes.size() != outputBytes) {

@@ -1,5 +1,6 @@
 #include "fxmanager_processing.h"
 #include "fxmanager_background_removal.h"
+#include "background_composite.h"
 
 #include "fxmanager_birefnet.h"
 #include "fxmanager_background_mask.h"
@@ -267,13 +268,10 @@ KisFilterBackgroundRemoval::KisFilterBackgroundRemoval()
 KisFilterConfigurationSP KisFilterBackgroundRemoval::defaultConfiguration(KisResourcesInterfaceSP resources) const
 {
     auto config = factoryConfiguration(resources);
-    config->setProperty("model", QStringLiteral("BiRefNet-lite-F16.gguf"));
-    config->setProperty("backend", QStringLiteral("cpu"));
-    config->setProperty("output_mode", QString::fromLatin1(kCutoutOutput));
-    config->setProperty("foreground_mode", QString::fromLatin1(kRefinedForegroundMode));
+
     config->setProperty("foreground_estimation", true);
-    config->setProperty("preserve_foreground", 0);
-    config->setProperty("mask_contrast", 0);
+
+    fxmanager::applyBuiltinDefaults(id().id(), config);
     fxmanager::applyFilterDefaults(id().id(), config); return config;
 }
 
@@ -296,6 +294,24 @@ void KisFilterBackgroundRemoval::processImpl(KisPaintDeviceSP device,
                                            applyRect.width(), applyRect.height());
     if (image.isNull() || image.width() < 64 || image.height() < 64) return;
     image = image.convertToFormat(QImage::Format_ARGB32);
+    const bool highDepth=fxmanager::requiresFloatProcessing(device);
+    fxmanager::EncodedRgbaImage originalFloat;
+    QByteArray originalBytes;
+    if(highDepth) {
+        originalFloat=fxmanager::readEncodedImage(device,applyRect);
+        if(originalFloat.isNull()) return;
+        originalBytes.resize(image.width()*image.height()*device->pixelSize());
+        device->readBytes(reinterpret_cast<quint8*>(originalBytes.data()),applyRect);
+        // A deliberately bounded inference proxy, separate from the original.
+        for(int y=0;y<image.height();++y) {
+            auto *row=reinterpret_cast<QRgb*>(image.scanLine(y));
+            for(int x=0;x<image.width();++x) {
+                const auto *p=originalFloat.pixels.constData()+4*(y*image.width()+x);
+                auto channel=[&](int c) { return int(std::lround(std::clamp(p[c],0.0f,1.0f)*255)); };
+                row[x]=qRgba(channel(0),channel(1),channel(2),channel(3));
+            }
+        }
+    }
     const std::vector<uint8_t> rgb = rgbPixels(image);
     const visp::image_view input({image.width(), image.height()}, visp::image_format::rgb_u8, rgb.data());
 
@@ -371,6 +387,15 @@ void KisFilterBackgroundRemoval::processImpl(KisPaintDeviceSP device,
             }
             auto foregroundPixels = visp::image_span(foreground).as_floats();
             const auto fullMaskPixels = visp::image_view(mask).as_bytes();
+            if(highDepth) {
+                fxmanager::background_removal::compositeRefined(originalFloat.pixels.data(),foregroundPixels.data(),
+                    rgb.data(),fullMaskPixels.data(),size_t(image.width())*image.height());
+                if(updater && updater->interrupted()) return;
+                const bool written=fxmanager::writeEncodedImage(device,originalFloat,applyRect);
+                if(!written) throw std::runtime_error("High-depth foreground conversion failed; pixels unchanged");
+                if(updater) updater->setProgress(100);
+                return;
+            }
             for (int y = 0; y < image.height(); ++y) {
                 const QRgb *sourceRow = reinterpret_cast<const QRgb *>(image.constScanLine(y));
                 const int rowOffset = y * image.width();
@@ -394,6 +419,22 @@ void KisFilterBackgroundRemoval::processImpl(KisPaintDeviceSP device,
             device->convertFromQImage(result, device->colorSpace()->profile(), applyRect.x(), applyRect.y());
         } else {
             const auto bytes = visp::image_view(mask).as_bytes();
+            if(highDepth) {
+                const auto *space=device->colorSpace();
+                auto *raw=reinterpret_cast<quint8*>(originalBytes.data());
+                for(int y=0;y<image.height();++y) {
+                    if(updater && updater->interrupted()) return;
+                    for(int x=0;x<image.width();++x) {
+                        const int i=y*image.width()+x;
+                        auto *pixel=raw+i*space->pixelSize();
+                        if(bytes[i]!=255) space->setOpacity(pixel,space->opacityF(pixel)*(double(bytes[i])/255.0),1);
+                    }
+                }
+                if(updater && updater->interrupted()) return;
+                device->writeBytes(reinterpret_cast<const quint8*>(originalBytes.constData()),applyRect);
+                if(updater) updater->setProgress(100);
+                return;
+            }
             QImage output = image;
             for (int y = 0; y < output.height(); ++y) {
                 QRgb *row = reinterpret_cast<QRgb *>(output.scanLine(y));
@@ -403,6 +444,7 @@ void KisFilterBackgroundRemoval::processImpl(KisPaintDeviceSP device,
                     row[x] = qRgba(qRed(row[x]), qGreen(row[x]), qBlue(row[x]), alpha);
                 }
             }
+            if(updater && updater->interrupted()) return;
             device->convertFromQImage(output, device->colorSpace()->profile(), applyRect.x(), applyRect.y());
         }
     } catch (const std::exception &e) {

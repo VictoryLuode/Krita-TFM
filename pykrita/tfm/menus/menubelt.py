@@ -266,7 +266,8 @@ class MenuBeltExtension(Extension):
             "tfm_color_range", tr("Advanced Selection…", "高级选区…"), "Select")
         color_range_action.triggered.connect(self.open_color_range)
         from ..manager import (
-            color_range_enabled, convert_color_space_enabled, assets_enabled, search_enabled)
+            color_range_enabled, convert_color_space_enabled, assets_enabled,
+            search_enabled)
         color_range_action.setVisible(color_range_enabled())
         color_range_action.setEnabled(color_range_enabled())
 

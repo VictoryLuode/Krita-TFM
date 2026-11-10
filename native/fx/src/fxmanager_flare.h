@@ -21,13 +21,3 @@ public:
     KisConfigWidget *createConfigurationWidget(QWidget *, const KisPaintDeviceSP, bool) const override;
     void processImpl(KisPaintDeviceSP, const QRect &, const KisFilterConfigurationSP, KoUpdater *) const override;
 };
-
-class KisFilterLightRays final : public KisFilter
-{
-public:
-    KisFilterLightRays();
-    static KoID id() { return KoID("tfm_light_rays", i18n("Light Rays")); }
-    KisFilterConfigurationSP defaultConfiguration(KisResourcesInterfaceSP) const override;
-    KisConfigWidget *createConfigurationWidget(QWidget *, const KisPaintDeviceSP, bool) const override;
-    void processImpl(KisPaintDeviceSP, const QRect &, const KisFilterConfigurationSP, KoUpdater *) const override;
-};

@@ -54,7 +54,7 @@ class SpeedTests(unittest.TestCase):
             for _ in range(2):
                 panel.display_results(entries(4))
                 self.assertTrue(wait_for(lambda:all(not panel.grid.item(i).icon().isNull() for i in range(4))))
-                panel.shutdown()
+                self.assertTrue(wait_for(lambda: not panel.jobs))
             self.assertEqual(len(downloaded),4,'The same thumbnails were downloaded again')
         finally:
             panel.shutdown()
@@ -109,7 +109,7 @@ class SpeedTests(unittest.TestCase):
                     panel.display_results(entries(1))
                     panel.grid.setCurrentRow(0)
                     self.assertTrue(wait_for(lambda:bool(panel.grid.item(0).data(M.PATH_ROLE))))
-                    panel.shutdown()
+                    self.assertTrue(wait_for(lambda: not panel.jobs))
                 self.assertEqual(len(resolved),1,'The same image detail page was opened again')
                 self.assertEqual(len(large_downloads),1,'The prepared large image was downloaded again')
             finally:

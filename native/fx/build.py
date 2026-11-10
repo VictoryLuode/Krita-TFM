@@ -10,6 +10,9 @@ import json
 import os
 import re
 import shutil
+import sys
+import tempfile
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -19,6 +22,9 @@ HOST = REPO / 'Krita-Master-5.3.4.1' / 'build-fxm-5.3'
 STAGE = REPO / 'build' / 'native-5.3' / 'stage'
 OUT = REPO / 'build' / 'native-5.3'
 DEPS = REPO / 'deps'
+sys.path.insert(0, str(REPO))
+from build_artifacts import source_inputs, publish_batch
+from compile_shaders import generate_all, find_compiler
 # Reference graphs may retain absolute prefixes from older layouts
 # ("Krita Addon", under KritaAddon/, or the previous KritaAddon/Krita-TFM path).
 # Rewrite only those prefixes in generated compiler/link args; never edit host files.
@@ -74,7 +80,7 @@ def escape(path):
     return str(path).replace('\\', '/').replace('$', '$$').replace(':', '$:').replace(' ', '$ ')
 
 
-def build_vulkan_worker(env):
+def build_vulkan_worker(env, destination):
     """Link the Vulkan device into its own process, never into kritatfm.dll."""
     device_src = PROJECT / 'src' / 'fxmanager_vulkan_device.cpp'
     worker_src = PROJECT / 'src' / 'tfm_vulkan_worker.cpp'
@@ -90,13 +96,13 @@ def build_vulkan_worker(env):
         subprocess.run([str(COMPILER), '-std=c++17', '-O2', '-DNDEBUG', '-c', str(src), '-o', str(obj), *includes],
                        env=env, check=True)
         objects.append(obj)
-    exe = OUT / 'bin' / 'tfm_vulkan_worker.exe'
+    exe = destination / 'tfm_vulkan_worker.exe'
     exe.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([str(COMPILER), '-O2', '-o', str(exe), *[str(obj) for obj in objects]], env=env, check=True)
     linked = {path.name for path in objects}
     if 'fxmanager_vulkan.cpp.obj' in linked:
         raise SystemExit('Refusing to link the in-process Vulkan client into the worker')
-    ping = subprocess.run([str(exe), '--ping'], env=env, capture_output=True, text=True)
+    ping = subprocess.run([str(exe), '--ping'], env=env, capture_output=True, text=True, timeout=10)
     print('VULKAN_WORKER_PING', ping.returncode, ping.stdout.strip(), ping.stderr.strip(), flush=True)
     if ping.returncode not in (0, 1):
         raise SystemExit('Vulkan worker failed to start')
@@ -117,6 +123,19 @@ def main():
     cache = (HOST / 'CMakeCache.txt').read_text()
     if 'BUILD_WITH_QT6:BOOL=OFF' not in cache:
         raise SystemExit('Reference graph must use Qt5')
+    runpy.run_path(str(REPO / 'scripts/generate_filter_metadata.py'))['generate']()
+    shader_compiler = find_compiler()
+    print('SHADERS', generate_all(shader_compiler), flush=True)
+    input_hashes = source_inputs(REPO)
+    # Build the actual vendored sources, never silently reuse reference-project archives.
+    inference = OUT / 'inference'
+    prefix_map = '-ffile-prefix-map=' + REPO.as_posix() + '=.'
+    subprocess.run([cmake, '-S', str(PROJECT / 'inference'), '-B', str(inference), '-G', 'Ninja',
+                    '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_C_COMPILER=' + str(COMPILER.with_name('clang.exe')),
+                    '-DCMAKE_CXX_COMPILER=' + str(COMPILER), '-DCMAKE_C_FLAGS=' + prefix_map,
+                    '-DCMAKE_CXX_FLAGS=' + prefix_map], env=env, check=True)
+    subprocess.run([cmake, '--build', str(inference), '--parallel', '8'], env=env, check=True)
+    local_archives = {p.name.removeprefix('lib'): p for p in (inference / 'lib').glob('*.a')}
     files = sorted(p for p in (PROJECT / 'src').iterdir() if p.is_file() and
                    (p.suffix in {'.cpp', '.h', '.json', '.qrc', '.ui'} or p.name == 'CMakeLists.txt'))
     before = {p.name: digest(p) for p in files}
@@ -206,7 +225,7 @@ def main():
                 'plugins/filters/filtermanager' not in a.replace(chr(92), '/') or
                 'third_party/visioncpp' in a.replace(chr(92), '/') or
                 'third_party/ggml' in a.replace(chr(92), '/')]
-        args[0:0] = ['-I' + str(STAGE), '-I' + str(auto), '-I' + str(PROJECT / 'src'),
+        args[0:0] = [prefix_map, '-I' + str(STAGE), '-I' + str(auto), '-I' + str(PROJECT / 'src'),
                       '-I' + str(PROJECT / 'third_party/vulkan-headers/include'),
                       '-I' + str(PROJECT / 'third_party/visioncpp/include'),
                       '-I' + str(PROJECT / 'third_party/visioncpp/src'),
@@ -229,12 +248,20 @@ def main():
     block = link_match.group()
     values = dict(re.findall(r'^  (\w+) = (.*)$', block, re.M))
     libs = [normalize_dep_arg(lib) for lib in split(values['LINK_LIBRARIES'])]
+    own_archives = {'visioncpp.a', 'ggml.a', 'ggml-cpu.a', 'ggml-base.a', 'filtermanager_stb.a'}
+    for index, lib in enumerate(libs):
+        name = Path(lib).name.removeprefix('lib')
+        if name in own_archives:
+            if name not in local_archives:
+                raise SystemExit('Missing rebuilt inference archive: ' + name)
+            libs[index] = str(local_archives[name])
+    linked_inputs = {Path(lib).name: digest(Path(lib) if Path(lib).is_absolute() else HOST / lib)
+                     for lib in libs if not lib.startswith('-')}
     for lib in libs:
         if not lib.startswith('-') and not (HOST / lib).is_file() and not Path(lib).is_file():
             raise SystemExit('Missing existing library: ' + lib)
-    dll = OUT / 'bin/kritatfm.dll'
-    candidate = OUT / 'bin/kritatfm.candidate.dll'
-    dll.parent.mkdir(exist_ok=True)
+    pending = Path(tempfile.mkdtemp(prefix='pending-', dir=OUT))
+    candidate = pending / 'kritatfm.dll'
     args = [normalize_dep_arg(a) for a in split(values['LANGUAGE_COMPILE_FLAGS']) + split(values['LINK_FLAGS'])]
     args += ['-shared', '-o', str(candidate), '-Wl,--major-image-version,0,--minor-image-version,0']
     args += [str(p) for p in objects] + libs
@@ -249,24 +276,31 @@ def main():
     subprocess.run(command, cwd=HOST, env=env, check=True)
     if before != {p.name: digest(p) for p in files}:
         raise SystemExit('Sources changed during build; rerun before validating candidate')
-    # A failed compile/link never replaces the previous working artifact.
-    # Preserve immutable rollback copies before atomically publishing the DLL.
-    if dll.is_file():
-        rollback = OUT / 'rollback' / digest(dll)
-        rollback.mkdir(parents=True, exist_ok=True)
-        if not (rollback / dll.name).exists():
-            shutil.copy2(dll, rollback / dll.name)
-        if (OUT / 'manifest.json').is_file() and not (rollback / 'manifest.json').exists():
-            shutil.copy2(OUT / 'manifest.json', rollback / 'manifest.json')
-    os.replace(candidate, dll)
-    manifest = {'dll': str(dll), 'sha256': digest(dll), 'sources': before, 'compiler': str(COMPILER), 'cmake': cmake, 'ninja': ninja}
-    (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-    worker = build_vulkan_worker(env)
-    manifest['worker'] = str(worker)
-    manifest['worker_sha256'] = digest(worker)
-    (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-    print('BUILD_OK', dll, 'SHA256', manifest['sha256'], flush=True)
-    print('WORKER_OK', worker, 'SHA256', manifest['worker_sha256'], flush=True)
+    worker = build_vulkan_worker(env, pending)
+    subprocess.run([str(COMPILER.with_name('clang.exe')), '-shared', '-O2', '-ffast-math',
+                    '-o', str(pending / 'tfm_color_range.dll'), str(REPO / 'native/color_range.c')],
+                   env=env, check=True)
+    # Distribution binaries do not carry local source/debug paths.
+    strip = COMPILER.with_name('llvm-strip.exe')
+    for name in ('kritatfm.dll', 'tfm_vulkan_worker.exe', 'tfm_color_range.dll'):
+        subprocess.run([str(strip), '--strip-debug', str(pending / name)], env=env, check=True)
+    if source_inputs(REPO) != input_hashes:
+        raise SystemExit('Inputs changed during build; previous complete batch retained')
+    def tool_version(executable, option='--version'):
+        output = subprocess.check_output([str(executable), option], env=env, text=True, timeout=10).strip()
+        return '\n'.join(line for line in output.splitlines()
+                         if not line.startswith(('InstalledDir:', 'Configuration file:')))
+    manifest = {'sources': before, 'inputs': input_hashes, 'linked_libraries': linked_inputs,
+                'toolchain': {'compiler': tool_version(COMPILER), 'cmake': tool_version(cmake),
+                              'ninja': tool_version(ninja), 'glslang': tool_version(shader_compiler),
+                              'qt': '5', 'krita': '5.3.4.1'},
+                'generated': {name: value for name, value in input_hashes.items()
+                              if name.endswith('_spv.h') or name.endswith('/filter_metadata.h')
+                              or name == 'pykrita/tfm/filters/catalog.py'}}
+    batch = publish_batch(OUT, pending, manifest)
+    print('BUILD_OK', batch.name, flush=True)
+    for binary in ('kritatfm.dll', 'tfm_vulkan_worker.exe', 'tfm_color_range.dll'):
+        print('BINARY', binary, digest(batch / binary), flush=True)
 
 
 if __name__ == '__main__':

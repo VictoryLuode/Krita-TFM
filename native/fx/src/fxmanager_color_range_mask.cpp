@@ -11,6 +11,7 @@
 
 #include <filter/kis_filter_category_ids.h>
 #include <kis_paint_device.h>
+#include <KoColorSpace.h>
 #include <KisGlobalResourcesInterface.h>
 #include <KoUpdater.h>
 #include <klocalizedstring.h>
@@ -49,12 +50,8 @@ KisFilterColorRangeMask::KisFilterColorRangeMask()
 KisFilterConfigurationSP KisFilterColorRangeMask::defaultConfiguration(KisResourcesInterfaceSP resourcesInterface) const
 {
     auto c = factoryConfiguration(resourcesInterface);
-    c->setProperty("channel", "gray");
-    c->setProperty("range_min", 0.0);
-    c->setProperty("range_max", 1.0);
-    c->setProperty("softness", 0.05);
-    c->setProperty("invert", false);
-    c->setProperty("preserve_rgb", true);
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c); return c;
 }
 
@@ -70,9 +67,37 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
                                           const KisFilterConfigurationSP config,
                                           KoUpdater *progressUpdater) const
 {
-    if (applyRect.isEmpty()) return;
+    if (applyRect.isEmpty() || !device || (progressUpdater && progressUpdater->interrupted())) return;
 
     const colormask::Settings s = settingsFrom(config);
+
+    if(fxmanager::requiresFloatProcessing(device)) {
+        const auto colours=fxmanager::readEncodedImage(device,applyRect);
+        if(colours.isNull()) return;
+        // The colour conversion is used only to evaluate selection. Keep the
+        // original colour bytes, including out-of-gamut and hidden RGB.
+        const auto *space=device->colorSpace();
+        QByteArray raw(applyRect.width()*applyRect.height()*space->pixelSize(),Qt::Uninitialized);
+        device->readBytes(reinterpret_cast<quint8*>(raw.data()),applyRect);
+        auto *dst=reinterpret_cast<quint8*>(raw.data());
+        fxmanager::parallelRows(applyRect.height(),[&](int y0,int y1) {
+            for(int y=y0;y<y1;++y) {
+                if(progressUpdater && progressUpdater->interrupted()) return;
+                for(int x=0;x<applyRect.width();++x) {
+                    const int i=y*applyRect.width()+x;
+                    const auto *p=colours.pixels.constData()+i*4;
+                    const double factor=colormask::alphaFactor(p[0],p[1],p[2],s);
+                    auto *pixel=dst+i*space->pixelSize();
+                    if(factor!=1.0) space->setOpacity(pixel,space->opacityF(pixel)*factor,1);
+                }
+            }
+        });
+        if(progressUpdater && progressUpdater->interrupted()) return;
+        device->writeBytes(reinterpret_cast<const quint8*>(raw.constData()),applyRect);
+        fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),QStringLiteral("High-depth CPU mask; original colour channels retained"));
+        if(progressUpdater) progressUpdater->setProgress(100);
+        return;
+    }
 
     QImage image = device->convertToQImage(device->colorSpace()->profile(),
                                            applyRect.x(), applyRect.y(),
@@ -81,22 +106,24 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     image = image.convertToFormat(QImage::Format_ARGB32);
     image.detach(); // Detach before parallel scanLine writes.
 
-    if (fxmanager::gpuRequested(id().id())) {
+    if (fxmanager::gpuRequested(id().id(),qint64(applyRect.width())*applyRect.height())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::ColorRangeMask;
         gpu.outputRect = applyRect; gpu.channel = static_cast<int>(s.channel);
         gpu.rangeMin = float(s.rangeMin); gpu.rangeMax = float(s.rangeMax);
         gpu.softness = float(s.softness); gpu.invert = s.invert ? 1 : 0;
         QImage output; QString reason, gpuDevice;
-        if (tfm_pointwise_gpu::render(image, gpu, output, reason, gpuDevice)) {
+        if (tfm_pointwise_gpu::render(image, gpu, output, reason, gpuDevice, [progressUpdater] { return progressUpdater && progressUpdater->interrupted(); })) {
+            if(progressUpdater && progressUpdater->interrupted()) return;
             device->convertFromQImage(output, device->colorSpace()->profile(), applyRect.x(), applyRect.y());
             fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
             if (progressUpdater) progressUpdater->setProgress(100);
             return;
         }
+        if(progressUpdater && progressUpdater->interrupted()) return;
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), fxmanager::cpuBackendReason(id().id(),qint64(applyRect.width())*applyRect.height()));
     }
 
     image.detach(); // Detach before parallel scanLine writes.
@@ -112,6 +139,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     }
     });
 
+    if(progressUpdater && progressUpdater->interrupted()) return;
     device->convertFromQImage(image, device->colorSpace()->profile(),
                               applyRect.x(), applyRect.y());
     if (progressUpdater) progressUpdater->setProgress(100);

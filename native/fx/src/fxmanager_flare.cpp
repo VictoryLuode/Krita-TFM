@@ -119,7 +119,8 @@ Rgb anamorphicStreak(double u, double v, const QVector<tfm_flare_gpu::FlareSourc
     return Rgb{acc.r * k, acc.g * k, acc.b * k};
 }
 
-Rgb lightRays(double u, double v, const QImage &image, const QVector<tfm_flare_gpu::FlareSource> &sources, const FlareParams &p)
+template <typename Sample>
+Rgb lightRays(double u, double v, int width,int height,Sample sample, const QVector<tfm_flare_gpu::FlareSource> &sources, const FlareParams &p)
 {
     const tfm_flare_gpu::FlareSource &primary = sources[0];
     const double toX = primary.x - u;
@@ -135,7 +136,7 @@ Rgb lightRays(double u, double v, const QImage &image, const QVector<tfm_flare_g
         const double t = double(i) / double(taps);
         const double px = u + dirX * (t * span * distance);
         const double py = v + dirY * (t * span * distance);
-        const double luminance = luminanceAt(image, int(px * image.width()), int(py * image.height()));
+        const double luminance = sample(int(px*width),int(py*height));
         sum += std::max(0.0, luminance - p.threshold) * std::exp(-t * falloff);
     }
     sum /= double(taps);
@@ -157,7 +158,7 @@ void flareBand(QImage &output, const QImage &source, int y0, int y1,
             Rgb glow;
             if (p.mode == tfm_flare_gpu::Mode::GhostFlare) glow = ghostFlare(u, v, sources, p);
             else if (p.mode == tfm_flare_gpu::Mode::Anamorphic) glow = anamorphicStreak(u, v, sources, p);
-            else glow = lightRays(u, v, source, sources, p);
+            else glow = lightRays(u,v,source.width(),source.height(),[&](int x,int y) { return luminanceAt(source,x,y); },sources,p);
             auto channel = [&](double baseValue, double glowValue) {
                 const double capped = std::clamp(glowValue * 255.0, 0.0, 255.0);
                 const double combined = 255.0 - (255.0 - baseValue) * (255.0 - capped) / 255.0;
@@ -177,7 +178,8 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
               const KisFilterConfigurationSP c, KoUpdater *u,
               const FlareParams &requested, const QString &id)
 {
-    if (r.isEmpty() || !d) return;
+    if (r.isEmpty() || !d || (u && u->interrupted())) return;
+    if(requested.blend<=0.0 || requested.intensity<=0.0) { if(u) u->setProgress(100); return; }
     QRect frame = d->defaultBounds()->bounds();
     if (frame.isEmpty()) frame = d->extent();
     if (frame.isEmpty()) frame = r;
@@ -190,6 +192,43 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
     KisPaintDeviceSP pristine = new KisPaintDevice(d->colorSpace());
     pristine->prepareClone(d);
     KisPainter::copyAreaOptimizedOldData(srcRect.topLeft(), d, pristine, srcRect);
+    if(fxmanager::requiresFloatProcessing(d)) {
+        const auto source=fxmanager::readEncodedImage(pristine,srcRect);
+        if(source.isNull()) return;
+        auto sources=tfm_flare_gpu::detectSources(source,requested.threshold,requested.maxSources);
+        if(requested.mode==tfm_flare_gpu::Mode::Anamorphic)
+            sources={tfm_flare_gpu::FlareSource{0.5f,0.5f,1.0f,0.06f}};
+        if(sources.isEmpty()) return;
+        auto output=source.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
+        float *pixels=output.pixels.data();
+        const auto sample=[&](int x,int y) {
+            const float *p=source.pixels.constData()+4*(std::clamp(y,0,source.height-1)*source.width+std::clamp(x,0,source.width-1));
+            return .2126*p[0]+.7152*p[1]+.0722*p[2];
+        };
+        fxmanager::parallelRows(output.height,[&](int y0,int y1) {
+            for(int y=y0;y<y1;++y) {
+                if(u && u->interrupted()) return;
+                const double v=(outputRect.y()-srcRect.y()+y+0.5)/source.height;
+                for(int x=0;x<output.width;++x) {
+                    const double nx=(outputRect.x()-srcRect.x()+x+0.5)/source.width;
+                    const auto glow=requested.mode==tfm_flare_gpu::Mode::GhostFlare ? ghostFlare(nx,v,sources,requested)
+                        : requested.mode==tfm_flare_gpu::Mode::Anamorphic ? anamorphicStreak(nx,v,sources,requested)
+                        : lightRays(nx,v,source.width,source.height,sample,sources,requested);
+                    auto *p=pixels+4*(y*output.width+x);
+                    const double colour[]={glow.r,glow.g,glow.b};
+                    for(int c=0;c<3;++c)
+                        p[c]=float(p[c]+(1.0-std::clamp(double(p[c]),0.0,1.0))*std::clamp(colour[c],0.0,1.0)*requested.blend);
+                }
+            }
+        });
+        if(u && u->interrupted()) return;
+        const bool written=fxmanager::writeEncodedImage(d,output,outputRect);
+        fxmanager::reportBackend(id,QStringLiteral("cpu"),written
+            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        if(written && u) u->setProgress(100);
+        return;
+    }
     const QImage source = fxmanager::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
@@ -228,14 +267,16 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
         gpu.sources = sources;
         QImage gpuOutput;
         QString reason, device;
-        if (tfm_flare_gpu::render(source, gpu, gpuOutput, reason, device)) {
+        if (tfm_flare_gpu::render(source, gpu, gpuOutput, reason, device, [u] { return u && u->interrupted(); })) {
             const QImage cropped = gpuOutput.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                                   outputRect.width(), outputRect.height());
+            if(u && u->interrupted()) return;
             fxmanager::writeImage(d, cropped, outputRect);
             fxmanager::reportBackend(id, QStringLiteral("gpu"), QString(), device);
             if (u) u->setProgress(100);
             return;
         }
+        if(u && u->interrupted()) return;
         fxmanager::reportBackend(id, QStringLiteral("cpu"), reason);
     } else {
         fxmanager::reportBackend(id, QStringLiteral("cpu"), QStringLiteral("CPU selected"));
@@ -247,6 +288,7 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
     });
     const QImage cropped = current.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                         outputRect.width(), outputRect.height());
+    if(u && u->interrupted()) return;
     fxmanager::writeImage(d, cropped, outputRect);
     if (u) u->setProgress(100);
 }
@@ -284,13 +326,8 @@ KisFilterLensFlare::KisFilterLensFlare()
 KisFilterConfigurationSP KisFilterLensFlare::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
     auto c = factoryConfiguration(r);
-    c->setProperty("threshold", 0.85);
-    c->setProperty("length", 0.35);
-    c->setProperty("decay", 3.0);
-    c->setProperty("intensity", 1.0);
-    c->setProperty("tint", 1.0);
-    c->setProperty("blend", 1.0);
-    c->setProperty("sources", 1.0);
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c);
     return c;
 }
@@ -329,14 +366,8 @@ KisFilterAnamorphicFlare::KisFilterAnamorphicFlare()
 KisFilterConfigurationSP KisFilterAnamorphicFlare::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
     auto c = factoryConfiguration(r);
-    c->setProperty("threshold", 0.85);
-    c->setProperty("length", 0.45);
-    c->setProperty("decay", 0.35);
-    c->setProperty("aspect", 0.012);
-    c->setProperty("intensity", 1.0);
-    c->setProperty("tint", 1.0);
-    c->setProperty("blend", 1.0);
-    c->setProperty("sources", 2.0);
+
+    fxmanager::applyBuiltinDefaults(id().id(), c);
     fxmanager::applyFilterDefaults(id().id(), c);
     return c;
 }
@@ -360,48 +391,5 @@ void KisFilterAnamorphicFlare::processImpl(KisPaintDeviceSP d, const QRect &r,
 {
     runFlare(d, r, c, u,
              readCommon(c, tfm_flare_gpu::Mode::Anamorphic, 0.45, 1.0, 1.0, 0.35, 0.012, 1.0),
-             id().id());
-}
-
-// ---------------------------------------------------------------- Light Rays
-
-KisFilterLightRays::KisFilterLightRays()
-    : KisFilter(id(), FiltersCategoryArtisticId, i18n("&Light Rays..."))
-{
-    setSupportsAdjustmentLayers(true);
-    setColorSpaceIndependence(FULLY_INDEPENDENT);
-    setSupportsThreading(false);
-}
-
-KisFilterConfigurationSP KisFilterLightRays::defaultConfiguration(KisResourcesInterfaceSP r) const
-{
-    auto c = factoryConfiguration(r);
-    c->setProperty("threshold", 0.7);
-    c->setProperty("length", 0.6);
-    c->setProperty("decay", 2.0);
-    c->setProperty("intensity", 1.0);
-    c->setProperty("tint", 1.0);
-    c->setProperty("blend", 1.0);
-    c->setProperty("sources", 1.0);
-    fxmanager::applyFilterDefaults(id().id(), c);
-    return c;
-}
-
-KisConfigWidget *KisFilterLightRays::createConfigurationWidget(QWidget *p, const KisPaintDeviceSP, bool) const
-{
-    return new FxManagerFilterWidget(id().id(), {
-        {"threshold", i18n("Threshold"), 0.0, 1.0, 0.7, 0.01, 2},
-        {"length", i18n("Length"), 0.01, 1.0, 0.6, 0.01, 2},
-        {"decay", i18n("Falloff"), 0.1, 6.0, 2.0, 0.1, 2},
-        {"intensity", i18n("Intensity"), 0.0, 4.0, 1.0, 0.05, 2},
-        {"blend", i18n("Blend"), 0.0, 1.0, 1.0, 0.01, 2},
-    }, p, false);
-}
-
-void KisFilterLightRays::processImpl(KisPaintDeviceSP d, const QRect &r,
-                                     const KisFilterConfigurationSP c, KoUpdater *u) const
-{
-    runFlare(d, r, c, u,
-             readCommon(c, tfm_flare_gpu::Mode::LightRays, 0.6, 1.0, 1.0, 2.0, 0.02, 1.0),
              id().id());
 }

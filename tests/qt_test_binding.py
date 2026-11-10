@@ -1,8 +1,6 @@
 """Use the installed Qt binding without importing the Krita plugin entry point."""
-try:
-    from PyQt6 import QtCore, QtGui, QtWidgets, QtTest
-except ImportError:
-    from PyQt5 import QtCore, QtGui, QtWidgets, QtTest
+# Match the supported Krita 5.3 host; never accidentally test a second binding.
+from PyQt5 import QtCore, QtGui, QtWidgets, QtTest
 
 for _module in (QtCore, QtGui, QtWidgets, QtTest):
     for _name in dir(_module):

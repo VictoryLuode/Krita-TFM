@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
+import tempfile
+from build_artifacts import resource_inventory, license_inventory, validated_current
 import re
 import shutil
 import sys
@@ -35,84 +39,46 @@ def copy_file(source: Path, target: Path, created: list[Path]) -> None:
 
 
 def package_files(staging: Path) -> list[tuple[Path, str]]:
-    """Return (absolute path, archive member path) pairs."""
-    created: list[Path] = []
-    package = ROOT / "pykrita" / "tfm"
-    search = ROOT / "pykrita" / "quick_image_search"
-    color_range = package / "native" / "tfm_color_range.dll"
-    dll = NATIVE_BIN / "kritatfm.dll"
-    worker = NATIVE_BIN / "tfm_vulkan_worker.exe"
-    qtcompat = ROOT / "pykrita" / "qtcompat.py"
-    i18n = ROOT / "pykrita" / "i18n.py"
-    ui_chrome = ROOT / "pykrita" / "ui_chrome.py"
-    required = [
-        package / "__init__.py",
-        package / "manager.py",
-        search / "__init__.py",
-        search / "docker.py",
-        qtcompat,
-        i18n,
-        ui_chrome,
-        color_range,
-        ROOT / "pykrita" / "tfm.desktop",
-        ROOT / "actions" / "tfm.action",
-        dll,
-        worker,
-        ROOT / "README.md",
-        ROOT / "LICENSE",
-    ]
-    missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
-    if missing:
-        raise SystemExit("Missing required files (build native first):\n  " + "\n  ".join(missing))
-
-    docs = ("README.md", "RELEASE_NOTES.md", "SOURCE-NOTES.md", "LICENSE")
-    for name in docs:
-        source = ROOT / name
+    """Package only a source-verified, complete native batch."""
+    batch, manifest = validated_current(ROOT)
+    validation_path = ROOT / 'build/test-results/candidate-validation.json'
+    validation = json.loads(validation_path.read_text(encoding='utf-8'))
+    if validation.get('batch_id') != manifest['batch_id'] or validation.get('status') not in ('passed', 'passed_with_live_host_gap'):
+        raise ValueError('Candidate validation does not match this complete build batch')
+    created = []
+    for source, relative in resource_inventory(ROOT, batch / 'tfm_color_range.dll'):
+        copy_file(source, staging / 'resource' / relative, created)
+    for name in ('kritatfm.dll', 'tfm_vulkan_worker.exe'):
+        copy_file(batch / name, staging / 'kritaplugins' / name, created)
+    for source, relative in license_inventory(ROOT):
+        copy_file(source, staging / relative, created)
+    for name in ('README.md', 'RELEASE_NOTES.md', 'SOURCE-NOTES.md', 'LICENSE'):
+        copy_file(ROOT / name, staging / name, created)
+    copy_file(batch / 'manifest.json', staging / 'BUILD-MANIFEST.json', created)
+    copy_file(validation_path, staging / 'VALIDATION.json', created)
+    for name in ('quality-testing.md', 'quality-performance.md', 'quality-compatibility.md', 'candidate-install.md'):
+        source = ROOT / 'docs' / name
         if source.is_file():
-            copy_file(source, staging / name, created)
-
-    for source in package.rglob("*"):
-        if not source.is_file() or "__pycache__" in source.parts:
-            continue
-        if source.suffix not in {".py", ".html"} and source != color_range:
-            continue
-        relative = source.relative_to(package)
-        copy_file(source, staging / "resource" / "pykrita" / "tfm" / relative, created)
-
-    for source in search.rglob("*"):
-        if not source.is_file() or "__pycache__" in source.parts:
-            continue
-        if source.suffix != ".py":
-            continue
-        relative = source.relative_to(search)
-        copy_file(source, staging / "resource" / "pykrita" / "quick_image_search" / relative, created)
-
-    copy_file(qtcompat, staging / "resource" / "pykrita" / "qtcompat.py", created)
-    copy_file(i18n, staging / "resource" / "pykrita" / "i18n.py", created)
-    copy_file(ui_chrome, staging / "resource" / "pykrita" / "ui_chrome.py", created)
-    copy_file(ROOT / "pykrita" / "tfm.desktop", staging / "resource" / "pykrita" / "tfm.desktop", created)
-    copy_file(ROOT / "actions" / "tfm.action", staging / "resource" / "actions" / "tfm.action", created)
-    copy_file(dll, staging / "kritaplugins" / "kritatfm.dll", created)
-    copy_file(worker, staging / "kritaplugins" / "tfm_vulkan_worker.exe", created)
-
-    install = staging / "INSTALL.txt"
+            copy_file(source, staging / 'docs' / name, created)
+    install = staging / 'INSTALL.txt'
     install.write_text(
-        "TFM install\n"
-        "===========\n"
-        "1. Close Krita.\n"
-        "2. Copy everything under resource/ into your Krita resource directory.\n"
-        "3. Copy kritaplugins/kritatfm.dll and kritaplugins/tfm_vulkan_worker.exe\n"
-        "   into the Krita install lib/kritaplugins/ folder (same directory).\n"
-        "4. Start Krita and enable TFM in Python Plugin Manager if needed.\n"
-        "5. Optional tools (Quick Image Search, etc.): Tools → TFM → Configure TFM → Tools.\n",
-        encoding="utf-8",
-    )
+        "Close Krita before installation. Back up the existing TFM program files.\n"
+        "Copy resource/ contents into the chosen Krita resource directory.\n"
+        "Copy BOTH kritaplugins files into the same Krita lib/kritaplugins directory.\n"
+        "Keep TFM user configuration, assets, scripts and models unchanged.\n"
+        "Start Krita and enable TFM in the Python Plugin Manager if necessary.\n"
+        "To roll back, restore the complete previous program set with Krita closed.\n"
+        "See docs/candidate-install.md for verification, installation and rollback details.\n",
+        encoding='utf-8')
     created.append(install)
-
-    members = []
-    for path in created:
-        members.append((path, path.relative_to(staging).as_posix()))
-    return members
+    # Verify sources again after copying; concurrent edits must not produce a mixed package.
+    validated_current(ROOT)
+    inventory = {p.relative_to(staging).as_posix(): digest(p) for p in created}
+    package_manifest = staging / 'PACKAGE-MANIFEST.json'
+    package_manifest.write_text(json.dumps({'schema_version': 1, 'batch_id': manifest['batch_id'],
+                                           'files': inventory}, indent=2) + '\n', encoding='utf-8')
+    created.append(package_manifest)
+    return [(path, path.relative_to(staging).as_posix()) for path in created]
 
 
 def main() -> int:
@@ -128,22 +94,24 @@ def main() -> int:
     out = args.output or (ROOT / "dist" / f"TFM-{ver}.zip")
     out = out.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    staging = ROOT / "build" / "release-staging" / f"TFM-{ver}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    staging_parent = ROOT / "build" / "release-staging"
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"TFM-{ver}-", dir=staging_parent))
+    pending_zip = out.with_name(out.name + '.pending')
 
     try:
         members = package_files(staging)
         prefix = f"TFM-{ver}"
-        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(pending_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path, relative in members:
                 archive.write(path, f"{prefix}/{relative}")
+        os.replace(pending_zip, out)
         print("PACKAGE_OK", out)
         print("SHA256", digest(out))
         print("FILES", len(members))
         return 0
     finally:
+        pending_zip.unlink(missing_ok=True)
         shutil.rmtree(staging, ignore_errors=True)
 
 

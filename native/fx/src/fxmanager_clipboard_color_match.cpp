@@ -137,6 +137,52 @@ double value(const KisFilterConfigurationSP &config, const char *key, double fal
     return config ? config->getDouble(key, fallback) : fallback;
 }
 
+bool applyFloatLab(KisPaintDeviceSP device,const QRect &rect,KoUpdater *updater,
+                   const std::function<fxmanager::statistical::Pixel(fxmanager::statistical::Pixel)> &map)
+{
+    auto image=fxmanager::readFloatImage(device,rect);
+    if(image.isNull()) return false;
+    auto *registry=KoColorSpaceRegistry::instance();
+    const auto *rgb=registry->colorSpace("RGBA","F32",registry->p709G10Profile());
+    const auto *lab=registry->colorSpace("LABA","F32",registry->lab16()->profile());
+    if(!rgb || !lab || lab->pixelSize()!=int(sizeof(float)*4)) return false;
+    const int count=rect.width()*rect.height();
+    QVector<float> values(count*4);
+    if(!rgb->convertPixelsTo(reinterpret_cast<const quint8*>(image.pixels.constData()),
+        reinterpret_cast<quint8*>(values.data()),lab,count,
+        KoColorConversionTransformation::internalRenderingIntent(),KoColorConversionTransformation::internalConversionFlags())) return false;
+    bool changed=false;
+    for(int i=0;i<count;++i) {
+        if(updater && updater->interrupted()) return false;
+        auto *p=values.data()+i*4;
+        if(image.pixels[i*4+3]<=0) continue;
+        const fxmanager::statistical::Pixel input{p[0]/100.0,p[1]/255.0,p[2]/255.0,image.pixels[i*4+3]};
+        const auto result=map(input);
+        changed|=input.l!=result.l || input.a!=result.a || input.b!=result.b;
+        p[0]=float(result.l*100); p[1]=float(result.a*255); p[2]=float(result.b*255);
+    }
+    if(!changed) return true;
+    fxmanager::FloatRgbaImage output=image;
+    if(!lab->convertPixelsTo(reinterpret_cast<const quint8*>(values.constData()),
+        reinterpret_cast<quint8*>(output.pixels.data()),rgb,count,
+        KoColorConversionTransformation::internalRenderingIntent(),KoColorConversionTransformation::internalConversionFlags())) return false;
+    for(int i=0;i<count;++i) {
+        output.pixels[i*4+3]=image.pixels[i*4+3];
+        if(image.pixels[i*4+3]<=0) for(int c=0;c<3;++c) output.pixels[i*4+c]=image.pixels[i*4+c];
+    }
+    if(updater && updater->interrupted()) return false;
+    return fxmanager::writeFloatImage(device,output,rect);
+}
+
+void publishStaged(KisPaintDeviceSP target,KisPaintDeviceSP staged,const QRect &rect,KoUpdater *updater)
+{
+    if(updater && updater->interrupted()) return;
+    QByteArray pixels(rect.width()*rect.height()*target->pixelSize(),Qt::Uninitialized);
+    staged->readBytes(reinterpret_cast<quint8*>(pixels.data()),rect);
+    if(updater && updater->interrupted()) return;
+    target->writeBytes(reinterpret_cast<const quint8*>(pixels.constData()),rect);
+}
+
 } // namespace
 
 KisFilterClipboardColorMatch::KisFilterClipboardColorMatch()
@@ -151,9 +197,7 @@ KisFilterConfigurationSP KisFilterClipboardColorMatch::defaultConfiguration(KisR
 {
     auto config = factoryConfiguration(resourcesInterface);
     config->setProperty("statistical_version", 4);
-    for (const char *key : {"tone_distribution", "tonal_color", "color_correlation", "gain_limit", "shift_limit", "variance_floor"})
-        config->setProperty(key, parameterDefault(QString::fromLatin1(key), 3));
-    config->setProperty("gamut_protection", false);
+    
     config->setProperty("reference_distribution", QByteArray());
     config->setProperty("source_distribution", QByteArray());
     config->setProperty("reference_valid", false);
@@ -167,12 +211,7 @@ KisFilterConfigurationSP KisFilterClipboardColorMatch::defaultConfiguration(KisR
     config->setProperty("reference_height", 0);
     config->setProperty("reference_hash", QString());
     config->setProperty("reference_preview", QByteArray());
-    config->setProperty("match_strength", 1.0);
-    config->setProperty("luminance", 1.0);
-    config->setProperty("color_intensity", 1.0);
-    config->setProperty("fade", 0.0);
-    config->setProperty("preserve_alpha", true);
-    config->setProperty("reference_source", QStringLiteral("clipboard"));
+
     config->setProperty("reference_path", QString());
     config->setProperty("source_stats_valid", false);
     config->setProperty("source_mean_l", 0.0);
@@ -181,6 +220,7 @@ KisFilterConfigurationSP KisFilterClipboardColorMatch::defaultConfiguration(KisR
     config->setProperty("source_std_l", 0.0);
     config->setProperty("source_std_a", 0.0);
     config->setProperty("source_std_b", 0.0);
+    fxmanager::applyBuiltinDefaults(id().id(), config);
     fxmanager::applyFilterDefaults(id().id(), config); return config;
 }
 
@@ -197,6 +237,7 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
                                                KoUpdater *progressUpdater) const
 {
     if (!device || applyRect.isEmpty() || !config || !config->getBool("reference_valid", false)) return;
+    if(progressUpdater && progressUpdater->interrupted()) return;
 
     const KoColorSpace *lab = KoColorSpaceRegistry::instance()->lab16();
     if (!lab) return;
@@ -222,16 +263,35 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
         options.varianceFloor = floor*floor;
         options.composite = version >= 4;
         const st::Transfer transfer(sourceProfile, referenceProfile, options);
+        const KoColorSpace *targetSpace = device->colorSpace();
+        const bool protectSrgb = config->getBool("gamut_protection", version == 2) && targetSpace->profile()
+            && targetSpace->profile()->name().contains(QStringLiteral("srgb"), Qt::CaseInsensitive);
+        if(fxmanager::requiresFloatProcessing(device)) {
+            const bool written=applyFloatLab(device,applyRect,progressUpdater,[&](st::Pixel input) {
+                // The statistical tone table has a bounded domain. Preserve
+                // the source lightness residual beyond that domain.
+                auto bounded=input; bounded.l=std::clamp(input.l,0.0,1.0);
+                auto result=transfer.apply(bounded,strength,luminance,colour,fade);
+                result.l+=input.l-bounded.l;
+                if(protectSrgb && colour>0) result=st::compressSrgbGamut(result);
+                return result;
+            });
+            if(progressUpdater && progressUpdater->interrupted()) return;
+            fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),written
+                ? QStringLiteral("Float Lab statistical transfer") : QStringLiteral("Float Lab conversion failed; pixels unchanged"));
+            if(written && progressUpdater) progressUpdater->setProgress(100);
+            return;
+        }
         KisPaintDeviceSP sourceLab = new KisPaintDevice(device->colorSpace());
         sourceLab->makeCloneFrom(device, applyRect);
         sourceLab->convertTo(lab, KoColorConversionTransformation::internalRenderingIntent(),
                              KoColorConversionTransformation::internalConversionFlags());
-        const KoColorSpace *targetSpace = device->colorSpace();
-        const bool protectSrgb = config->getBool("gamut_protection", version == 2) && targetSpace->profile()
-            && targetSpace->profile()->name().contains(QStringLiteral("srgb"), Qt::CaseInsensitive);
+        KisPaintDeviceSP staged=new KisPaintDevice(targetSpace);
+        staged->makeCloneFrom(device,applyRect);
         KisSequentialConstIterator sourceIt(sourceLab, applyRect);
-        KisSequentialIterator targetIt(device, applyRect);
+        KisSequentialIterator targetIt(staged, applyRect);
         while (sourceIt.nextPixel() && targetIt.nextPixel()) {
+            if(progressUpdater && progressUpdater->interrupted()) return;
             const quint16 *src = reinterpret_cast<const quint16 *>(sourceIt.oldRawData());
             if (!src[3]) continue;
             const st::Pixel input{src[0]/65535.0, (src[1]-32896.0)/65535.0,
@@ -247,6 +307,7 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
             targetSpace->fromLabA16(reinterpret_cast<const quint8 *>(pixel), targetIt.rawData(), 1);
             targetSpace->setOpacity(targetIt.rawData(), alpha, 1);
         }
+        publishStaged(device,staged,applyRect,progressUpdater);
         if (progressUpdater) progressUpdater->setProgress(100);
         return;
     }
@@ -268,6 +329,7 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
     const double totalStrength = strength * (1.0 - fade);
     const double lAmount = totalStrength * luminance;
     const double abAmount = totalStrength * colorIntensity;
+    if(totalStrength<=0 || (lAmount<=0 && abAmount<=0)) return;
     const double refMeanL = value(config, "reference_mean_l", source.meanL);
     const double refMeanA = value(config, "reference_mean_a", source.meanA);
     const double refMeanB = value(config, "reference_mean_b", source.meanB);
@@ -275,16 +337,34 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
     const double refStdA = value(config, "reference_std_a", source.stdA);
     const double refStdB = value(config, "reference_std_b", source.stdB);
 
+    if(fxmanager::requiresFloatProcessing(device)) {
+        const bool written=applyFloatLab(device,applyRect,progressUpdater,[&](fxmanager::statistical::Pixel input) {
+            auto output=input;
+            output.l=matchChannel(input.l*65535,source.meanL,source.stdL,refMeanL,refStdL,lAmount)/65535;
+            output.a=(matchChannel(input.a*65535+32896,source.meanA,source.stdA,refMeanA,refStdA,abAmount)-32896)/65535;
+            output.b=(matchChannel(input.b*65535+32896,source.meanB,source.stdB,refMeanB,refStdB,abAmount)-32896)/65535;
+            return output;
+        });
+        if(progressUpdater && progressUpdater->interrupted()) return;
+        fxmanager::reportBackend(id().id(),QStringLiteral("cpu"),written
+            ? QStringLiteral("Float Lab legacy statistical transfer") : QStringLiteral("Float Lab conversion failed; pixels unchanged"));
+        if(written && progressUpdater) progressUpdater->setProgress(100);
+        return;
+    }
+
     KisPaintDeviceSP sourceLab = new KisPaintDevice(device->colorSpace());
     sourceLab->makeCloneFrom(device, applyRect);
     sourceLab->convertTo(lab,
                          KoColorConversionTransformation::internalRenderingIntent(),
                          KoColorConversionTransformation::internalConversionFlags());
     const KoColorSpace *targetSpace = device->colorSpace();
+    KisPaintDeviceSP staged=new KisPaintDevice(targetSpace);
+    staged->makeCloneFrom(device,applyRect);
     KisSequentialConstIterator sourceIt(sourceLab, applyRect);
-    KisSequentialIterator targetIt(device, applyRect);
+    KisSequentialIterator targetIt(staged, applyRect);
     quint16 labPixel[4] = {0, 0, 0, 0};
     while (sourceIt.nextPixel() && targetIt.nextPixel()) {
+        if(progressUpdater && progressUpdater->interrupted()) return;
         const quint16 *src = reinterpret_cast<const quint16 *>(sourceIt.oldRawData());
         labPixel[0] = static_cast<quint16>(std::clamp(matchChannel(src[0], source.meanL, source.stdL, refMeanL, refStdL, lAmount), 0.0, 65535.0));
         labPixel[1] = static_cast<quint16>(std::clamp(matchChannel(src[1], source.meanA, source.stdA, refMeanA, refStdA, abAmount), 0.0, 65535.0));
@@ -292,6 +372,7 @@ void KisFilterClipboardColorMatch::processImpl(KisPaintDeviceSP device,
         labPixel[3] = src[3];
         targetSpace->fromLabA16(reinterpret_cast<const quint8 *>(labPixel), targetIt.rawData(), 1);
     }
+    publishStaged(device,staged,applyRect,progressUpdater);
     if (progressUpdater) progressUpdater->setProgress(100);
 }
 

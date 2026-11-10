@@ -5,6 +5,8 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from quick_image_search.network import request_bytes
+from quick_image_search.task_runtime import check_cancelled
 
 
 class PinterestError(Exception):
@@ -155,6 +157,7 @@ class Pinterest:
                 self._cursor = next_cursor
 
     def _request(self, request):
+        check_cancelled()
         if self._transport is not None:
             result = self._transport(request, self.TIMEOUT, self.proxy)
             if isinstance(result, bytes):
@@ -164,15 +167,7 @@ class Pinterest:
             if hasattr(result, "read"):
                 return self._read_bounded(result)
             raise PinterestError("Invalid Pinterest transport response.")
-        handlers = []
-        if self.proxy:
-            handlers.append(urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
-        opener = urllib.request.build_opener(*handlers)
-        try:
-            with opener.open(request, timeout=self.TIMEOUT) as response:
-                return self._read_bounded(response)
-        except urllib.error.HTTPError:
-            raise
+        return request_bytes(request, timeout=self.TIMEOUT, limit=self.MAX_BYTES, proxy=self.proxy)
 
     def _visual_request(self, cursor):
         boundary = '----ImageSearch' + uuid.uuid4().hex

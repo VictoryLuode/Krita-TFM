@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "fxmanager_processing.h"
 #include <QString>
 
@@ -11,6 +13,6 @@ bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
             const fxmanager::FloatRgbaImage &defaultImage, const QRect &read,
             const QRect &outputRect, const QRect &frame, bool circular,
             double centerX, double centerY, double angle, double factor,
-            fxmanager::FloatRgbaImage &output, QString &reason, QString &deviceName);
+            fxmanager::FloatRgbaImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_motion_gpu

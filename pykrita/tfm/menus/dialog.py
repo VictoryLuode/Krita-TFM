@@ -1,108 +1,15 @@
-"""TFM multi-list menu editor dialog.
+"""Menu editor UI and compatible public exports."""
+from .editor_context import *  # noqa: F403
+from .editor_shortcuts import ShortcutEditingMixin
+from .editor_scripts import ScriptEditingMixin
+from .editor_model import MenuEditingMixin
 
-Supports nested menus, custom-named commands. Provides
-a live Current Menu list, shortcut conflict detection, and config export/import.
-"""
-
-import copy
-import json
-import os
-import sys
-
-from krita import Krita, Palette
-
-from .qtcompat import (
-    PYQT6,
-    QAbstractItemView,
-    QApplication,
-    QBrush,
-    QCheckBox,
-    QColor,
-    QComboBox,
-    QDesktopServices,
-    QDialog,
-    QEvent,
-    QFileDialog,
-    QFont,
-    QGroupBox,
-    QHBoxLayout,
-    QIcon,
-    QInputDialog,
-    QKeySequence,
-    QKeySequenceEdit,
-    QLabel,
-    QLineEdit,
-    QByteArray,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QMessageBox,
-    QMimeData,
-    QPalette,
-    QPixmap,
-    QPlainTextEdit,
-    QPushButton,
-    QRect,
-    QSize,
-    QStandardPaths,
-    QStyle,
-    QStyledItemDelegate,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QUrl,
-    QVBoxLayout,
-    QWidget,
-    Qt,
-    exec_,
-)
-
-from ..i18n import tr
-from ..ui_chrome import (
-    apply_warning_label,
-    icon_tool_button,
-    make_empty_state,
-    position_empty_state,
-    sync_empty_state,
-)
-from .version import __version__
-from .config import (
-    BRUSH_BLEND_MODES,
-    BRUSH_VALUES,
-    LAYER_BLEND_MODES,
-    SCRIPTS_DIR,
-    SCRIPT_TEMPLATE,
-    add_overrides,
-    build_config_dict,
-    catalog_actions,
-    delete_script,
-    ensure_scripts_dir,
-    list_scripts,
-    load_action_categories,
-    load_config,
-    load_overrides,
-    notify_refresh,
-    parse_config_dict,
-    pop_overrides,
-    read_script,
-    script_path,
-    SCRIPTS_DIR,
-    rename_script,
-    run_script,
-    save_config,
-    script_filename,
-    write_script,
-    _RESOURCE_ROOT,
-)
-from .shortcuts import find_shortcut_file, parse_entries, read_text, set_entries, UNBOUND
-from .shortcuts import restore as restore_shortcuts
-from .shortcuts import unbind
-from .editor_widgets import *  # noqa: F403
-
-class ListMenuDialog(QWidget):
+class ListMenuDialog(ShortcutEditingMixin, ScriptEditingMixin, MenuEditingMixin, QWidget):
     """Multi-menu editor with nested submenu navigation + a live Current Menu list."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._services = sys.modules[__name__]
         self.setMinimumSize(920, 560)
 
         self._catalog = dict(catalog_actions())
@@ -135,12 +42,7 @@ class ListMenuDialog(QWidget):
         self._reload_available()
         self._saved_menu_state = self._menu_state()
 
-    def _menu_state(self):
-        import copy
-        return copy.deepcopy((self.popup_shortcut, self.lists))
 
-    def has_unsaved_changes(self):
-        return self._menu_state() != self._saved_menu_state or bool(self._pending_overrides)
 
     # ---------- Size (remembered) ----------
     def _apply_default_size(self):
@@ -175,208 +77,14 @@ class ListMenuDialog(QWidget):
         super().done(result)
 
     # ---------- Shortcut conflicts / overrides ----------
-    @staticmethod
-    def _shortcut_file():
-        """Path of Krita's kritashortcutsrc (None when it cannot be located)."""
-        try:
-            from .qtcompat import QStandardPaths
-            qt_dirs = [QStandardPaths.writableLocation(loc) for loc in (
-                QStandardPaths.StandardLocation.AppConfigLocation,
-                QStandardPaths.StandardLocation.GenericConfigLocation,
-                QStandardPaths.StandardLocation.AppDataLocation,
-            )]
-        except Exception:
-            qt_dirs = []
-        return find_shortcut_file(qt_dirs)
 
-    @staticmethod
-    def _action_shortcuts(action):
-        """PortableText list of an action's current shortcuts."""
-        out = []
-        try:
-            seqs = list(action.shortcuts())
-        except Exception:
-            seqs = []
-        if not seqs:
-            try:
-                s = action.shortcut()
-                seqs = [] if s.isEmpty() else [s]
-            except Exception:
-                seqs = []
-        for s in seqs:
-            txt = s.toString(QKeySequence.SequenceFormat.PortableText)
-            if txt:
-                out.append(txt)
-        return out
 
-    @staticmethod
-    def _clear_action_shortcuts(action):
-        """Drop every live shortcut from a Krita action (applies to the session)."""
-        try:
-            action.setShortcuts([])
-        except Exception:
-            pass
-        try:
-            action.setShortcut(QKeySequence())
-        except Exception:
-            pass
 
-    def _conflicts_for(self, key):
-        """[(kind, label, owner)] bound to `key`, excluding the list being edited."""
-        out = []
-        for i, lst in enumerate(self.lists):
-            if i != self.current and (lst.get("shortcut") or "") == key:
-                out.append(("list", lst.get("name") or "", lst))
-        try:
-            actions = Krita.instance().actions()
-        except Exception as e:
-            print("tfm: cannot list actions: %s" % e)
-            actions = []
-        for a in actions:
-            try:
-                if key not in self._action_shortcuts(a):
-                    continue
-                label = (a.text() or a.objectName() or "").replace("&", "").strip()
-            except RuntimeError:
-                continue
-            out.append(("action", label or a.objectName(), a))
-        return out
 
-    def _pending_action_ids(self):
-        return {r.get("id") for recs in self._pending_overrides.values() for r in recs}
 
-    def _ask_override(self, key, conflicts):
-        """Ask whether TFM may take `key` over. True = override."""
-        pending = self._pending_action_ids()
-        rows = []
-        for kind, label, owner in conflicts:
-            if kind == "list":
-                rows.append("    \u2022 %s   (another TFM menu)" % label)
-            elif owner.objectName() in pending:
-                rows.append("    \u2022 %s   (already being unbound)" % label)
-            else:
-                rows.append("    \u2022 %s" % label)
-        box = QMessageBox(self)
-        box.setWindowTitle("Shortcut conflict")
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setText("\u201c%s\u201d is already taken by:" % key)
-        box.setInformativeText(
-            "\n".join(rows) +
-            "\n\nOverride unbinds the other side automatically. A Krita action's "
-            "binding is written to kritashortcutsrc as \u201cnone\u201d, so it stays "
-            "unbound after a restart (use Restore in Menu Settings to get it back).")
-        take = box.addButton("Override", QMessageBox.ButtonRole.AcceptRole)
-        keep = box.addButton("Pick another key", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(keep)
-        exec_(box)
-        return box.clickedButton() is take
 
-    def _apply_pending_overrides(self):
-        """Do the external (Krita-side) part of the overrides accepted in this dialog."""
-        if not self._pending_overrides:
-            return True
-        path = self._shortcut_file()
-        if path is None:
-            QMessageBox.warning(self, "TFM", "Krita's shortcut file location could not be found. The override was not applied.")
-            return False
-        try:
-            original = read_text(path, strict=True)
-        except OSError as error:
-            QMessageBox.warning(self, "TFM", "Could not read the shortcut file: {}".format(error))
-            return False
-        previous = parse_entries(original)
-        records = []
-        for name, recs in list(self._pending_overrides.items()):
-            for item in recs:
-                rec = {k: v for k, v in item.items() if k != "action"}
-                rec["prev_file"] = previous.get(rec["id"])
-                records.append((name, rec, item.get("action")))
-        # Persist the complete recovery record before touching the host.
-        from . import config as menu_config
-        try:
-            data = menu_config._read_raw(strict=True)
-        except (OSError, ValueError):
-            QMessageBox.warning(self, "TFM", "Could not read the menu configuration. The override was not applied.")
-            return False
-        overrides = data.get("overrides")
-        if not isinstance(overrides, dict):
-            overrides = {}
-        for name, rec, _ in records:
-            history = overrides.setdefault(name or "", [])
-            if not any(existing.get("id") == rec.get("id") and existing.get("key") == rec.get("key") for existing in history if isinstance(existing, dict)):
-                history.append(rec)
-        data["overrides"] = overrides
-        if not menu_config._write_raw(data):
-            return False
-        if path is not None:
-            target = set_entries(original, {rec["id"]: UNBOUND for _, rec, _ in records})
-            if target != original:
-                from . import shortcuts
-                if not shortcuts.write_text(path, target):
-                    return False
-        for _, _, action in records:
-            if action is not None:
-                self._clear_action_shortcuts(action)
-        self._pending_overrides = {}
-        return True
 
-    def _update_undo_button(self):
-        if not hasattr(self, "undo_sc_btn"):
-            return
-        name = self.lists[self.current].get("name") if self.lists else None
-        self.undo_sc_btn.setEnabled(bool(load_overrides().get(name or "")))
 
-    def _restore_overrides(self):
-        """Give the Krita bindings back and clear this menu's key (avoids re-colliding)."""
-        if not self.lists:
-            return
-        name = self.lists[self.current].get("name") or ""
-        records = load_overrides().get(name) or []
-        if not records:
-            return
-        keys = sorted({r.get("key") for r in records if r.get("key")})
-        if QMessageBox.question(
-                self, "Restore shortcuts",
-                "Give the original Krita shortcut(s) back to:\n\n    %s\n\n"
-                "This also clears this menu's shortcut (%s) so the two no longer "
-                "collide." % (
-                    "\n    ".join("%s  \u2192  %s" % (r.get("label") or r.get("id"), r.get("key"))
-                                  for r in records),
-                    ", ".join(keys) or "-")
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        path = self._shortcut_file()
-        if path is None:
-            QMessageBox.warning(self, "TFM", "Krita's shortcut file location could not be found. Recovery records were kept.")
-            return
-        if not restore_shortcuts(path, {r["id"]: r.get("prev_file") for r in records}):
-            QMessageBox.warning(self, "TFM", "Could not restore the shortcut file. Recovery records were kept.")
-            return
-        try:
-            actions = {a.objectName(): a for a in Krita.instance().actions()}
-        except Exception:
-            actions = {}
-        for r in records:
-            act = actions.get(r.get("id"))
-            seqs = [QKeySequence.fromString(s, QKeySequence.SequenceFormat.PortableText)
-                    for s in (r.get("prev_runtime") or [])]
-            if act is not None and seqs:
-                try:
-                    act.setShortcuts(seqs)
-                except Exception as e:
-                    print("tfm: cannot restore %s: %s" % (r.get("id"), e))
-        if (self.lists[self.current].get("shortcut") or "") in keys:
-            self.lists[self.current]["shortcut"] = ""
-            self._update_left_shortcut()
-        if not save_config(self.popup_shortcut, self.lists):
-            QMessageBox.warning(self, "TFM", "Shortcuts were restored, but the menu configuration could not be saved. Recovery records were kept.")
-            return
-        if pop_overrides(name) is None:
-            QMessageBox.warning(self, "TFM", "Shortcuts and menu configuration were restored, but recovery records could not be cleared. Try Restore again.")
-            return
-        self._pending_overrides.pop(name, None)
-        notify_refresh()
-        self._update_undo_button()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -567,14 +275,8 @@ class ListMenuDialog(QWidget):
         root.addLayout(bottom)
 
     # ---------- Current menu / path ----------
-    def _cur_menu(self):
-        return self.path[-1] if self.path else {"name": "", "shortcut": "", "items": []}
 
-    def _cur_items(self):
-        return self._cur_menu().get("items", [])
 
-    def _name(self):
-        return self._cur_menu().get("name", "")
 
     def _update_current_title(self):
         name = self._name()
@@ -592,10 +294,6 @@ class ListMenuDialog(QWidget):
                     self.crumb_row.addWidget(QLabel("\u25b8"))
                 self.crumb_row.addWidget(_PathCrumb(self, i, node.get("name", "?")))
 
-    def _go_to_depth(self, depth):
-        if 0 <= depth < len(self.path):
-            self.path = self.path[: depth + 1]
-            self._render_current()
 
     def _sidebar_context_menu(self, pos):
         item = self.sidebar.itemAt(pos)
@@ -630,22 +328,6 @@ class ListMenuDialog(QWidget):
         if menu.actions():
             exec_(menu, self.items_list.viewport().mapToGlobal(pos))
 
-    def _ungroup_submenu(self):
-        row = self.items_list.currentRow()
-        items = self._cur_items()
-        if not 0 <= row < len(items):
-            return
-        submenu = items[row]
-        if not isinstance(submenu, dict) or submenu.get("name") is None:
-            return
-        children = submenu.get("items")
-        if not isinstance(children, list):
-            return
-        items[row:row + 1] = children
-        self._render_items()
-        if items:
-            self.items_list.setCurrentRow(min(row, len(items) - 1))
-        self._reload_available()
 
     # ---------- Sidebar / list management ----------
     def _reload_sidebar(self):
@@ -694,20 +376,7 @@ class ListMenuDialog(QWidget):
             self._update_show_icons_check()
             self._render_current()
 
-    def _cur_top_list(self):
-        if 0 <= self.current < len(self.lists):
-            return self.lists[self.current]
-        return None
 
-    def _on_form_changed(self):
-        lst = self._cur_top_list()
-        if lst is None:
-            return
-        lst["menu_mode"] = self.form_combo.currentData()
-        save_config(self.popup_shortcut, self.lists)
-        self._saved_menu_state = self._menu_state()
-        notify_refresh()
-        self._warn_pie_limits(lst)
 
     def _update_form_combo(self):
         lst = self._cur_top_list()
@@ -721,14 +390,6 @@ class ListMenuDialog(QWidget):
         self.form_combo.setCurrentIndex(max(0, idx))
         self.form_combo.blockSignals(False)
 
-    def _on_show_icons_changed(self):
-        lst = self._cur_top_list()
-        if lst is None:
-            return
-        lst["show_icons"] = self.show_icons_check.isChecked()
-        save_config(self.popup_shortcut, self.lists)
-        self._saved_menu_state = self._menu_state()
-        notify_refresh()
 
     def _warn_pie_limits(self, lst):
         if lst is None or lst.get("menu_mode", lst.get("form", "list")) != "pie":
@@ -767,200 +428,19 @@ class ListMenuDialog(QWidget):
         self.show_icons_check.setChecked(bool(lst.get("show_icons", True)))
         self.show_icons_check.blockSignals(False)
 
-    def _sync_lists_order(self, *_):
-        by_name = {lst["name"]: lst for lst in self.lists}
-        new_order = []
-        for i in range(self.sidebar.count()):
-            name = self.sidebar.item(i).data(ROLE_INDEX)
-            if name in by_name:
-                new_order.append(by_name[name])
-        if len(new_order) == len(self.lists):
-            self.lists[:] = new_order
-        self.current = max(0, self.sidebar.currentRow())
-        self._update_left_shortcut()
 
-    def _new_list(self):
-        name, ok = QInputDialog.getText(self, "Add", "List name:")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-        if any(item.get("name") == name for item in self.lists) or load_overrides().get(name):
-            QMessageBox.warning(self, "TFM", "A menu with this name already exists.")
-            return
-        self.lists.append({"name": name, "shortcut": "", "items": []})
-        self.current = len(self.lists) - 1
-        self.path = [self.lists[self.current]]
-        self._reload_sidebar()
-        self._render_current()
-        self._update_left_shortcut()
 
-    def _rename_list(self):
-        if not self.lists:
-            return
-        new_name, ok = QInputDialog.getText(
-            self, "Rename List", "New name:", text=self.lists[self.current]["name"])
-        if ok and new_name.strip():
-            old_name = self.lists[self.current]["name"]
-            new_name = new_name.strip()
-            if new_name != old_name and (load_overrides().get(old_name) or load_overrides().get(new_name)):
-                QMessageBox.warning(self, "TFM", "Restore the affected shortcuts before renaming this menu.")
-                return
-            if new_name != old_name and any(i != self.current and item.get("name") == new_name for i, item in enumerate(self.lists)):
-                QMessageBox.warning(self, "TFM", "A menu with this name already exists.")
-                return
-            if old_name in self._pending_overrides:
-                self._pending_overrides[new_name] = self._pending_overrides.pop(old_name)
-            self.lists[self.current]["name"] = new_name
-            self._reload_sidebar()
-            self._render_path_bar()
 
-    def _duplicate_list(self):
-        if not self.lists:
-            return
-        src = self.lists[self.current]
-        # lists are plain JSON data, so a json round-trip is a clean deep copy
-        dup = json.loads(json.dumps(src))
-        base = src.get("name", "Menu") + " copy"
-        names = {item.get("name") for item in self.lists}
-        name = base
-        suffix = 2
-        while name in names or load_overrides().get(name):
-            name = "{} {}".format(base, suffix)
-            suffix += 1
-        dup["name"] = name
-        dup["shortcut"] = ""
-        self.lists.insert(self.current + 1, dup)
-        self.current += 1
-        self.path = [self.lists[self.current]]
-        self._reload_sidebar()
-        self._render_current()
-        self._update_left_shortcut()
 
-    def _delete_list(self):
-        if not self.lists:
-            return
-        name = self.lists[self.current].get("name") or ""
-        if load_overrides().get(name):
-            QMessageBox.warning(self, "TFM", "Restore this menu's overridden shortcuts before deleting it.")
-            return
-        if QMessageBox.question(
-                self, "Delete List",
-                f"Delete the list \u201c{self.lists[self.current]['name']}\u201d?") == QMessageBox.StandardButton.Yes:
-            self._pending_overrides.pop(name, None)
-            self.lists.pop(self.current)
-            self.current = max(0, min(self.current, len(self.lists) - 1))
-            self.path = [self.lists[self.current]] if self.lists else []
-            self._reload_sidebar()
-            self._render_current()
-            self._update_left_shortcut()
 
     # ---------- Shortcut ----------
-    def _drop_pending(self):
-        if self.lists:
-            self._pending_overrides.pop(self.lists[self.current].get("name") or "", None)
 
-    def _revert_shortcut_field(self, value):
-        self._loading_sc = True
-        self.list_sc_edit.setKeySequence(QKeySequence(value or ""))
-        self._loading_sc = False
 
-    def _on_list_shortcut_changed(self, seq):
-        if self._loading_sc or not self.lists:
-            return
-        name = self.lists[self.current].get("name") or ""
-        key = seq.toString(QKeySequence.SequenceFormat.PortableText)
-        previous = self.lists[self.current].get("shortcut", "") or ""
-        # A new key invalidates the override accepted for the previous one.
-        self._pending_overrides.pop(name, None)
-        if not key or key == previous:
-            self.lists[self.current]["shortcut"] = key
-            self._refresh_conflict_banner()
-            return
-        conflicts = self._conflicts_for(key)
-        if conflicts and not self._ask_override(key, conflicts):
-            self._revert_shortcut_field(previous)
-            self._refresh_conflict_banner()
-            return
-        self.lists[self.current]["shortcut"] = key
-        records = []
-        for kind, label, owner in conflicts:
-            if kind == "list":
-                owner["shortcut"] = ""      # in-memory only: Cancel discards it
-                continue
-            records.append({
-                "id": owner.objectName(),
-                "label": label,
-                "key": key,
-                "prev_runtime": self._action_shortcuts(owner),
-                "action": owner,            # external part is applied on accept()
-            })
-        if records:
-            self._pending_overrides[name] = records
-        self._refresh_conflict_banner()
 
-    def _clear_list_shortcut(self):
-        if not self.lists:
-            return
-        self._drop_pending()
-        self.lists[self.current]["shortcut"] = ""
-        self._revert_shortcut_field("")
-        self._refresh_conflict_banner()
 
-    def _update_left_shortcut(self):
-        if not self.lists:
-            return
-        self._loading_sc = True
-        self.list_sc_edit.setKeySequence(
-            self.lists[self.current].get("shortcut", ""))
-        self._loading_sc = False
-        self._update_undo_button()
-        self._refresh_conflict_banner()
 
-    def _refresh_conflict_banner(self):
-        label = getattr(self, "shortcut_conflict_label", None)
-        if label is None:
-            return
-        conflict = self._check_conflicts()
-        if conflict:
-            label.setText(tr(
-                "Shortcut conflict: {} Use Override when assigning, or Clear / Restore, then Save Menus.",
-                "快捷键冲突：{} 分配时用「接管」，或清除/恢复后再「保存菜单」。",
-            ).format(conflict))
-            apply_warning_label(label)
-            label.show()
-        else:
-            label.clear()
-            label.hide()
 
     # ---------- Current menu items ----------
-    @staticmethod
-    def _token_of(it):
-        if isinstance(it, str):
-            return it
-        if isinstance(it, dict):
-            if it.get("id"):
-                return it["id"]
-            if it.get("blend") is not None:
-                return "blend:" + (it.get("blend", "") or "")
-            if it.get("bblend") is not None:
-                return "bblend:" + (it.get("bblend", "") or "")
-            if it.get("bval") is not None:
-                return "bval:" + (it.get("bval", "") or "")
-            if it.get("color") is not None:
-                return "color:" + (it.get("color", "") or "") + ":" + (it.get("target", "fg") or "fg")
-            if it.get("sep"):
-                return "sep"
-            if it.get("header") is not None:
-                return "header:" + (it.get("header", "") or "")
-            if it.get("toggle") is not None:
-                return "toggle:" + (it.get("toggle", "") or "")
-            if it.get("brush") is not None:
-                return "brush:" + (it.get("brush", "") or "")
-            if it.get("script") is not None:
-                return "script:" + (it.get("script", "") or "")
-            if it.get("name") is not None:
-                return it["name"]
-        return None
 
     def _item_icon(self, it):
         """Return a QIcon for an item (action icon / brush thumb / colour swatch)."""
@@ -1178,14 +658,6 @@ class ListMenuDialog(QWidget):
             position_empty_state(getattr(self, "items_empty", None), self.items_list)
         return super().eventFilter(obj, event)
 
-    def _existing_cmd_ids(self):
-        out = set()
-        for it in self._cur_items():
-            if isinstance(it, str):
-                out.add(it)
-            elif isinstance(it, dict) and it.get("id"):
-                out.add(it["id"])
-        return out
 
     def _on_avail_selection_changed(self):
         self._show_item_details(self.add_tree.currentItem())
@@ -1280,13 +752,6 @@ class ListMenuDialog(QWidget):
         self._update_script_widget()
         self._reload_available()
 
-    def _update_script_widget(self):
-        """Show the script library actions only while the Scripts source is active."""
-        src = self._current_source()
-        is_script = src is not None and src.key == "script"
-        if is_script:
-            ensure_scripts_dir()
-        self.script_widget.setVisible(is_script)
 
     def _refresh_tree_accessibility(self, _index):
         # Qt 6 can retain accessible cells keyed by pre-collapse visible rows.
@@ -1344,75 +809,8 @@ class ListMenuDialog(QWidget):
                 self.add_tree.addTopLevelItem(leaf)
         self.add_tree.expandAll()
 
-    def _nest_item_into_submenu(self, src_row, dest_row):
-        """Move the item at src_row into the submenu at dest_row. True on success."""
-        items = self._cur_items()
-        if not (0 <= src_row < len(items) and 0 <= dest_row < len(items)):
-            return False
-        if src_row == dest_row:
-            return False
-        dest = items[dest_row]
-        if not isinstance(dest, dict) or dest.get("name") is None:
-            return False
-        item = items.pop(src_row)
-        if src_row < dest_row:
-            dest_row -= 1
-        dest = items[dest_row]
-        children = dest.setdefault("items", [])
-        if not isinstance(children, list):
-            dest["items"] = children = []
-        children.append(item)
-        self._render_items()
-        self._reload_available()
-        return True
 
-    def _reorder_menu_item(self, src_row, target_item, indicator):
-        """Reorder within the current menu from a custom drag drop. True on success."""
-        items = self._cur_items()
-        n = len(items)
-        if not 0 <= src_row < n:
-            return False
-        on_item = QAbstractItemView.DropIndicatorPosition.OnItem
-        above = QAbstractItemView.DropIndicatorPosition.AboveItem
-        below = QAbstractItemView.DropIndicatorPosition.BelowItem
-        if target_item is None:
-            dest = n
-        else:
-            dest = self.items_list.row(target_item)
-            if indicator == below or indicator == on_item:
-                dest += 1
-            elif indicator != above:
-                dest = n
-        if dest > src_row:
-            dest -= 1
-        if dest == src_row:
-            return True
-        item = items.pop(src_row)
-        items.insert(dest, item)
-        self._render_items()
-        self.items_list.setCurrentRow(dest)
-        return True
 
-    def _move_item_to_path_depth(self, src_row, depth):
-        """Move an item from the current submenu up into path[depth]. True on success."""
-        if not (0 <= depth < len(self.path) - 1):
-            return False
-        items = self._cur_items()
-        if not 0 <= src_row < len(items):
-            return False
-        item = items.pop(src_row)
-        parent_items = self.path[depth].setdefault("items", [])
-        if not isinstance(parent_items, list):
-            self.path[depth]["items"] = parent_items = []
-        child = self.path[depth + 1]
-        try:
-            insert_at = parent_items.index(child)
-        except ValueError:
-            insert_at = len(parent_items)
-        parent_items.insert(insert_at, item)
-        self._render_items()
-        self._reload_available()
-        return True
 
     def _on_item_double_click(self, *_):
         entry = self.items_list.currentItem()
@@ -1423,27 +821,7 @@ class ListMenuDialog(QWidget):
         else:
             self._rename_item()
 
-    def _enter_submenu(self):
-        idx = self.items_list.currentRow()
-        if idx < 0 or not self._cur_items():
-            return
-        it = self._cur_items()[idx]
-        if isinstance(it, dict) and it.get("name") is not None:
-            self.path.append(it)
-            self._render_current()
 
-    def _add_selected(self):
-        entry = self.add_tree.currentItem()
-        if entry is None or not self.path:
-            return
-        # Category headers are not addable.
-        if entry.data(0, ROLE_TYPE) == TYPE_CAT:
-            return
-        src = self._current_source()
-        if src is None:
-            return
-        src.add_fn(self, entry.data(0, ROLE_TOKEN))
-        self._reload_available()  # refresh dedup after adding
 
     def _on_tree_double_click(self, item, _column):
         # Double-click a leaf to add it; a category header just expands/collapses.
@@ -1451,195 +829,18 @@ class ListMenuDialog(QWidget):
             self._add_selected()
 
     # ---------- Script library (the Scripts add-source) ----------
-    def _selected_script(self):
-        item = self.add_tree.currentItem()
-        if item is None or item.data(0, ROLE_TYPE) != TYPE_SCRIPT:
-            return ""
-        return script_filename(item.data(0, ROLE_TOKEN) or "")
 
-    def _new_script(self):
-        if exec_(_ScriptEditorDialog(self)) == QDialog.DialogCode.Accepted:
-            self._reload_available()
 
-    def _edit_script(self):
-        fn = self._selected_script()
-        if not fn:
-            QMessageBox.information(self, "TFM", "Select a script in the list first.")
-            return
-        if exec_(_ScriptEditorDialog(self, fn, read_script(fn))) == QDialog.DialogCode.Accepted:
-            self._reload_available()
 
-    def _rename_script_file(self):
-        fn = self._selected_script()
-        if not fn:
-            QMessageBox.information(self, "TFM", "Select a script in the list first.")
-            return
-        if os.path.normcase(script_path(fn)) != os.path.normcase(os.path.join(SCRIPTS_DIR, fn)):
-            QMessageBox.information(self, "TFM", "This is a bundled example. Edit it first to create your own copy before renaming it.")
-            return
-        new_name, ok = QInputDialog.getText(self, "Rename Script", "New name:",
-                                            text=os.path.splitext(fn)[0])
-        if not ok or not new_name.strip():
-            return
-        new_fn = rename_script(fn, new_name)
-        if not new_fn:
-            QMessageBox.warning(
-                self, "TFM",
-                "Could not rename the script (a script with that name may already exist).")
-            return
-        self._remap_script_items(fn, new_fn)
-        self._render_items()
-        self._reload_available()
 
-    def _delete_script_file(self):
-        fn = self._selected_script()
-        if not fn:
-            QMessageBox.information(self, "TFM", "Select a script in the list first.")
-            return
-        if os.path.normcase(script_path(fn)) != os.path.normcase(os.path.join(SCRIPTS_DIR, fn)):
-            QMessageBox.information(self, "TFM", "This is a bundled example and cannot be deleted.")
-            return
-        reply = QMessageBox.question(
-            self, "Delete Script",
-            "Delete '%s' from the library?\n\n"
-            "The bundled example will be used if one has the same name; "
-            "otherwise menu items using it will report 'not found'." % fn,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        if not delete_script(fn):
-            QMessageBox.warning(self, "TFM", "Could not delete the script file.")
-            return
-        self._reload_available()
 
-    def _open_scripts_folder(self):
-        path = ensure_scripts_dir()
-        try:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        except Exception:
-            QMessageBox.information(self, "TFM", "Script folder:\n%s" % path)
 
-    def _remap_script_items(self, old_fn, new_fn):
-        """Follow a renamed script file from every menu item that uses it."""
-        def walk(items):
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("script") == old_fn:
-                    it["script"] = new_fn
-                if isinstance(it.get("items"), list):
-                    walk(it["items"])
-        for lst in self.lists:
-            walk(lst.get("items", []))
 
-    def _add_submenu(self):
-        if not self.path:
-            return
-        name, ok = QInputDialog.getText(self, "Add Submenu", "Submenu name:")
-        if not ok or not name.strip():
-            return
-        self._cur_items().append({"name": name.strip(), "shortcut": "", "items": []})
-        self._render_items()
 
-    def _add_separator(self):
-        if not self.path:
-            return
-        self._cur_items().append({"sep": True, "label": ""})
-        self._render_items()
 
-    def _add_header(self):
-        if not self.path:
-            return
-        title, ok = QInputDialog.getText(self, "Add Header", "Header text:")
-        if ok and title.strip():
-            t = title.strip()
-            self._cur_items().append({"header": t, "label": t})
-            self._render_items()
 
-    def _add_toggle(self):
-        if not self.path:
-            return
-        if self._checkable_actions is None:
-            checkable = []
-            try:
-                for a in Krita.instance().actions():
-                    try:
-                        if a.isCheckable() and a.objectName():
-                            label = a.text().replace("&", "").strip() or a.objectName()
-                            checkable.append((a.objectName(), label))
-                    except Exception:
-                        continue
-            except Exception:
-                checkable = []
-            checkable.sort(key=lambda x: x[1].lower())
-            self._checkable_actions = checkable
-        checkable = self._checkable_actions
-        if not checkable:
-            QMessageBox.information(self, "Add Toggle", "No checkable Krita actions found.")
-            return
-        items = ["%s  (%s)" % (label, name) for name, label in checkable]
-        sel, ok = QInputDialog.getItem(self, "Add Toggle",
-                                       "Pick a checkable action (✓ shows its state):",
-                                       items, 0, False)
-        if ok and sel:
-            name = sel.rsplit("  (", 1)[-1].rstrip(")")
-            self._cur_items().append({"toggle": name,
-                                      "label": dict(checkable).get(name, name)})
-            self._render_items()
 
-    def _remove_selected(self):
-        row = self.items_list.currentRow()
-        if row < 0 or not self._cur_items():
-            return
-        self._cur_items().pop(row)
-        self._render_items()
-        self._reload_available()
 
-    def _rename_item(self):
-        row = self.items_list.currentRow()
-        items = self._cur_items()
-        if row < 0 or not items:
-            return
-        cur = items[row]
-        if isinstance(cur, dict) and cur.get("name") is not None:
-            new_name, ok = QInputDialog.getText(
-                self, "Rename Submenu", "Submenu name:", text=cur["name"])
-            if ok and new_name.strip():
-                cur["name"] = new_name.strip()
-                self._render_items()
-                self._render_path_bar()
-            return
-        if isinstance(cur, dict) and cur.get("blend") is not None:
-            new_label, ok = QInputDialog.getText(
-                self, "Rename Blend Mode", "Display name:", text=cur.get("label", ""))
-            if ok:
-                cur["label"] = new_label.strip()
-                self._render_items()
-            return
-        if isinstance(cur, dict) and cur.get("brush") is not None:
-            new_label, ok = QInputDialog.getText(
-                self, "Rename Brush", "Display name:", text=cur.get("label", ""))
-            if ok:
-                cur["label"] = new_label.strip()
-                self._render_items()
-            return
-        # command: set custom label
-        key = cur.get("id", "") if isinstance(cur, dict) else cur
-        default = (cur.get("label", "") if isinstance(cur, dict) else "") \
-            or self._catalog.get(key, key)
-        if not default:
-            entry = self.items_list.currentItem()
-            default = entry.text() if entry is not None else ""
-        new_label, ok = QInputDialog.getText(
-            self, "Rename Item",
-            "Custom name (leave empty to use Krita's default):",
-            text=default)
-        if ok:
-            if isinstance(cur, str):
-                items[row] = {"id": cur, "label": new_label.strip()}
-            else:
-                cur["label"] = new_label.strip()
-            self._render_items()
 
     # ---------- Export / import ----------
     def _export_config(self):
@@ -1672,33 +873,6 @@ class ListMenuDialog(QWidget):
         self._update_left_shortcut()
 
     # ---------- Conflict check ----------
-    def _check_conflicts(self):
-        """Message for a *leftover* conflict, or None (accepted overrides clear theirs)."""
-        live = {}
-        try:
-            for a in Krita.instance().actions():
-                action_id = a.objectName()
-                pending_keys = {r.get("key") for recs in self._pending_overrides.values()
-                                for r in recs if r.get("id") == action_id}
-                label = (a.text() or action_id or "").replace("&", "").strip()
-                for s in self._action_shortcuts(a):
-                    if s not in pending_keys:
-                        live.setdefault(s, label or action_id)
-        except Exception as e:
-            print("tfm: cannot list actions: %s" % e)
-        used = {}
-        for lst in self.lists:
-            key = lst.get("shortcut", "")
-            if not key:
-                continue
-            if key in used:
-                return (f"Lists \u201c{used[key]}\u201d and \u201c{lst['name']}\u201d both "
-                        f"use shortcut \u201c{key}\u201d.")
-            used[key] = lst["name"]
-            if key in live:
-                return (f"Shortcut \u201c{key}\u201d for list \u201c{lst['name']}\u201d "
-                        f"is already used by Krita action \u201c{live[key]}\u201d.")
-        return None
 
     # ---------- Save ----------
     def save_menus(self):

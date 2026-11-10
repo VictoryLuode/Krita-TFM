@@ -58,10 +58,15 @@ def test_status_icon_keeps_full_detail_and_google_verification_is_explicit(tmp_p
         p.status.setText(text)
         assert p.status.isVisible()
         assert p.status.width() == 22 and p.status.toolTip() == text
-        assert not p.build_status_menu().actions(), 'Pinterest cannot open Google verification'
+        menu = p.build_status_menu()
+        assert len(menu.actions()) == 1, 'Only profile reset is available for Pinterest'
+        assert not p.verify_button.isEnabled()
+        menu.deleteLater()
         p.source.setCurrentIndex(p.source.findData('google'))
         menu = p.build_status_menu()
-        assert [a.text() for a in menu.actions()] == ['打开 Google 验证窗口']
+        assert len(menu.actions()) == 2
+        assert menu.actions()[0].text() == fixture.MODULE.tr('Open Google verification window', '打开 Google 验证窗口')
+        assert p.verify_button.isEnabled()
         assert not p.browser.calls
         menu.deleteLater()
         p.status.clear()

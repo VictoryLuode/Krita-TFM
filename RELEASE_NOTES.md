@@ -1,3 +1,15 @@
+# TFM 0.1.8
+
+- Preserve U16/F16/F32 processing precision, original alpha and supported HDR/negative values; retain U8 compatibility except the intentional skin-protection and CPU temperature-tint fixes.
+- Use snapshot inputs, staged outputs and identity shortcuts; unsupported high-depth GPU paths explain their CPU fallback.
+- Add cancellable worker I/O, bounded startup/compute deadlines and restart after worker faults; cancelled work does not restart on CPU.
+- Unify search task cancellation, network deadlines and asynchronous shutdown; reject stale results and stabilize status layouts.
+- Load asset thumbnails asynchronously with bounded caches and lazy folders; preserve selection, scroll and drag/drop behavior.
+- Reuse GPU shaders/pipelines/buffers, scope CPU waits, and calibrate Auto backend choices from measured production operations.
+- Separate menu/asset responsibilities, unify filter parameter metadata, and record actionable errors.
+- Build complete immutable native batches; verify shader generation, sources, binaries, dependency notices, installation and package hashes.
+- Validation: Chinese/English unit and installed-Qt offline checks, real native/GPU/AI regressions. Live Krita interaction and external search-provider acceptance remain for user testing; see `docs/quality-testing.md` and `docs/quality-compatibility.md` for limitations.
+
 # TFM 0.1.7
 
 - Follow Krita’s UI language (Chinese / English) for docks, Tools, menus, and search chrome.

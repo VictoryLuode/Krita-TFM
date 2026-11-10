@@ -30,7 +30,7 @@ int channelCode(const Parameters &p)
 }
 
 bool render(const QImage &source, const Parameters &p, QImage &output,
-            QString &reason, QString &deviceName)
+            QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
     deviceName.clear();
@@ -73,16 +73,16 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
         static FxManagerVulkan *instance = new FxManagerVulkan();
         FxManagerVulkan &vulkan = *instance;
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;
         dispatch.groupsY = (std::uint32_t(source.height()) + 15u) / 16u;
         std::vector<std::uint8_t> result;
-        std::string error;
-        if (!vulkan.initialize(&error)) { reason = QString::fromStdString(error); return false; }
-        if (!vulkan.dispatch(std::vector<std::uint32_t>(std::begin(kPointwiseSpv), std::end(kPointwiseSpv)),
+        const auto outcome = vulkan.dispatchResult(std::vector<std::uint32_t>(std::begin(kPointwiseSpv), std::end(kPointwiseSpv)),
                              source.constBits(), bytes, &params, sizeof(params), bytes,
-                             dispatch, result, &error)) {
-            reason = QString::fromStdString(error); return false;
+                             dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message); return false;
         }
         if (result.size() != bytes) { reason = QStringLiteral("Pointwise GPU returned an incomplete image"); return false; }
         output = QImage(source.size(), QImage::Format_ARGB32);

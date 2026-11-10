@@ -1,53 +1,10 @@
-"""Asset Library docker: folders on the left, reusable assets on the right."""
+"""Asset Library panel UI and compatible exports."""
+from .panel_context import *  # noqa: F403
+from .library_view import LibraryViewMixin
+from .asset_operations import AssetOperationsMixin
+from .drag_drop import AssetDragDropMixin
 
-import json
-import os
-from contextlib import contextmanager
-
-from krita import DockWidget, InfoObject, Krita
-
-from ..menus.qtcompat import (
-    QAbstractItemView,
-    QApplication,
-    QBrush,
-    QByteArray,
-    QColor,
-    QEvent,
-    QHBoxLayout,
-    QIcon,
-    QImage,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QMessageBox,
-    QObject,
-    QPainter,
-    QPalette,
-    QPen,
-    QPixmap,
-    QPoint,
-    QPointF,
-    QSize,
-    QStyle,
-    QStyledItemDelegate,
-    QTimer,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QUrl,
-    QVBoxLayout,
-    Qt,
-    QtCore,
-    QtGui,
-    QtWidgets,
-    exec_,
-)
-from . import filter_asset, group_asset, mask_asset, pixels, store
-from .widgets import *  # noqa: F403
-from ..i18n import tr
-from ..ui_chrome import apply_muted_label, make_empty_state, position_empty_state, sync_empty_state
-
-class AssetLibraryDocker(DockWidget):
+class AssetLibraryDocker(LibraryViewMixin, AssetOperationsMixin, AssetDragDropMixin, DockWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(tr("Asset Library", "资产库"))
@@ -56,8 +13,17 @@ class AssetLibraryDocker(DockWidget):
             self._root = store.ensure_assets(assets_directory())
         except OSError:
             self._root = store.ensure_assets(store.default_assets_dir())
-        self._thumbs = {}
-        self._thumb_order = []
+        self._directories = DirectoryCatalog(self._root)
+        self._thumb_service = ThumbnailService(self, describe=asset_tooltip)
+        self._thumb_service.ready.connect(self._thumbnail_ready)
+        self._thumb_generation = 0
+        self._thumb_items = {}
+        self._grid_folder = None
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setSingleShot(True)
+        self._thumb_timer.setInterval(0)
+        self._thumb_timer.timeout.connect(self._fill_pending_thumbs)
+        self.destroyed.connect(self._thumb_service.close)
         self._dragging = False
         self._pending = None
         self._loading = False
@@ -84,11 +50,13 @@ class AssetLibraryDocker(DockWidget):
         layout.setSpacing(4)
 
         self.tree = FolderTree(self)
+        self.tree.itemExpanded.connect(self._expand_folder)
         grid_host = QtWidgets.QWidget(self)
         grid_host_layout = QVBoxLayout(grid_host)
         grid_host_layout.setContentsMargins(0, 0, 0, 0)
         grid_host_layout.setSpacing(0)
         self.grid = ImageGrid(self)
+        self.grid.verticalScrollBar().valueChanged.connect(lambda _: self._thumb_timer.start())
         self.grid.set_icon_edge(self._saved_icon_edge())
         self.grid.set_list_icon(self._saved_list_icon())
         grid_host_layout.addWidget(self.grid)
@@ -201,14 +169,15 @@ class AssetLibraryDocker(DockWidget):
 
     def set_assets_root(self, root):
         self._root = store.ensure_assets(root)
-        self._thumbs.clear()
+        self._thumb_service.reset()
+        self._directories = DirectoryCatalog(self._root)
         folder = self._current_folder()
         try:
-            known = set(store.list_folders(self._root))
+            if not os.path.isdir(store._folder(self._root,folder)):
+                folder = ''
         except store.AssetError:
-            known = set()
-        if folder not in known:
-            folder = ""
+            folder = ''
+        self.tree.clear()
         self._reload(folder)
 
     def _set_status(self, text):
@@ -223,237 +192,23 @@ class AssetLibraryDocker(DockWidget):
     def _restore_status(self):
         self._set_status(self._status_backup)
 
-    def _document(self):
-        try:
-            canvas = self.canvas()
-        except Exception:
-            canvas = None
-        if canvas is not None:
-            try:
-                view = canvas.view()
-                if view is not None and view.document() is not None:
-                    return view.document()
-            except Exception:
-                pass
-        try:
-            return Krita.instance().activeDocument()
-        except Exception:
-            return None
 
-    def _current_folder(self):
-        item = self.tree.currentItem()
-        if _item_kind(item) == "folder":
-            return item.data(0, Qt.ItemDataRole.UserRole) or ""
-        return self._browsed
 
-    def _folder_changed(self):
-        if self._loading:
-            return
-        item = self.tree.currentItem()
-        if _item_kind(item) != "folder":
-            return
-        self._browsed = item.data(0, Qt.ItemDataRole.UserRole) or ""
-        self._remember_folder(self._browsed)
-        self._fill_grid(None)
 
-    def _reload(self, folder, select_image=None, status=None):
-        self._fill_tree(folder)
-        self._fill_grid(select_image)
-        if status is not None:
-            self._set_status(status)
 
-    def _note_change(self, folder, select_image=None, status=None):
-        if self._dragging:
-            self._pending = (folder, select_image, status)
-            return
-        self._reload(folder, select_image, status)
 
-    def _fill_tree(self, folder):
-        was_empty = self.tree.topLevelItemCount() == 0
-        expanded = set()
-        if not was_empty:
-            self._collect_expanded(None, expanded)
-        keep_open = expanded | _ancestors(folder)
-        self._browsed = folder or ""
-        self._loading = True
-        self.tree.blockSignals(True)
-        edit_item = None
-        try:
-            self.tree.forget_highlight()
-            self.tree.clear()
-            self._add_tree_level(None, "", was_empty, keep_open)
-            current = self._find_folder_item(folder) if folder else None
-            if folder and current is None:
-                self._browsed = ""
-            self._remember_folder(self._browsed)
-            edit_id = self._edit_marker
-            self._edit_marker = None
-            if edit_id:
-                edit_item = self._find_marker_item(edit_id)
-            if edit_item is not None:
-                self.tree.setCurrentItem(edit_item)
-                self.tree.scrollToItem(edit_item)
-            elif current is not None:
-                self.tree.setCurrentItem(current)
-                self.tree.scrollToItem(current)
-            else:
-                self.tree.clearSelection()
-                self.tree.setCurrentItem(None)
-        finally:
-            self.tree.blockSignals(False)
-            self._loading = False
-        if edit_item is not None:
-            QTimer.singleShot(0, lambda item=edit_item: self.tree.editItem(item, 0))
 
-    def _add_tree_level(self, parent_item, parent_rel, was_empty, keep_open):
-        folder_flags = (
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsDragEnabled
-            | Qt.ItemFlag.ItemIsDropEnabled
-            | Qt.ItemFlag.ItemIsEditable
-        )
-        marker_flags = (
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsDragEnabled
-            | Qt.ItemFlag.ItemIsDropEnabled
-        )
-        for entry in store.merged_children(self._root, parent_rel):
-            parent = self.tree if parent_item is None else parent_item
-            if entry["type"] == "folder":
-                rel = "{}/{}".format(parent_rel, entry["name"]) if parent_rel else entry["name"]
-                item = QTreeWidgetItem(parent, [entry["name"]])
-                item.setData(0, Qt.ItemDataRole.UserRole, rel)
-                item.setData(0, _KIND_ROLE, "folder")
-                item.setData(0, _LABEL_ROLE, entry["name"])
-                item.setFlags(folder_flags)
-                item.setToolTip(0, "Double-click the name to rename it. Drag to reorder. Drop a layer or image here.")
-                item.setExpanded(was_empty or rel in keep_open)
-                self._add_tree_level(item, rel, was_empty, keep_open)
-                continue
-            if entry["type"] == "separator":
-                item = QTreeWidgetItem(parent, [""])
-                item.setData(0, Qt.ItemDataRole.UserRole, "")
-                item.setData(0, _KIND_ROLE, "separator")
-                item.setData(0, _ID_ROLE, entry["id"])
-                item.setFlags(marker_flags)
-                item.setSizeHint(0, QSize(0, 14))
-                item.setToolTip(0, "Drag to reorder.")
-                continue
-            text = entry.get("text") or tr("Title", "标题")
-            item = QTreeWidgetItem(parent, [text])
-            item.setData(0, Qt.ItemDataRole.UserRole, "")
-            item.setData(0, _KIND_ROLE, "title")
-            item.setData(0, _ID_ROLE, entry["id"])
-            item.setData(0, _LABEL_ROLE, text)
-            item.setFlags(marker_flags | Qt.ItemFlag.ItemIsEditable)
-            item.setToolTip(0, "A title is only a label. Double-click to edit it. Drag to reorder.")
 
-    def _find_folder_item(self, rel):
-        return self._find_tree_item(lambda item: _item_kind(item) == "folder" and (item.data(0, Qt.ItemDataRole.UserRole) or "") == rel)
 
-    def _find_marker_item(self, marker_id):
-        return self._find_tree_item(lambda item: (item.data(0, _ID_ROLE) or "") == marker_id)
 
-    def _find_tree_item(self, match, parent=None):
-        count = self.tree.topLevelItemCount() if parent is None else parent.childCount()
-        for index in range(count):
-            item = self.tree.topLevelItem(index) if parent is None else parent.child(index)
-            if match(item):
-                return item
-            found = self._find_tree_item(match, item)
-            if found is not None:
-                return found
-        return None
 
-    def _collect_expanded(self, item, found):
-        if item is None:
-            for index in range(self.tree.topLevelItemCount()):
-                self._collect_expanded(self.tree.topLevelItem(index), found)
-            return
-        if item.isExpanded() and _item_kind(item) == "folder":
-            found.add(item.data(0, Qt.ItemDataRole.UserRole) or "")
-        for index in range(item.childCount()):
-            self._collect_expanded(item.child(index), found)
 
-    def _fill_grid(self, select_image):
-        folder = self._current_folder()
-        self._apply_view_mode(self._saved_view_mode(folder), persist=False)
-        self._loading = True
-        self.grid.blockSignals(True)
-        try:
-            self._fill_grid_items(folder, select_image)
-        finally:
-            self.grid.blockSignals(False)
-            self._loading = False
 
-    def _fill_grid_items(self, folder, select_image):
-        self.grid.clear()
-        self._pending_thumbs = []
-        chosen = None
-        try:
-            names = store.list_images(self._root, folder)
-        except store.AssetError:
-            names = []
-        if not names:
-            self._set_status(tr(
-                "This folder is empty. Drop a layer or image here to store it.",
-                "此文件夹为空。将图层或图片拖到这里即可保存。",
-            ))
-        for name in names:
-            rel = "{}/{}".format(folder, name) if folder else name
-            try:
-                path = store.image_path(self._root, rel)
-            except store.AssetError:
-                continue
-            item = QListWidgetItem(os.path.splitext(name)[0])
-            item.setData(Qt.ItemDataRole.UserRole, rel)
-            item.setData(Qt.ItemDataRole.UserRole + 20, path)
-            item.setToolTip(self._tip(path, name))
-            item.setTextAlignment(self.grid._item_alignment())
-            item.setSizeHint(self.grid._item_size_hint())
-            item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsDragEnabled
-                | Qt.ItemFlag.ItemIsEditable
-            )
-            self.grid.addItem(item)
-            self._pending_thumbs.append(item)
-            if rel == select_image:
-                chosen = item
-        if chosen is not None:
-            self.grid.setCurrentItem(chosen)
-            chosen.setSelected(True)
-            self.grid.scrollToItem(chosen)
-        self._sync_grid_empty_state()
-        QTimer.singleShot(0, self._fill_pending_thumbs)
 
-    def _sync_grid_empty_state(self):
-        empty = getattr(self, "grid_empty", None)
-        if empty is None:
-            return
-        sync_empty_state(empty, self.grid.count() == 0)
-        position_empty_state(empty, self.grid)
 
-    def eventFilter(self, obj, event):
-        if obj is getattr(self, "grid", None) and event.type() == QEvent.Type.Resize:
-            position_empty_state(getattr(self, "grid_empty", None), self.grid)
-        return super().eventFilter(obj, event)
 
-    def _fill_pending_thumbs(self):
-        pending = getattr(self, "_pending_thumbs", None) or []
-        if not pending:
-            return
-        batch = pending[:24]
-        self._pending_thumbs = pending[24:]
-        for item in batch:
-            path = item.data(Qt.ItemDataRole.UserRole + 20)
-            if path:
-                item.setIcon(self._icon(path))
-        if self._pending_thumbs:
-            QTimer.singleShot(0, self._fill_pending_thumbs)
+
+
 
     def _saved_icon_edge(self):
         try:
@@ -582,55 +337,7 @@ class AssetLibraryDocker(DockWidget):
         except Exception:
             pass
 
-    def _icon(self, path):
-        try:
-            stamp = os.path.getmtime(path)
-        except OSError:
-            stamp = None
-        key = (path, stamp)
-        cached = self._thumbs.get(key)
-        if cached is not None:
-            try:
-                self._thumb_order.remove(key)
-            except ValueError:
-                pass
-            self._thumb_order.append(key)
-            return cached
-        icon = _thumbnail(path, THUMB_EDGE)
-        self._thumbs[key] = icon
-        self._thumb_order.append(key)
-        while len(self._thumb_order) > 400:
-            old = self._thumb_order.pop(0)
-            self._thumbs.pop(old, None)
-        return icon
 
-    def _tip(self, path, name):
-        lines = [os.path.splitext(name)[0]]
-        sidecar = store.read_sidecar(path) or {}
-        kind = sidecar.get("kind")
-        if kind == filter_asset.KIND:
-            filter_id = sidecar.get("filter") or "?"
-            lines.append("Filter layer · {}".format(filter_id))
-            lines.append("Saved as a filter preset (parameters included).")
-        elif kind == group_asset.KIND:
-            children = sidecar.get("children") or []
-            lines.append("Layer group · {} item(s)".format(len(children)))
-            skipped = sidecar.get("skipped") or []
-            if skipped:
-                lines.append("Skipped unsupported: {}".format(", ".join(skipped[:6])))
-        elif kind == group_asset.PAINT_KIND:
-            lines.append("Paint layer")
-        else:
-            size = _dimensions(path)
-            if size is not None:
-                lines.append("{} × {}".format(size[0], size[1]))
-        masks = sidecar.get("masks") or []
-        if masks:
-            lines.append("Transparency mask × {}".format(len(masks)))
-        meta = store.read_meta(path)
-        if meta is not None:
-            lines.append("Position {}, {}".format(meta[0], meta[1]))
-        return "\n".join(lines)
 
     def _selected_rels(self):
         rels = []
@@ -834,22 +541,6 @@ class AssetLibraryDocker(DockWidget):
         item.setData(0, _LABEL_ROLE, cleaned)
         self._loading = False
 
-    def _reorder_dropped(self, payload, slot):
-        kind = payload.get("kind") or "folder"
-        dest = slot.get("into") or slot.get("parent") or ""
-        before = None if slot.get("into") else slot.get("before")
-        try:
-            if kind == "folder":
-                old = payload.get("path") or ""
-                new_rel = store.relocate_node(self._root, "folder", old, dest, before)
-                if new_rel != old:
-                    self._retarget_view_modes(old, new_rel)
-                self._note_change(new_rel)
-                return
-            store.relocate_node(self._root, kind, payload.get("id") or "", dest, before)
-            self._note_change(self._browsed)
-        except store.AssetError as error:
-            self._tell(str(error))
 
     def _saved_folder(self):
         try:
@@ -860,10 +551,9 @@ class AssetLibraryDocker(DockWidget):
         if not rel:
             return ""
         try:
-            known = set(store.list_folders(self._root))
+            return rel if os.path.isdir(store._folder(self._root,rel)) else ""
         except store.AssetError:
             return ""
-        return rel if rel in known else ""
 
     def _remember_folder(self, folder):
         folder = (folder or "").replace("\\", "/").strip("/")
@@ -890,23 +580,7 @@ class AssetLibraryDocker(DockWidget):
         if text:
             QMessageBox.warning(self, "Asset Library", text)
 
-    def _active_view(self):
-        try:
-            window = Krita.instance().activeWindow()
-            if window is None:
-                return None
-            return window.activeView()
-        except Exception:
-            return None
 
-    def _host(self):
-        try:
-            window = Krita.instance().activeWindow()
-            if window is None:
-                return None
-            return window.qwindow()
-        except Exception:
-            return None
 
     def _image_menu(self, pos):
         item = self.grid.itemAt(pos)
@@ -964,561 +638,26 @@ class AssetLibraryDocker(DockWidget):
         QTimer.singleShot(0, lambda renamed=renamed: self._reload(
             self._current_folder(), renamed))
 
-    def _invert_transform(self, transform):
-        inverted = transform.inverted()
-        if isinstance(inverted, tuple):
-            matrix, ok = inverted
-            if not ok:
-                raise ValueError("transform")
-            return matrix
-        return inverted
 
-    def _widget_to_image(self, view, point):
-        local = QPointF(point.x(), point.y())
-        flake = self._invert_transform(view.flakeToCanvasTransform()).map(local)
-        image = view.flakeToImageTransform().map(flake)
-        return image.x(), image.y()
 
-    def _drop_on_canvas(self, widget, local, mime):
-        rels = asset_paths(mime)
-        if not rels:
-            return
-        point = _canvas_local_point(widget, local)
-        view = self._active_view()
-        if view is None:
-            self._tell("Open a document first.")
-            return
-        try:
-            center = self._widget_to_image(view, point)
-        except Exception:
-            try:
-                middle = view.canvas().preferredCenter()
-                center = (middle.x(), middle.y())
-            except Exception:
-                self._tell("Could not place that image on the canvas.")
-                return
-        self._insert_rels(rels, center)
 
-    def _insert_selected(self):
-        self._insert_rels(self._selected_rels(), None, "paint")
 
-    def _insert_selected_as_reference(self):
-        self._insert_rels(self._selected_rels(), None, "reference")
 
-    def _insert_image_item(self, item):
-        rel = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-        if rel:
-            self._insert_rels([rel], None, "paint")
 
-    def _insert_rels(self, rels, center, mode="paint"):
-        if not rels:
-            self._tell("Select an image first.")
-            return
-        doc = self._document()
-        if doc is None:
-            self._tell("Open a document first.")
-            return
-        view = self._active_view()
-        try:
-            with _wait_cursor():
-                for index, rel in enumerate(rels):
-                    point = None if center is None else (center[0] + index * 16, center[1] + index * 16)
-                    self._insert_one(doc, view, rel, mode, point)
-        except store.AssetError as error:
-            self._tell(str(error))
-            return
-        except Exception:
-            self._tell("Could not insert that image.")
-            return
-        try:
-            doc.refreshProjection()
-            doc.waitForDone()
-            doc.setModified(True)
-        except Exception:
-            pass
 
-    def _insert_one(self, doc, view, rel, mode, center):
-        path = store.image_path(self._root, rel)
-        name = os.path.splitext(os.path.basename(path))[0]
-        size = _dimensions(path)
-        image = QImage(path)
-        if size is None and not image.isNull():
-            size = (image.width(), image.height())
-        width = size[0] if size else 0
-        height = size[1] if size else 0
-        x, y = self._top_left(doc, view, width, height, center)
-        if mode == "reference":
-            self._insert_reference(path, x, y)
-            return
-        parent, above = _insertion_point(doc)
-        if parent is None:
-            raise store.AssetError("Open a document first.")
-        sidecar = store.read_sidecar(path) or {}
-        kind = sidecar.get("kind")
-        if kind == filter_asset.KIND:
-            node = filter_asset.create_layer(doc, name, sidecar, parent, above)
-            try:
-                doc.setActiveNode(node)
-            except Exception:
-                pass
-            return
-        if kind == group_asset.KIND:
-            node = group_asset.create_layer(doc, name, sidecar, parent, above)
-            try:
-                doc.setActiveNode(node)
-            except Exception:
-                pass
-            return
-        if kind == group_asset.PAINT_KIND:
-            node = group_asset.create_paint_layer(doc, name, sidecar, parent, above)
-            try:
-                doc.setActiveNode(node)
-            except Exception:
-                pass
-            return
-        if not self._can_bake(doc, path):
-            raise store.AssetError("That image can only be placed in an RGBA 8-bit or 16-bit document.")
-        if image.isNull():
-            image = QImage(path)
-        if image.isNull():
-            raise store.AssetError("Could not read that image.")
-        if width * height > MAX_BAKE_PIXELS:
-            raise store.AssetError("That image is too large to place as a paint layer.")
-        payload = pixels.paint_bytes(image, doc.colorDepth())
-        if not payload or payload[1] < 1:
-            raise store.AssetError("Could not write the image into a layer.")
-        raw, width, height = payload
-        x, y = self._top_left(doc, view, width, height, center)
-        node = doc.createNode(name, "paintlayer")
-        if node is None:
-            raise store.AssetError("Could not create a paint layer.")
-        if not node.setPixelData(pixels.qbytearray_from(raw), x, y, width, height):
-            raise store.AssetError("Could not write the image into a layer.")
-        if not parent.addChildNode(node, above):
-            raise store.AssetError("Could not add the layer.")
-        try:
-            doc.setActiveNode(node)
-        except Exception:
-            pass
 
-    def _top_left(self, doc, view, width, height, center):
-        if center is not None:
-            return int(round(center[0] - width / 2.0)), int(round(center[1] - height / 2.0))
-        try:
-            if view is not None:
-                middle = view.canvas().preferredCenter()
-                return int(round(middle.x() - width / 2.0)), int(round(middle.y() - height / 2.0))
-        except Exception:
-            pass
-        return (doc.width() - width) // 2, (doc.height() - height) // 2
 
-    def _insert_reference(self, path, x, y):
-        image = QImage(path)
-        if image.isNull():
-            raise store.AssetError("Could not read that image.")
-        QApplication.clipboard().setImage(image)
-        host = self._host()
-        tool = self._reference_tool(host)
-        if tool is None:
-            raise store.AssetError("Could not create a reference image.")
-        QtCore.QMetaObject.invokeMethod(tool, "pasteReferenceImage")
-        self._move_reference(host, x, y)
-        QTimer.singleShot(0, lambda host=host, x=x, y=y: self._move_reference(host, x, y))
 
-    def _reference_tool(self, host):
-        tool = self._find_reference_tool(host)
-        if tool is not None:
-            return tool
-        app = Krita.instance()
-        for name in ("ToolReferenceImages", "KritaShape/ToolReferenceImages"):
-            try:
-                action = app.action(name)
-            except Exception:
-                action = None
-            if action is not None:
-                action.trigger()
-                break
-        return self._find_reference_tool(host)
 
-    def _find_reference_tool(self, host):
-        if host is None:
-            return None
-        try:
-            found = host.findChildren(QObject, "ToolReferenceImages")
-        except Exception:
-            return None
-        return found[0] if found else None
 
-    def _move_reference(self, host, x, y):
-        view = self._active_view()
-        if host is None or view is None:
-            return
-        try:
-            image = QPointF(x, y)
-            flake = self._invert_transform(view.flakeToImageTransform()).map(image)
-            document = view.flakeToDocumentTransform().map(flake)
-        except Exception:
-            return
-        xbox = host.findChild(QtWidgets.QWidget, "positionXSpinBox")
-        ybox = host.findChild(QtWidgets.QWidget, "positionYSpinBox")
-        if xbox is None or ybox is None:
-            return
-        for box, value in ((xbox, document.x()), (ybox, document.y())):
-            changer = getattr(box, "changeValue", None)
-            if changer is not None:
-                changer(float(value))
-            else:
-                box.setValue(float(value))
 
-    def _can_bake(self, doc, path):
-        try:
-            model = doc.colorModel()
-            depth = doc.colorDepth()
-        except Exception:
-            return False
-        if model != "RGBA" or depth not in ("U8", "U16"):
-            return False
-        size = _dimensions(path)
-        if size is None:
-            return True
-        return size[0] * size[1] <= MAX_BAKE_PIXELS
 
-    def _drop_on_folder(self, folder, mime):
-        kind = drop_kind(mime)
-        if kind == "folder":
-            self._move_dropped_folder(folder, mime)
-            return
-        if not folder:
-            self._need_folder()
-            return
-        if kind == "asset":
-            self._move_asset_items(folder, mime)
-        elif kind == "files":
-            self._import_paths(folder, _local_images(mime))
-        elif kind == "image":
-            self._save_dropped_image(folder, mime)
 
-    def _save_active_asset(self):
-        folder = self._need_folder()
-        if not folder:
-            return
-        doc = self._document()
-        if doc is None:
-            self._tell("Open a document first.")
-            return
-        try:
-            node = doc.activeNode()
-        except Exception:
-            node = None
-        if node is None:
-            self._tell("Select a layer first.")
-            return
-        if filter_asset.is_filter_layer(node):
-            self._persist_structured_asset(
-                folder, node, doc, filter_asset.capture, filter_asset.preview_image, "Filter")
-            return
-        if group_asset.is_group_layer(node):
-            self._persist_structured_asset(
-                folder,
-                node,
-                doc,
-                lambda current, document=doc: group_asset.capture(
-                    current, document, pixel_budget=MAX_BAKE_PIXELS),
-                group_asset.preview_image,
-                "Group",
-            )
-            return
-        if mask_asset.has_transparency_mask(node):
-            self._persist_structured_asset(
-                folder,
-                node,
-                doc,
-                lambda current, document=doc: group_asset.capture_paint(
-                    current, document, pixel_budget=MAX_BAKE_PIXELS),
-                lambda current, edge=THUMB_EDGE: filter_asset.preview_image(current, edge),
-                "Layer",
-            )
-            return
-        try:
-            bounds = node.bounds()
-        except Exception:
-            self._tell("This layer cannot be saved.")
-            return
-        if bounds.isEmpty() or bounds.width() < 1 or bounds.height() < 1:
-            self._tell("The active layer has no pixels to save.")
-            return
-        try:
-            path = store.new_image_path(self._root, folder, node.name() or "Layer")
-        except store.AssetError as error:
-            self._tell(str(error))
-            return
-        try:
-            with _wait_cursor():
-                image = _projection_image(node, doc, bounds)
-                if image is not None:
-                    write_png(image, path)
-                else:
-                    saved = node.save(path, doc.xRes() or 1.0, doc.yRes() or 1.0, InfoObject(), bounds)
-                    if not saved:
-                        raise store.AssetError("Krita could not export this layer.")
-        except store.AssetError as error:
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            self._tell(str(error))
-            return
-        except Exception:
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            self._tell("Krita could not export this layer.")
-            return
-        try:
-            store.write_meta(path, bounds.x(), bounds.y())
-        except (OSError, ValueError, store.AssetError):
-            pass
-        rel = store.relative_path(self._root, path)
-        self._reload(folder, rel)
 
-    def _persist_structured_asset(self, folder, node, doc, capture, preview, fallback_name):
-        try:
-            payload = capture(node)
-        except store.AssetError as error:
-            self._tell(str(error))
-            return
-        try:
-            path = store.new_image_path(self._root, folder, node.name() or fallback_name)
-        except store.AssetError as error:
-            self._tell(str(error))
-            return
-        try:
-            with _wait_cursor():
-                image = preview(node, THUMB_EDGE)
-                try:
-                    bounds = node.bounds()
-                except Exception:
-                    bounds = None
-                if (
-                    bounds is not None
-                    and not bounds.isEmpty()
-                    and bounds.width() >= 1
-                    and bounds.height() >= 1
-                    and bounds.width() * bounds.height() <= MAX_BAKE_PIXELS
-                ):
-                    projection = _projection_image(node, doc, bounds)
-                    if projection is not None and not projection.isNull():
-                        image = projection
-                write_png(image, path)
-                store.write_sidecar(path, payload)
-        except store.AssetError as error:
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            self._tell(str(error))
-            return
-        except Exception:
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            sidecar = path + ".json"
-            if os.path.isfile(sidecar):
-                try:
-                    os.remove(sidecar)
-                except OSError:
-                    pass
-            self._tell("Could not save that layer.")
-            return
-        rel = store.relative_path(self._root, path)
-        self._reload(folder, rel)
 
-    def _move_dropped_folder(self, dest, mime):
-        rel = folder_rel_from_mime(mime)
-        if not rel:
-            self._set_status(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
-            return
-        try:
-            moved = store.move_folder(self._root, rel, dest)
-        except store.AssetError as error:
-            self._set_status(str(error))
-            return
-        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
-        if moved == rel and parent == (dest or ""):
-            self._set_status(tr("Nothing was moved.", "没有移动任何内容。"))
-            return
-        if moved != rel:
-            self._retarget_view_modes(rel, moved)
-        self._note_change(moved, status='Moved "{}".'.format(moved.rsplit("/", 1)[-1]))
 
-    def _move_asset_items(self, folder, mime):
-        moved = 0
-        last = None
-        for rel in asset_paths(mime):
-            current = rel.rsplit("/", 1)[0] if "/" in rel else ""
-            if current == (folder or ""):
-                continue
-            try:
-                last = store.move_image(self._root, rel, folder)
-                moved += 1
-            except store.AssetError:
-                continue
-        if not moved:
-            self._set_status(tr("Nothing was moved.", "没有移动任何内容。"))
-            return
-        text = "Moved 1 image." if moved == 1 else "Moved {} images.".format(moved)
-        self._note_change(folder, last, text)
 
-    def _import_paths(self, folder, paths):
-        saved = []
-        with _wait_cursor():
-            for path in paths:
-                try:
-                    saved.append(store.import_file(self._root, folder, path))
-                except store.AssetError:
-                    continue
-        if not saved:
-            self._set_status(tr("No images were imported.", "没有导入任何图片。"))
-            return
-        text = "Imported 1 image." if len(saved) == 1 else "Imported {} images.".format(len(saved))
-        self._note_change(folder, saved[-1], text)
 
-    def _save_dropped_image(self, folder, mime):
-        doc = self._document()
-        if (
-            mime is not None
-            and mime.hasFormat("application/x-krita-node-internal-pointer")
-            and doc is not None
-        ):
-            try:
-                node = doc.activeNode()
-            except Exception:
-                node = None
-            if filter_asset.is_filter_layer(node):
-                self._persist_structured_asset(
-                    folder, node, doc, filter_asset.capture, filter_asset.preview_image, "Filter")
-                return
-            if group_asset.is_group_layer(node):
-                self._persist_structured_asset(
-                    folder,
-                    node,
-                    doc,
-                    lambda current, document=doc: group_asset.capture(
-                        current, document, pixel_budget=MAX_BAKE_PIXELS),
-                    group_asset.preview_image,
-                    "Group",
-                )
-                return
-            if mask_asset.has_transparency_mask(node):
-                self._persist_structured_asset(
-                    folder,
-                    node,
-                    doc,
-                    lambda current, document=doc: group_asset.capture_paint(
-                        current, document, pixel_budget=MAX_BAKE_PIXELS),
-                    lambda current, edge=THUMB_EDGE: filter_asset.preview_image(current, edge),
-                    "Layer",
-                )
-                return
-        try:
-            with _wait_cursor():
-                image = image_from_mime(mime)
-                path = store.new_image_path(self._root, folder, "Layer")
-                write_png(image, path)
-        except store.AssetError as error:
-            self._set_status(str(error))
-            return
-        except Exception:
-            self._set_status(tr("Could not save that image.", "无法保存该图片。"))
-            return
-        rel = store.relative_path(self._root, path)
-        label = os.path.splitext(os.path.basename(path))[0]
-        self._note_change(
-            folder,
-            rel,
-            'Saved "{}". Inserting it will center the image.'.format(label),
-        )
 
-    def _start_drag(self):
-        rels = self._selected_rels()
-        if not rels:
-            return
-        paths = []
-        for rel in rels:
-            try:
-                paths.append(store.image_path(self._root, rel))
-            except store.AssetError:
-                continue
-        if not paths:
-            return
-        mime = QMimeData()
-        mime.setData(ASSET_MIME, QByteArray(json.dumps({"paths": rels}).encode("utf-8")))
-        mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
-        image = QImage(paths[0])
-        if not image.isNull():
-            mime.setImageData(image)
-        drag = QDrag(self.grid)
-        drag.setMimeData(mime)
-        icon = self.grid.currentItem().icon() if self.grid.currentItem() is not None else QIcon()
-        pixmap = icon.pixmap(72, 72)
-        if not pixmap.isNull():
-            drag.setPixmap(pixmap)
-            drag.setHotSpot(QPoint(12, 12))
-        self._dragging = True
-        try:
-            _run_drag(drag)
-        finally:
-            self._dragging = False
-            pending = self._pending
-            self._pending = None
-            if pending is not None:
-                self._reload(*pending)
 
-    def _start_folder_drag(self):
-        item = self.tree.currentItem()
-        kind = _item_kind(item)
-        if kind == "folder":
-            rel = item.data(0, Qt.ItemDataRole.UserRole) or ""
-            if not rel:
-                return
-            payload = {"kind": "folder", "path": rel}
-            label = rel.rsplit("/", 1)[-1]
-        elif kind in ("separator", "title"):
-            marker_id = item.data(0, _ID_ROLE) or ""
-            if not marker_id:
-                return
-            payload = {"kind": kind, "id": marker_id}
-            label = item.text(0) if kind == "title" and item.text(0) else "—"
-        else:
-            return
-        mime = QMimeData()
-        mime.setData(FOLDER_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
-        drag = QDrag(self.tree)
-        drag.setMimeData(mime)
-        pixmap = QPixmap(168, 28)
-        pixmap.fill(QColor(48, 48, 48))
-        painter = QPainter(pixmap)
-        try:
-            painter.setPen(QColor(235, 235, 235))
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, label)
-        finally:
-            painter.end()
-        drag.setPixmap(pixmap)
-        drag.setHotSpot(QPoint(12, 14))
-        self._dragging = True
-        try:
-            _run_drag(drag)
-        finally:
-            self._dragging = False
-            self.tree.forget_highlight()
-            pending = self._pending
-            self._pending = None
-            if pending is not None:
-                self._reload(*pending)
 

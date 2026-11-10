@@ -55,7 +55,8 @@ void grainBand(QImage &image, int y0, int y1, double amount, double size, int se
 KisFilterFilmGrain::KisFilterFilmGrain() : KisFilter(id(), FiltersCategoryArtisticId, i18n("&Film Grain...")) { setSupportsAdjustmentLayers(true); setColorSpaceIndependence(FULLY_INDEPENDENT); }
 KisFilterConfigurationSP KisFilterFilmGrain::defaultConfiguration(KisResourcesInterfaceSP r) const
 {
-    auto c = factoryConfiguration(r); c->setProperty("preset", "super_8"); c->setProperty("amount", .18); c->setProperty("size", 2.0); c->setProperty("seed", 17); c->setProperty("monochrome", true); fxmanager::applyFilterDefaults(id().id(), c); return c;
+    auto c = factoryConfiguration(r);      fxmanager::applyBuiltinDefaults(id().id(), c);
+    fxmanager::applyFilterDefaults(id().id(), c); return c;
 }
 KisConfigWidget *KisFilterFilmGrain::createConfigurationWidget(QWidget *p, const KisPaintDeviceSP, bool) const
 {
@@ -64,16 +65,27 @@ KisConfigWidget *KisFilterFilmGrain::createConfigurationWidget(QWidget *p, const
 }
 void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const KisFilterConfigurationSP c, KoUpdater *u) const
 {
-    if (r.isEmpty()) return;
+    if (r.isEmpty() || !d || (u && u->interrupted())) return;
     const Preset preset = presetFor(c ? c->getString("preset", "super_8") : QStringLiteral("super_8"));
     const bool isCustom = QString::fromLatin1(preset.id) == QLatin1String("custom");
     const double amount = isCustom ? (c ? c->getDouble("amount", preset.amount) : preset.amount) : preset.amount;
     const double size = isCustom ? (c ? c->getDouble("size", preset.size) : preset.size) : preset.size;
     const int seed = isCustom ? (c ? c->getInt("seed", preset.seed) : preset.seed) : preset.seed;
     const bool mono = isCustom ? (c ? c->getBool("monochrome", preset.monochrome) : preset.monochrome) : preset.monochrome;
+    if(amount<=0.0) { if(u) u->setProgress(100); return; }
+    if(fxmanager::requiresFloatProcessing(d)) {
+        fxmanager::transformEncoded(d,r,id().id(),u,[&](float *p,int gx,int gy) {
+            const double common=fxmanager::deterministicNoise(int(std::floor(gx/std::max(.5,size))),int(std::floor(gy/std::max(.5,size))),seed);
+            for(int channel=0;channel<3;++channel) {
+                const double noise=mono ? common : fxmanager::deterministicNoise(gx,gy,seed,channel+1);
+                p[channel]+=float(noise*std::clamp(amount,0.0,1.0));
+            }
+        });
+        return;
+    }
     QImage image = fxmanager::readImage(d, r); if (image.isNull()) return;
     const QPoint frameOffset = r.topLeft();
-    if (fxmanager::gpuRequested(id().id())) {
+    if (fxmanager::gpuRequested(id().id(),qint64(r.width())*r.height())) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
         gpu.outputRect = r;
@@ -83,16 +95,19 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
         gpu.monochrome = mono ? 1 : 0;
         QImage output;
         QString reason, device;
-        if (tfm_pointwise_gpu::render(image, gpu, output, reason, device)) {
+        if (tfm_pointwise_gpu::render(image, gpu, output, reason, device, [u] { return u && u->interrupted(); })) {
+            if(u && u->interrupted()) return;
             fxmanager::writeImage(d, output, r);
             fxmanager::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
             if (u) u->setProgress(100);
             return;
         }
+        if(u && u->interrupted()) return;
         fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
-        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        fxmanager::reportBackend(id().id(), QStringLiteral("cpu"), fxmanager::cpuBackendReason(id().id(),qint64(r.width())*r.height()));
     }
     fxmanager::parallelRows(image.height(), [&](int y0, int y1) { grainBand(image, y0, y1, amount, size, seed, mono, frameOffset); });
+    if(u && u->interrupted()) return;
     fxmanager::writeImage(d, image, r); if (u) u->setProgress(100);
 }

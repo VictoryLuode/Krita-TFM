@@ -3,6 +3,7 @@
 import json
 import math
 import os
+from tfm_diagnostics import record_error
 import tempfile
 
 from .catalog import FILTERS, FILTER_DEFAULT_SPECS, VULKAN_FILTER_IDS
@@ -236,7 +237,8 @@ def load(strict=False):
         if not isinstance(values, dict):
             raise ValueError("filter settings must be an object")
         return _normalise(values)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as error:
+        record_error('filters.load', error, path=path)
         if strict:
             raise
         return dict(_OPTIONS)
@@ -248,7 +250,8 @@ def save(values):
         return False
     try:
         merged = _normalise({**load(strict=True), **values})
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as error:
+        record_error('filters.save.prepare', error, path=path)
         return False
     directory = os.path.dirname(path)
     temporary = None
@@ -259,7 +262,8 @@ def save(values):
             json.dump(merged, handle, indent=2)
             handle.write("\n")
         os.replace(temporary, path)
-    except OSError:
+    except OSError as error:
+        record_error('filters.save', error, path=path)
         if temporary:
             try:
                 os.unlink(temporary)

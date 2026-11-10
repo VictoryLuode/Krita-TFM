@@ -20,7 +20,7 @@ static_assert(offsetof(ShaderParameters, threshold) == 32, "Bloom shader float l
 
 bool renderLegacy(const QImage &source, const QRect &outputRect, double threshold,
                   int radius, double strength, QImage &output, QString &reason,
-                  QString &deviceName)
+                  QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
     deviceName.clear();
@@ -47,16 +47,16 @@ bool renderLegacy(const QImage &source, const QRect &outputRect, double threshol
         static FxManagerVulkan *instance = new FxManagerVulkan();
         FxManagerVulkan &vulkan = *instance;
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(outputRect.width()) + 15u) / 16u;
         dispatch.groupsY = (std::uint32_t(outputRect.height()) + 15u) / 16u;
         std::vector<std::uint8_t> result;
-        std::string error;
-        if (!vulkan.initialize(&error)) { reason = QString::fromStdString(error); return false; }
-        if (!vulkan.dispatch(std::vector<std::uint32_t>(std::begin(kBloomLegacySpv), std::end(kBloomLegacySpv)),
+        const auto outcome = vulkan.dispatchResult(std::vector<std::uint32_t>(std::begin(kBloomLegacySpv), std::end(kBloomLegacySpv)),
                              source.constBits(), inputBytes, &params, sizeof(params), outputBytes,
-                             dispatch, result, &error)) {
-            reason = QString::fromStdString(error); return false;
+                             dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message); return false;
         }
         if (result.size() != outputBytes) { reason = QStringLiteral("Bloom GPU returned an incomplete image"); return false; }
         output = QImage(outputRect.size(), QImage::Format_ARGB32);

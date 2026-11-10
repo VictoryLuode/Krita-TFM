@@ -18,7 +18,7 @@ static_assert(offsetof(ShaderParameters, lut) == 16, "Guided LUT parameter layou
 }
 
 bool render(const QImage &source, const fxmanager::guided::Lut &lut,
-            QImage &output, QString &reason, QString &deviceName)
+            QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
     deviceName.clear();
@@ -39,16 +39,16 @@ bool render(const QImage &source, const fxmanager::guided::Lut &lut,
         static FxManagerVulkan *instance = new FxManagerVulkan();
         FxManagerVulkan &vulkan = *instance;
         FxManagerVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;
         dispatch.groupsY = (std::uint32_t(source.height()) + 15u) / 16u;
         std::vector<std::uint8_t> result;
-        std::string error;
-        if (!vulkan.initialize(&error)) { reason = QString::fromStdString(error); return false; }
-        if (!vulkan.dispatch(std::vector<std::uint32_t>(std::begin(kGuidedLutSpv), std::end(kGuidedLutSpv)),
+        const auto outcome = vulkan.dispatchResult(std::vector<std::uint32_t>(std::begin(kGuidedLutSpv), std::end(kGuidedLutSpv)),
                              source.constBits(), bytes, &params, sizeof(params), bytes,
-                             dispatch, result, &error)) {
-            reason = QString::fromStdString(error); return false;
+                             dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message); return false;
         }
         if (result.size() != bytes) { reason = QStringLiteral("Guided GPU returned an incomplete image"); return false; }
         output = QImage(source.size(), QImage::Format_ARGB32);

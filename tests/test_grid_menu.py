@@ -1,3 +1,4 @@
+from i18n import tr
 import time
 from unittest.mock import patch
 import test_docker as fixture
@@ -50,11 +51,11 @@ def test_context_actions_use_clicked_not_previously_selected_image():
         p.display_results([entry(1),entry(2)])
         menu=p.build_context_menu(p.grid.item(1))
         actions={a.text():a for a in menu.actions() if not a.isSeparator()}
-        assert set(actions)=={'图片详细信息','打开原网址','查找相似图片'}
+        assert set(actions)=={tr('Image details', '图片详细信息'),tr('Open source page', '打开原网址'),tr('Find similar images', '查找相似图片')}
         with patch.object(M.QDesktopServices,'openUrl',return_value=True) as open_url:
-            actions['打开原网址'].trigger()
+            actions[tr('Open source page', '打开原网址')].trigger()
         assert open_url.call_args.args[0].toString()=='https://example.org/material/2'
-        actions['图片详细信息'].trigger()
+        actions[tr('Image details', '图片详细信息')].trigger()
         assert p.details_dialog.isVisible()
         from qt_test_binding import QPlainTextEdit
         text=p.details_dialog.findChild(QPlainTextEdit).toPlainText()
@@ -111,7 +112,7 @@ def test_context_similar_uploads_clicked_image_and_replaces_results():
         assert hasattr(p,'find_similar'),'Similarity action is not implemented'
         p.display_results([entry(1),entry(2)])
         menu=p.build_context_menu(p.grid.item(1))
-        next(a for a in menu.actions() if a.text()=='查找相似图片').trigger()
+        next(a for a in menu.actions() if a.text()==tr('Find similar images', '查找相似图片')).trigger()
         deadline=time.monotonic()+3
         while p.busy and time.monotonic()<deadline:QTest.qWait(10)
         assert not p.busy,p.status.text()

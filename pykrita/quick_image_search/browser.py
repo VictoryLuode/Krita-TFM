@@ -12,6 +12,10 @@ import subprocess
 from pathlib import Path
 import time
 import urllib.parse
+from quick_image_search.network import request_bytes
+from quick_image_search.process_owner import ProcessOwner
+import urllib.request
+from quick_image_search.task_runtime import (Token, task_scope, current_token, check_cancelled, interruptible_sleep)
 
 
 class BrowserUnavailable(Exception):
@@ -53,38 +57,60 @@ class _WebSocket:
     """Minimal RFC6455 client for local, unencrypted Chrome WebSocket connections."""
     def __init__(self, sock, timeout=TIMEOUT, max_frame=MAX_FRAME):
         self.sock, self.timeout, self.max_frame = sock, timeout, max_frame
-        self.sock.settimeout(timeout)
+        self.sock.settimeout(min(timeout, .1))
+        self._read_deadline = time.monotonic()+timeout
 
     @classmethod
     def connect(cls, url):
         p = _validate_cdp_url(url)
-        sock = socket.create_connection(("127.0.0.1", p.port), timeout=TIMEOUT)
-        key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-        path = urllib.parse.urlunsplit(("", "", p.path or "/", p.query, ""))
-        req = ("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1\r\n\r\n" % (path, p.port, key)).encode("ascii")
-        sock.sendall(req)
-        response = b""
-        while b"\r\n\r\n" not in response:
-            chunk = sock.recv(1)
-            if not chunk or len(response) >= 16384:
-                sock.close(); raise BrowserUnavailable("Invalid CDP WebSocket handshake")
-            response += chunk
-        head = response.decode("latin1").split("\r\n")
-        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
-        headers = dict(line.split(":", 1) for line in head[1:] if ":" in line)
-        if " 101 " not in head[0] or headers.get("Sec-WebSocket-Accept", "").strip() != expected:
-            sock.close(); raise BrowserUnavailable("CDP WebSocket handshake rejected")
-        return cls(sock)
+        check_cancelled()
+        sock = socket.create_connection(("127.0.0.1", p.port), timeout=1)
+        sock.settimeout(.1)
+        deadline = time.monotonic()+TIMEOUT
+        try:
+            key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+            path = urllib.parse.urlunsplit(("", "", p.path or "/", p.query, ""))
+            req = ("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1\r\n\r\n" % (path, p.port, key)).encode("ascii")
+            sock.sendall(req)
+            response = b""
+            while b"\r\n\r\n" not in response:
+                check_cancelled()
+                if time.monotonic() >= deadline:
+                    sock.close()
+                    raise TimeoutError("CDP handshake exceeded its total time limit")
+                try:
+                    chunk = sock.recv(1)
+                except socket.timeout:
+                    continue
+                if not chunk or len(response) >= 16384:
+                    sock.close(); raise BrowserUnavailable("Invalid CDP WebSocket handshake")
+                response += chunk
+            head = response.decode("latin1").split("\r\n")
+            expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            headers = dict(line.split(":", 1) for line in head[1:] if ":" in line)
+            if " 101 " not in head[0] or headers.get("Sec-WebSocket-Accept", "").strip() != expected:
+                sock.close(); raise BrowserUnavailable("CDP WebSocket handshake rejected")
+            return cls(sock)
+        except BaseException:
+            sock.close()
+            raise
 
     def _exact(self, n):
         out = bytearray()
         while len(out) < n:
-            part = self.sock.recv(n - len(out))
+            check_cancelled()
+            if time.monotonic() >= self._read_deadline:
+                raise TimeoutError("CDP response exceeded its total time limit")
+            try:
+                part = self.sock.recv(n - len(out))
+            except socket.timeout:
+                continue
             if not part: raise BrowserUnavailable("CDP connection closed")
             out.extend(part)
         return bytes(out)
 
     def send(self, text):
+        check_cancelled()
         data = text.encode("utf-8")
         if len(data) > self.max_frame: raise SearchError("CDP message exceeds size limit")
         n = len(data); head = bytearray([0x81])
@@ -95,6 +121,7 @@ class _WebSocket:
         head.extend(mask); self.sock.sendall(head + bytes(v ^ mask[i % 4] for i, v in enumerate(data)))
 
     def recv(self):
+        self._read_deadline = time.monotonic()+self.timeout
         chunks = bytearray()
         while True:
             a, b = self._exact(2); opcode = a & 15; n = b & 127
@@ -151,6 +178,7 @@ class Browser:
         self.port = port
         self.headless = headless
         self._process = None
+        self._process_owner = None
         self._profile_dir = None
         self._proxy = ''
         self._ws = None
@@ -161,30 +189,22 @@ class Browser:
         self._detail_targets = {}
         self._detail_sessions = {}
 
+    def _version(self, timeout=1):
+        data = request_bytes(urllib.request.Request(f'http://127.0.0.1:{self.port}/json/version'),
+                             timeout=timeout, limit=MAX_HTTP)
+        return json.loads(data)
+
     def _endpoint_ready(self):
-        conn=http.client.HTTPConnection('127.0.0.1',self.port,timeout=1)
         try:
-            conn.request('GET','/json/version')
-            response=conn.getresponse()
-            data=response.read(MAX_HTTP+1)
-            if response.status!=200 or len(data)>MAX_HTTP: return False
-            info=json.loads(data)
-            return bool(info.get('webSocketDebuggerUrl'))
-        except (OSError,ValueError,http.client.HTTPException):
+            return bool(self._version().get('webSocketDebuggerUrl'))
+        except (OSError, ValueError):
             return False
-        finally: conn.close()
 
     def _is_headless_endpoint(self):
-        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=1)
         try:
-            conn.request('GET', '/json/version')
-            response = conn.getresponse()
-            data = response.read(MAX_HTTP + 1)
-            return response.status == 200 and len(data) <= MAX_HTTP and 'HeadlessChrome' in json.loads(data).get('User-Agent', '')
-        except (OSError, ValueError, http.client.HTTPException):
+            return 'HeadlessChrome' in self._version().get('User-Agent', '')
+        except (OSError, ValueError):
             return False
-        finally:
-            conn.close()
 
     def start(self, profile_dir, proxy='', headless=None):
         desired = self.headless if headless is None else headless
@@ -215,28 +235,29 @@ class Browser:
             self._process = subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,startupinfo=startup,creationflags=subprocess.DETACHED_PROCESS|subprocess.CREATE_NEW_PROCESS_GROUP)
         else:
             self._process = subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        end=time.monotonic()+12
-        while time.monotonic()<end:
-            if self._endpoint_ready(): return
-            time.sleep(.25)
+        try:
+            self._process_owner = ProcessOwner(self._process)
+            end=time.monotonic()+12
+            while time.monotonic()<end:
+                check_cancelled()
+                if self._endpoint_ready(): return
+                interruptible_sleep(.25)
+        except BaseException:
+            self.close()
+            raise
+        self.close()
         raise BrowserUnavailable('The isolated browser did not start; close its old window and search again')
 
     def _connect(self):
         if self._ws: return
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=TIMEOUT)
-            conn.set_tunnel = lambda *a, **k: (_ for _ in ()).throw(BrowserUnavailable("Proxy tunneling is disabled"))
-            conn.connect()
-            conn.request("GET", "/json/version", headers={"Host": "127.0.0.1:%d" % self.port, "Connection": "close"})
-            response = conn.getresponse()
-            data = response.read(MAX_HTTP + 1); conn.close()
-            if response.status != 200 or len(data) > MAX_HTTP: raise BrowserUnavailable("CDP version endpoint unavailable")
-            url = json.loads(data.decode("utf-8")).get("webSocketDebuggerUrl")
+            url = self._version(timeout=TIMEOUT).get('webSocketDebuggerUrl')
             self._ws = _WebSocket.connect(url)
         except BrowserUnavailable: raise
         except Exception as exc: raise BrowserUnavailable("Cannot connect to local Chrome CDP endpoint") from exc
 
     def _command(self, method, params=None, session=None):
+        check_cancelled()
         self._connect(); self._next += 1; ident = self._next
         msg = {"id": ident, "method": method, "params": params or {}}
         if session: msg["sessionId"] = session
@@ -244,13 +265,18 @@ class Browser:
             self._ws.send(json.dumps(msg, separators=(",", ":")))
             end = time.monotonic() + TIMEOUT
             while time.monotonic() < end:
+                check_cancelled()
                 obj = json.loads(self._ws.recv())
                 if obj.get("id") == ident:
                     if "error" in obj: raise SearchError("CDP command failed: " + str(obj["error"].get("message", "error"))[:200])
                     return obj.get("result", {})
             raise SearchError("CDP command timed out")
-        except (BrowserUnavailable, SearchError): raise
-        except Exception as exc: raise BrowserUnavailable("Local CDP communication failed") from exc
+        except Exception:
+            # A partial/abandoned response cannot be reused by the next job.
+            if self._ws:
+                self._ws.close()
+                self._ws = None
+            raise
 
     def _ensure_tab(self, source):
         if source not in self._targets:
@@ -309,7 +335,7 @@ class Browser:
         while time.monotonic() < end:
             data = self._evaluate(session, script)
             if data and (data.get("challenge") or data.get("items")): break
-            time.sleep(0.35)
+            interruptible_sleep(0.35)
         if not data: raise SearchError("Search page returned no data")
         if data.get("challenge"): raise VerificationRequired("Provider requires verification or login")
         if data.get('login'): raise VerificationRequired('Pinterest requires login in the test browser')
@@ -368,7 +394,7 @@ class Browser:
             if output or state['exhausted']:
                 break
             self._evaluate(session, "window.scrollBy(0, Math.max(200, Math.floor(innerHeight*0.8))); true")
-            time.sleep(0.35)
+            interruptible_sleep(0.35)
         state["seen"].update(x["id"] for x in output)
         return output
 
@@ -413,7 +439,7 @@ class Browser:
                 self._navigate(session,detail)
                 end=time.monotonic()+TIMEOUT
                 while time.monotonic()<end and not point:
-                    time.sleep(0.25);point=self._evaluate(session,coordinate_script)
+                    interruptible_sleep(0.25);point=self._evaluate(session,coordinate_script)
             if not point: raise SearchError('The selected search result is no longer available; search again')
             for event in ('mousePressed','mouseReleased'):
                 self._command('Input.dispatchMouseEvent',{'type':event,'button':'left','buttons':1 if event=='mousePressed' else 0,'clickCount':1,**point},session)
@@ -429,7 +455,7 @@ class Browser:
         while time.monotonic()<end:
             value=self._evaluate(session,script) or {}
             if value.get('challenge') or value.get('url'): break
-            time.sleep(0.3)
+            interruptible_sleep(0.3)
         if value.get('challenge') or value.get('login'):
             raise VerificationRequired('Provider requires verification or login')
         chosen=value.get('url','')
@@ -456,24 +482,38 @@ class Browser:
         self._command("Target.activateTarget", {"targetId": target})
         return True
 
-    def close(self):
+    def close(self, deadline=None):
+        end = deadline if deadline is not None else time.monotonic()+2
         targets = list(self._targets.values()) + list(self._detail_targets.values())
         self._targets.clear(); self._sessions.clear()
         self._detail_targets.clear(); self._detail_sessions.clear(); self._paging.clear()
-        if self._process is not None:
-            try: self._command('Browser.close')
-            except Exception: pass
+        process, self._process = self._process, None
+        try:
+            with task_scope(Token(max(.001, min(.3, end-time.monotonic())))):
+                if process is not None:
+                    self._command('Browser.close')
+                else:
+                    for target in targets:
+                        self._command('Target.closeTarget', {'targetId': target})
+        except Exception:
+            pass
+        finally:
+            if self._ws:
+                self._ws.close()
+                self._ws = None
+        if self._process_owner is not None:
+            self._process_owner.close()
+            self._process_owner = None
+        if process is not None:
             try:
-                self._process.wait(timeout=5)
+                process.wait(timeout=max(0, min(.3, end-time.monotonic())))
             except subprocess.TimeoutExpired:
-                self._process.terminate()
-                try: self._process.wait(timeout=3)
+                process.terminate()
+                try:
+                    process.wait(timeout=max(0, min(.3, end-time.monotonic())))
                 except subprocess.TimeoutExpired:
-                    self._process.kill()
-                    self._process.wait(timeout=3)
-            self._process = None
-        else:
-            for target in targets:
-                try: self._command("Target.closeTarget", {"targetId": target})
-                except Exception: pass
-        if self._ws: self._ws.close(); self._ws = None
+                    process.kill()
+                    try:
+                        process.wait(timeout=max(0, end-time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        pass
