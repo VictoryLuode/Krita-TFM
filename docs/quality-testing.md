@@ -43,7 +43,7 @@ times. The launcher now rejects that environment before starting a GUI process.
 
 Live preview/apply parity, undo/redo, reopened native parameters, canvas insertion,
 and live search panel integration therefore remain **unverified**, not failed
-product behavior. Version 0.1.8 is prepared for user testing; automated results
+product behavior. Version 0.1.9 is prepared for user testing; automated results
 do not certify the live installation. Run the live probe in a separate OS user/test environment, then record
 the result against the candidate batch. External search providers and attached
 browser sessions require a separate manual smoke check; local network fault

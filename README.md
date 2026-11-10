@@ -20,12 +20,11 @@ Custom **menus**, **native filters**, **Advanced Selection**, and an **asset lib
 - **Asset Library** — categorized cutouts onto the canvas; save the active layer as an asset.
 - **Quick Image Search** · **Layer Color Space** — optional tools you can enable under Configure TFM → Tools.
 
-## What's new in 0.1.8
+## What's new in 0.1.9
 
-- Preserve high-depth image precision and alpha; correct skin protection and CPU temperature tint.
-- Cancellable GPU requests and search tasks, with bounded timeouts and clearer fallback diagnostics.
-- Faster Asset Library loading, bounded thumbnail caching, and stable selection/scroll restoration.
-- Shared filter parameter metadata, reproducible build batches, and verified package inventories.
+- Complete TFM branding cleanup for native sources and build/test env names (legacy aliases kept).
+- Configure Filters/Settings i18n, clearer filter enable restart cues, and BiRefNet model-folder onboarding.
+- Menu theme/row module split; Relight stays experimental; docs match 30s GPU idle TTL and Auto warm Vibrance.
 
 Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
@@ -54,7 +53,7 @@ Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 - [ ] macOS
 - [ ] Android
 
-1. Download `TFM-0.1.8.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
+1. Download `TFM-0.1.9.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
 2. Copy everything under `resource/` into your Krita **resource** directory.
 3. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder (same directory).
 4. Start Krita and enable **TFM** under **Settings → Manage Resources → Python Plugin Manager** if needed.

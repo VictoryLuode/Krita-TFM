@@ -1,3 +1,10 @@
+# TFM 0.1.9
+
+- Finish Menubelt/FxManager → TFM branding: native `tfm_*` sources, `TFM_*` CMake/env knobs with legacy fallbacks, and documented keep-migration for old installs.
+- Configure Filters/Settings bilingual UI, stronger Save Filters → restart affordance, and BiRefNet models-folder onboarding (local README seed).
+- Split popup theme and menu-row painting out of the menus extension; keep Relight research behind `--run-experimental` with a skipping native harness.
+- Document 30s Vulkan idle TTL, Auto warm Vibrance threshold, and motion-only high-depth float GPU boundary.
+
 # TFM 0.1.8
 
 - Preserve U16/F16/F32 processing precision, original alpha and supported HDR/negative values; retain U8 compatibility except the intentional skin-protection and CPU temperature-tint fixes.
