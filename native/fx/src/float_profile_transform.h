@@ -5,7 +5,7 @@
 #include <cstring>
 #include "pointwise_math.h"
 
-namespace fxmanager {
+namespace tfm {
 // ICC matrix/TRC profiles define a colour transform without a gamut-clipping
 // LUT. Evaluate that transform directly for float storage. Outside the ICC
 // domain use signed standard curves, or the endpoint tangent for sampled TRCs.

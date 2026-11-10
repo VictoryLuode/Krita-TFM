@@ -1,11 +1,11 @@
 // End-to-end filter timings: real U8 paint device, conversions and IPC included.
-#include "fxmanager_vibrance.h"
-#include "fxmanager_color_temperature.h"
-#include "fxmanager_film_grain.h"
-#include "fxmanager_vignette.h"
-#include "fxmanager_color_range_mask.h"
-#include "fxmanager_processing.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_vibrance.h"
+#include "tfm_color_temperature.h"
+#include "tfm_film_grain.h"
+#include "tfm_vignette.h"
+#include "tfm_color_range_mask.h"
+#include "tfm_processing.h"
+#include "tfm_vulkan.h"
 #include <QApplication>
 #include <QLibrary>
 #include <QElapsedTimer>
@@ -37,7 +37,7 @@ public:
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
     qputenv("TFM_THREADS","1"); qputenv("TFM_VULKAN_DISABLE","0");
-    const QString runtime=QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
     QLibrary candidate(QString::fromLocal8Bit(qgetenv("TFM_TEST_NATIVE_DLL")));
@@ -45,7 +45,7 @@ int main(int argc,char **argv) try {
     if (!candidate.load()) throw std::runtime_error("candidate DLL unavailable");
     auto *registry=KoColorSpaceRegistry::instance();
     const auto *cs=registry->colorSpace("RGBA","U8",registry->p709SRGBProfile());
-    FxManagerVulkan connection;
+    TfmVulkan connection;
     KisFilterVibrance vibrance; KisFilterColorTemperature temperature;
     KisFilterFilmGrain grain; KisFilterVignette vignette; KisFilterColorRangeMask mask;
     QJsonArray records;
@@ -82,7 +82,7 @@ int main(int argc,char **argv) try {
                     device->readBytes(reinterpret_cast<quint8*>(actual.data()),area);
                     if (backend=="cpu") cpu=actual;
                     else {
-                        QFile status(QDir(fxmanager::resourceDirectory()).filePath("TFM/backend-status.json"));
+                        QFile status(QDir(tfm::resourceDirectory()).filePath("TFM/backend-status.json"));
                         if(!status.open(QIODevice::ReadOnly) || QJsonDocument::fromJson(status.readAll()).object().value("actual").toString()!="gpu")
                             throw std::runtime_error("GPU benchmark silently fell back");
                         int delta=0;

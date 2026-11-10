@@ -1,4 +1,4 @@
-#include "fxmanager_processing.h"
+#include "tfm_processing.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -12,7 +12,7 @@
 static void check(bool ok,const char *text) { if(!ok) throw std::runtime_error(text); }
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
-    const QString runtime=QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
     auto *registry=KoColorSpaceRegistry::instance();
@@ -45,9 +45,9 @@ int main(int argc,char **argv) try {
                 cs->fromNormalisedChannelsValue(reinterpret_cast<quint8*>(raw.data())+i*cs->pixelSize(),channels);
             }
             device->writeBytes(reinterpret_cast<const quint8*>(raw.constData()),rect);
-            const auto linear=fxmanager::readFloatImage(device,rect);
+            const auto linear=tfm::readFloatImage(device,rect);
             check(!linear.isNull(),"custom float conversion failed");
-            check(fxmanager::writeFloatImage(device,linear,rect),"custom reverse conversion failed");
+            check(tfm::writeFloatImage(device,linear,rect),"custom reverse conversion failed");
             check(device->colorSpace()==cs && *cs->profile()==*profile,"profile changed");
             QByteArray result(raw.size(),Qt::Uninitialized);
             device->readBytes(reinterpret_cast<quint8*>(result.data()),rect);
@@ -69,7 +69,7 @@ int main(int argc,char **argv) try {
             float reference[4];
             check(cs->convertPixelsTo(reinterpret_cast<const quint8*>(raw.constData()),reinterpret_cast<quint8*>(reference),working,1,
                   KoColorConversionTransformation::internalRenderingIntent(),KoColorConversionTransformation::internalConversionFlags()),"ICC reference failed");
-            const auto actual=fxmanager::readFloatImage(device,QRect(0,0,1,1));
+            const auto actual=tfm::readFloatImage(device,QRect(0,0,1,1));
             for(int c=0;c<3;++c) check(std::abs(reference[c]-actual.pixels[c])<.001,"matrix/TRC differs from ICC reference");
         }
     }
@@ -78,7 +78,7 @@ int main(int argc,char **argv) try {
         KisPaintDeviceSP device=new KisPaintDevice(cs);
         const float values[4]={-4.5f,2.125f,.1234567f,.6f};
         if(depth=="F32") device->writeBytes(reinterpret_cast<const quint8*>(values),0,0,1,1);
-        const auto data=fxmanager::readDataFloatRgba(device,QRect(0,0,1,1));
+        const auto data=tfm::readDataFloatRgba(device,QRect(0,0,1,1));
         if(depth=="F32") {
             check(data.pixels.size()==4,"raw F32 unavailable");
             for(int c=0;c<4;++c) check(data.pixels[c]==values[c],"raw AOV underwent colour transform");

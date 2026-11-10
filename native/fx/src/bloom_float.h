@@ -1,9 +1,9 @@
 #pragma once
 #include "bloom_algorithm.h"
-#include "fxmanager_processing.h"
+#include "tfm_processing.h"
 #include <KoUpdater.h>
 
-namespace fxmanager::bloom {
+namespace tfm::bloom {
 inline EncodedRgbaImage renderFloat(const EncodedRgbaImage &source,double threshold,int radius,
                                    double strength,double softness,bool diffusion,KoUpdater *updater)
 {

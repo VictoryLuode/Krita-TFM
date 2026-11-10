@@ -1,10 +1,10 @@
 """Krita TFM plugin registration."""
 
 from krita import Krita
-from .menus.menubelt import MenuBeltExtension
+from .menus.extension import TfmExtension
 
 _app = Krita.instance()
-_app.addExtension(MenuBeltExtension(_app))
+_app.addExtension(TfmExtension(_app))
 
 if hasattr(_app, "addDockWidgetFactory"):
     # Heavy docker UIs import on first panel open, not at plugin load.

@@ -1,10 +1,10 @@
 """Asset Library panel UI and compatible exports."""
 from .panel_context import *  # noqa: F403
-from .library_view import LibraryViewMixin
+from .asset_view import AssetViewMixin
 from .asset_operations import AssetOperationsMixin
 from .drag_drop import AssetDragDropMixin
 
-class AssetLibraryDocker(LibraryViewMixin, AssetOperationsMixin, AssetDragDropMixin, DockWidget):
+class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixin, DockWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(tr("Asset Library", "资产库"))

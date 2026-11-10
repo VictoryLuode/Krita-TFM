@@ -88,7 +88,8 @@ measurements, not a promise for every disk or live document.
 
 All 32 worker-cache comparison outputs remained byte-identical. Shader/pipeline
 LRU capacity is 16; buffers reuse capacity within the existing 128 MiB limit.
-The two-second worker idle lifetime is retained. Auto backend thresholds use
+The worker idle lifetime defaults to thirty seconds (`TFM_VULKAN_IDLE_MS`;
+lifecycle tests pin two seconds). Auto backend thresholds use
 actual end-to-end measurements; unsupported/high-depth paths explain CPU fallback.
 Manual GPU choice remains available where the backend supports it.
 
@@ -113,7 +114,9 @@ A copied Krita executable did not provide profile isolation: Windows Qt5 Known
 Folders ignored APPDATA/LOCALAPPDATA overrides, so the probe did not load. That
 attempt was stopped. The normal configuration, display and shortcut files kept
 their pre-attempt modification times; this is not a blanket claim about all logs.
-The launcher now refuses that environment before opening the GUI.
+The launcher now refuses that environment before opening the GUI. Re-running
+`scripts/host_acceptance.py` on this machine still exits before a GUI start for
+the same Known Folder reason (and requires a source-matching native batch).
 
 Live preview/apply, undo/redo, preset reopening, asset canvas insertion, native
 panel integration and external search/browser provider smoke tests remain

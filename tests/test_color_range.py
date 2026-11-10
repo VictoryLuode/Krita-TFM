@@ -76,7 +76,6 @@ def main():
 
     import tfm
     from tfm.color_range import ColorRangeDialog
-    from tfm.menus.menubelt import MenuBeltExtension
     from PyQt5.QtGui import QImage, QColor
     from PyQt5.QtCore import Qt
 

@@ -1,6 +1,6 @@
 #include "tfm_flare_gpu.h"
-#include "fxmanager_processing.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_processing.h"
+#include "tfm_vulkan.h"
 #include "tfm_flare_spv.h"
 
 #include <QDebug>
@@ -110,7 +110,7 @@ QVector<FlareSource> detectSources(const QImage &source,double threshold,int max
         return float((0.2126*qRed(p)+0.7152*qGreen(p)+0.0722*qBlue(p))/255.0);
     });
 }
-QVector<FlareSource> detectSources(const fxmanager::EncodedRgbaImage &source,double threshold,int maxSources)
+QVector<FlareSource> detectSources(const tfm::EncodedRgbaImage &source,double threshold,int maxSources)
 {
     if(source.isNull()) return {};
     return detectSourcesImpl(source.width,source.height,threshold,maxSources,[&](int x,int y) {
@@ -155,9 +155,9 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
     }
     const std::size_t bytes = std::size_t(source.width()) * source.height() * sizeof(std::uint32_t);
     try {
-        static FxManagerVulkan *instance = new FxManagerVulkan();
-        FxManagerVulkan &vulkan = *instance;
-        FxManagerVulkan::Dispatch dispatch;
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;

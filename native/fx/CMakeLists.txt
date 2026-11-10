@@ -22,7 +22,7 @@ if (NOT COMMAND kis_add_library)
 endif()
 
 if (NOT COMMAND kis_add_library)
-    message(FATAL_ERROR "FxManager must be configured from a Krita build tree or a build that exports kis_add_library")
+    message(FATAL_ERROR "TFM must be configured from a Krita build tree or a build that exports kis_add_library")
 endif()
 
 add_subdirectory(src)

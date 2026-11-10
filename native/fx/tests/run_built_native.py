@@ -28,11 +28,11 @@ def main():
         if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
             parser.error('stale production build: '+name+'; rebuild before testing')
     entries = json.loads((build/'compile_commands.json').read_text(encoding='utf-8'))
-    entry = next(e for e in entries if e['file'].endswith('fxmanager_vibrance.cpp'))
+    entry = next(e for e in entries if e['file'].endswith('tfm_vibrance.cpp'))
     command = entry['arguments']
     compiler, flags = command[0], command[1:command.index('-o')]
     env = dict(os.environ,QT_PLUGIN_PATH=str(runtime/'bin'),KRITA_PLUGIN_PATH=str(runtime/'lib/kritaplugins'),
-               QT_QPA_PLATFORM='offscreen',FXMANAGER_KRITA_RUNTIME=str(runtime),TFM_THREADS='2',TFM_VULKAN_DISABLE='1',TFM_TEST_NATIVE_DLL=str(build/'bin/kritatfm.dll'))
+               QT_QPA_PLATFORM='offscreen',TFM_KRITA_RUNTIME=str(runtime),FXMANAGER_KRITA_RUNTIME=str(runtime),TFM_THREADS='2',TFM_VULKAN_DISABLE='1',TFM_TEST_NATIVE_DLL=str(build/'bin/kritatfm.dll'))
     env['PATH'] = os.pathsep.join([str(runtime/'bin'),str(Path(entry['directory'])/'bin'),
                                   str(args.deps.resolve()/'bin'),str(Path(compiler).parent),env['PATH']])
 

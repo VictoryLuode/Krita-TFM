@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace fxmanager::background_removal {
+namespace tfm::background_removal {
 // The estimator sees a bounded U8 proxy. Apply its colour correction to the
 // original float image; never replace HDR/detail with the quantized proxy.
 inline void compositeRefined(float *original,const float *foreground,

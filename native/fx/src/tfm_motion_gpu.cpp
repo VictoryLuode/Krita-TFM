@@ -1,5 +1,5 @@
 #include "tfm_motion_gpu.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_vulkan.h"
 #include "tfm_motion_spv.h"
 
 #include <QDebug>
@@ -28,11 +28,11 @@ static_assert(offsetof(Parameters, defaultR) == 96, "Motion shader default pixel
 constexpr std::uint64_t memoryBudget = 128ULL * 1024 * 1024;
 }
 
-bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
-            const fxmanager::FloatRgbaImage &defaultImage, const QRect &read,
+bool render(const tfm::FloatRgbaImage &source, const QRect &stored,
+            const tfm::FloatRgbaImage &defaultImage, const QRect &read,
             const QRect &outputRect, const QRect &frame, bool circular,
             double centerX, double centerY, double angle, double factor,
-            fxmanager::FloatRgbaImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
+            tfm::FloatRgbaImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     deviceName.clear();
     if (qEnvironmentVariableIntValue("TFM_VULKAN_DISABLE") != 0) {
@@ -87,10 +87,10 @@ bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
         // The Vulkan singleton is process-scoped. Khronos loader/driver teardown
         // during Windows DLL detach runs under the loader lock and can crash.
         // Keep it alive until the OS releases process resources at exit.
-        static FxManagerVulkan *vulkanInstance = new FxManagerVulkan();
-        FxManagerVulkan &vulkan = *vulkanInstance;
+        static TfmVulkan *vulkanInstance = new TfmVulkan();
+        TfmVulkan &vulkan = *vulkanInstance;
         static const std::vector<std::uint32_t> shader(std::begin(kMotionSpv), std::end(kMotionSpv));
-        FxManagerVulkan::Dispatch dispatch;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(outputRect.width()) + 15) / 16;
@@ -106,7 +106,7 @@ bool render(const fxmanager::FloatRgbaImage &source, const QRect &stored,
             reason = QStringLiteral("Motion GPU returned an incomplete image");
             return false;
         }
-        fxmanager::FloatRgbaImage result;
+        tfm::FloatRgbaImage result;
         result.width = outputRect.width();
         result.height = outputRect.height();
         result.linearHdr = true;

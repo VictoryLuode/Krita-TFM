@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <vector>
 
-using namespace fxmanager::pointwise;
+using namespace tfm::pointwise;
 static void require(bool ok,const char *message) { if(!ok) throw std::runtime_error(message); }
 int main(int argc,char **argv) try {
     if(argc==1) {

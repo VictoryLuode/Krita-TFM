@@ -1,5 +1,5 @@
-#include "fxmanager_background_removal.h"
-#include "fxmanager_processing.h"
+#include "tfm_background_removal.h"
+#include "tfm_processing.h"
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QDir>
@@ -14,14 +14,14 @@
 static void check(bool ok,const char *text) { if(!ok) throw std::runtime_error(text); }
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
-    const QString runtime=QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
     const QRect area(0,0,64,64);
     auto *registry=KoColorSpaceRegistry::instance();
     const auto *cs=registry->colorSpace("RGBA","F32",registry->p709G10Profile());
     check(cs && cs->pixelSize()==16,"RGBA F32 unavailable");
-    fxmanager::FloatRgbaImage original;original.width=64;original.height=64;original.pixels.resize(64*64*4);
+    tfm::FloatRgbaImage original;original.width=64;original.height=64;original.pixels.resize(64*64*4);
     for(int y=0;y<64;++y) for(int x=0;x<64;++x) {
         auto *p=original.pixels.data()+4*(y*64+x);
         const bool object=(x-32)*(x-32)+(y-32)*(y-32)<20*20;
@@ -34,11 +34,11 @@ int main(int argc,char **argv) try {
     config->setProperty("output_mode",QStringLiteral("cutout"));
     for(bool refine:{false,true}) {
         KisPaintDeviceSP device=new KisPaintDevice(cs);
-        check(fxmanager::writeFloatImage(device,original,area),"fixture conversion failed");
-        const auto input=fxmanager::readFloatImage(device,area);
+        check(tfm::writeFloatImage(device,original,area),"fixture conversion failed");
+        const auto input=tfm::readFloatImage(device,area);
         config->setProperty("foreground_mode",refine ? "refined_foreground" : "fast_mask");
         QElapsedTimer timer;timer.start();filter.processImpl(device,area,config,nullptr);
-        const auto output=fxmanager::readFloatImage(device,area);
+        const auto output=tfm::readFloatImage(device,area);
         bool changed=false,negative=false,hdr=false;
         for(int i=0;i<output.pixels.size();i+=4) {
             if(!refine) for(int c=0;c<3;++c) check(output.pixels[i+c]==input.pixels[i+c],"mask inference changed source colour bytes");

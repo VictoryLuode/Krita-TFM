@@ -5,7 +5,7 @@
 
 // Production colour math shared by the U8/float paths and native regression
 // probes. Inputs use encoded sRGB; storage conversion is deliberately separate.
-namespace fxmanager::pointwise {
+namespace tfm::pointwise {
 struct Rgb { double r=0, g=0, b=0; };
 constexpr double kReferenceKelvin=6500.0;
 
@@ -83,4 +83,4 @@ inline float decode(float encoded) {
     const double v=std::abs(double(encoded));
     return float(std::copysign(v<=0.04045 ? v/12.92 : std::pow((v+0.055)/1.055,2.4),encoded));
 }
-} // namespace fxmanager::pointwise
+} // namespace tfm::pointwise

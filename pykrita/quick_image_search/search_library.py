@@ -5,6 +5,7 @@ from quick_image_search.task_runtime import BoundedExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from i18n import tr
 from .favorite_tabs import FavoriteTabs
 
 from .search_store import SearchStore
@@ -111,10 +112,13 @@ class SearchLibraryMixin:
         self._cache_status_timer.setInterval(500)
         self._cache_status_timer.timeout.connect(self.report_cache_error)
         self._cache_status_timer.start()
-        self.history_action = QAction(history_icon(), '历史与收藏', self.search_input)
-        self.history_action.setToolTip('历史与收藏；右键条目可管理或刷新缓存')
+        self.history_action = QAction(history_icon(), tr('History & Favorites', '历史与收藏'), self.search_input)
+        self.history_action.setToolTip(tr(
+            'History and favorites; right-click an entry to manage or refresh its cache',
+            '历史与收藏；右键条目可管理或刷新缓存',
+        ))
         self.history_action.triggered.connect(self.show_history_menu)
-        self.favorite_action = QAction(star_icon(False), '收藏当前关键词', self.search_input)
+        self.favorite_action = QAction(star_icon(False), tr('Favorite current keyword', '收藏当前关键词'), self.search_input)
         self.favorite_action.setCheckable(True)
         self.favorite_action.triggered.connect(self.toggle_current_favorite)
         self.search_input.addAction(self.history_action, QLineEdit.ActionPosition.TrailingPosition)
@@ -136,7 +140,7 @@ class SearchLibraryMixin:
             try:
                 self._grid_settings.save(size)
             except (OSError, ValueError) as error:
-                self.status.setText('网格尺寸未保存：' + str(error))
+                self.status.setText(tr('Grid size not saved: ', '网格尺寸未保存：') + str(error))
 
     def update_library_controls(self):
         if not hasattr(self, 'favorite_action'):
@@ -147,7 +151,11 @@ class SearchLibraryMixin:
         self.favorite_action.setEnabled(bool(query) and not self._closing)
         self.favorite_action.setChecked(favorite)
         self.favorite_action.setIcon(star_icon(favorite))
-        self.favorite_action.setToolTip('取消收藏当前关键词' if favorite else '收藏当前关键词（不执行搜索）')
+        self.favorite_action.setToolTip(
+            tr('Remove current keyword from favorites', '取消收藏当前关键词')
+            if favorite else
+            tr('Favorite current keyword (does not search)', '收藏当前关键词（不执行搜索）')
+        )
         self.update_favorite_tabs()
 
     @staticmethod
@@ -181,7 +189,8 @@ class SearchLibraryMixin:
                     tabs.install_close_button(index, record['id'])
             for index, record in enumerate(records):
                 tabs.setTabText(index, self.record_label(record).replace('&', '&&'))
-                tabs.setTabToolTip(index, self.record_label(record) + '\n搜索：' + record['query'] + '\n右键改名；× 取消收藏')
+                tabs.setTabToolTip(index, self.record_label(record) + '\n' + tr('Search: ', '搜索：')
+                                   + record['query'] + '\n' + tr('Right-click to rename; × removes the favorite', '右键改名；× 取消收藏'))
             record = self.search_store.lookup(*self._active_search) if self._active_search else None
             tabs.active_id = record['id'] if record and record['favorite'] else None
             if tabs.active_id in ids:
@@ -200,18 +209,23 @@ class SearchLibraryMixin:
         try:
             self.search_store.reorder_favorites([tabs.tabData(i) for i in range(tabs.count())])
         except (OSError, ValueError) as error:
-            self.status.setText('收藏顺序未保存：' + str(error))
+            self.status.setText(tr('Favorite order not saved: ', '收藏顺序未保存：') + str(error))
         self.update_favorite_tabs()
 
     def set_favorite_alias(self, identity, alias):
         try:
             self.search_store.set_alias(identity, alias)
         except (OSError, ValueError) as error:
-            self.status.setText('收藏名称未保存：' + str(error))
+            self.status.setText(tr('Favorite name not saved: ', '收藏名称未保存：') + str(error))
         self.update_library_controls()
 
     def rename_favorite(self, record):
-        text, accepted = QInputDialog.getText(self, '收藏别名', '显示名称（留空恢复关键词）：', text=record.get('alias', ''))
+        text, accepted = QInputDialog.getText(
+            self,
+            tr('Favorite alias', '收藏别名'),
+            tr('Display name (leave empty to restore the keyword):', '显示名称（留空恢复关键词）：'),
+            text=record.get('alias', ''),
+        )
         if accepted:
             self.set_favorite_alias(record['id'], text)
 
@@ -224,10 +238,10 @@ class SearchLibraryMixin:
         if not record:
             return
         menu = QMenu(tabs)
-        menu.addAction('修改别名').triggered.connect(lambda: self.rename_favorite(record))
-        menu.addAction('刷新结果').triggered.connect(lambda: self.activate_record(record['id'], refresh=True))
-        menu.addAction('清除此项缓存').triggered.connect(lambda: self.clear_record_cache(record))
-        menu.addAction('取消收藏').triggered.connect(lambda: self.toggle_record_favorite(record['source'], record['query'], record['original_query']))
+        menu.addAction(tr('Rename alias', '修改别名')).triggered.connect(lambda: self.rename_favorite(record))
+        menu.addAction(tr('Refresh results', '刷新结果')).triggered.connect(lambda: self.activate_record(record['id'], refresh=True))
+        menu.addAction(tr('Clear this cache', '清除此项缓存')).triggered.connect(lambda: self.clear_record_cache(record))
+        menu.addAction(tr('Remove favorite', '取消收藏')).triggered.connect(lambda: self.toggle_record_favorite(record['source'], record['query'], record['original_query']))
         try:
             menu.exec(tabs.mapToGlobal(position))
         finally:
@@ -250,7 +264,7 @@ class SearchLibraryMixin:
                 self._cache_suppressed.discard(self.favorite_key(record))
                 self.flush_favorite_snapshot()
         except (OSError, ValueError) as error:
-            self.status.setText('收藏未保存：' + str(error))
+            self.status.setText(tr('Favorite not saved: ', '收藏未保存：') + str(error))
         self.update_library_controls()
 
     def build_history_menu(self):
@@ -266,23 +280,28 @@ class SearchLibraryMixin:
         active = menu.activeAction()
         selected_id = active.data() if active else None
         menu.clear()
-        for title, records in (('收藏搜索', self.search_store.favorites()), ('最近搜索', self.search_store.recent())):
+        sections = (
+            (tr('Favorite searches', '收藏搜索'), self.search_store.favorites()),
+            (tr('Recent searches', '最近搜索'), self.search_store.recent()),
+        )
+        for title, records in sections:
             menu.addSection(title)
             if not records:
-                menu.addAction('暂无记录').setEnabled(False)
+                menu.addAction(tr('No entries yet', '暂无记录')).setEnabled(False)
             for record in records:
                 full = self.record_label(record)
                 width = max(180, min(480, self.width() - 32))
                 text = menu.fontMetrics().elidedText(full, Qt.TextElideMode.ElideRight, width)
                 action = menu.addAction(text.replace('&', '&&'))
-                action.setToolTip(full + '\n搜索：' + record['query'] + '\n右键可管理此条目')
+                action.setToolTip(full + '\n' + tr('Search: ', '搜索：') + record['query']
+                                  + '\n' + tr('Right-click to manage this entry', '右键可管理此条目'))
                 action.setData(record['id'])
                 action.setProperty('favorite', record['favorite'])
                 action.triggered.connect(lambda checked=False, identity=record['id']: self.activate_record(identity))
                 if record['id'] == selected_id:
                     menu.setActiveAction(action)
         menu.addSeparator()
-        clear = menu.addAction('清空最近搜索（保留收藏）')
+        clear = menu.addAction(tr('Clear recent searches (keep favorites)', '清空最近搜索（保留收藏）'))
         clear.setEnabled(bool(self.search_store.recent()))
         clear.triggered.connect(self.clear_recent_searches)
         menu.setToolTipsVisible(True)
@@ -306,7 +325,7 @@ class SearchLibraryMixin:
         try:
             self.search_store.clear_recent()
         except (OSError, ValueError) as error:
-            self.status.setText('历史未更新：' + str(error))
+            self.status.setText(tr('History not updated: ', '历史未更新：') + str(error))
 
     def history_context_menu(self, parent, position):
         action = parent.actionAt(position)
@@ -314,14 +333,16 @@ class SearchLibraryMixin:
         if not record:
             return
         context = QMenu(parent)
-        context.addAction('取消收藏' if record['favorite'] else '收藏此搜索').triggered.connect(
+        context.addAction(
+            tr('Remove favorite', '取消收藏') if record['favorite'] else tr('Favorite this search', '收藏此搜索')
+        ).triggered.connect(
             lambda: self.toggle_record_favorite(record['source'], record['query'], record['original_query']))
         if record['favorite']:
-            context.addAction('修改别名').triggered.connect(lambda: self.rename_favorite(record))
-            context.addAction('刷新结果').triggered.connect(lambda: self.activate_record(record['id'], refresh=True))
-            context.addAction('清除此项缓存').triggered.connect(lambda: self.clear_record_cache(record))
+            context.addAction(tr('Rename alias', '修改别名')).triggered.connect(lambda: self.rename_favorite(record))
+            context.addAction(tr('Refresh results', '刷新结果')).triggered.connect(lambda: self.activate_record(record['id'], refresh=True))
+            context.addAction(tr('Clear this cache', '清除此项缓存')).triggered.connect(lambda: self.clear_record_cache(record))
         else:
-            context.addAction('删除此条记录').triggered.connect(lambda: self.remove_recent_record(record['id']))
+            context.addAction(tr('Delete this entry', '删除此条记录')).triggered.connect(lambda: self.remove_recent_record(record['id']))
         try:
             context.exec(parent.mapToGlobal(position))
         finally:
@@ -333,13 +354,13 @@ class SearchLibraryMixin:
         try:
             self.search_store.remove_history(identity)
         except (OSError, ValueError) as error:
-            self.status.setText('历史未更新：' + str(error))
+            self.status.setText(tr('History not updated: ', '历史未更新：') + str(error))
 
     def clear_record_cache(self, record):
         key = self.favorite_key(record)
         self._cache_suppressed.add(key)
         self._cache_executor.submit(self.favorite_cache.clear, key)
-        self.status.setText('已安排清除此项缓存，收藏保留。')
+        self.status.setText(tr('Scheduled clearing this cache; the favorite is kept.', '已安排清除此项缓存，收藏保留。'))
 
     def activate_record(self, identity, refresh=False):
         if self._closing:
@@ -352,7 +373,10 @@ class SearchLibraryMixin:
         self._pending_similar = None
         if self.busy:
             self._pending_library = (identity, refresh)
-            self.status.setText('搜索方案已排队，当前图片任务完成后打开…')
+            self.status.setText(tr(
+                'Search queued; opening after the current image job…',
+                '搜索方案已排队，当前图片任务完成后打开…',
+            ))
             return
         self._pending_library = None
         self.flush_favorite_snapshot()
@@ -370,7 +394,7 @@ class SearchLibraryMixin:
         for job in list(self.jobs):
             job.requestInterruption()
         self._more_pending = False
-        self.status.setText('正在打开收藏缓存…')
+        self.status.setText(tr('Opening favorite cache…', '正在打开收藏缓存…'))
         def operation(job):
             snapshot = self._cache_executor.submit(self.favorite_cache.load, self.favorite_key(record)).result()
             if snapshot is None:
@@ -411,7 +435,16 @@ class SearchLibraryMixin:
                     self._restoring_cache = False
             QTimer.singleShot(0, restore_position)
             missing = sum(1 for entry in entries if entry['thumbnail'] not in images or images[entry['thumbnail']].isNull())
-            self.status.setText('已恢复收藏缓存' + ('，部分缩略图缺失；可右键刷新。' if missing else '；右键收藏可刷新。'))
+            if missing:
+                self.status.setText(tr(
+                    'Restored favorite cache; some thumbnails are missing. Right-click to refresh.',
+                    '已恢复收藏缓存，部分缩略图缺失；可右键刷新。',
+                ))
+            else:
+                self.status.setText(tr(
+                    'Restored favorite cache; right-click the favorite to refresh.',
+                    '已恢复收藏缓存；右键收藏可刷新。',
+                ))
         self.run_job(operation, loaded, lock_grid=False)
 
     def resume_library(self):
@@ -445,7 +478,7 @@ class SearchLibraryMixin:
 
     def report_cache_error(self):
         if self._cache_error and not self._closing:
-            self.status.setText('收藏缓存未保存：' + self._cache_error)
+            self.status.setText(tr('Favorite cache not saved: ', '收藏缓存未保存：') + self._cache_error)
             self._cache_error = ''
 
     def _write_snapshot(self, payload):
@@ -455,4 +488,7 @@ class SearchLibraryMixin:
         merged = {url: data for url, data in (previous['thumbnails'].items() if previous else []) if url in urls}
         merged.update(thumbnails)
         if not self.favorite_cache.save(key, entries, merged, scroll, selected, has_more, tile_size):
-            self._cache_error = self.favorite_cache.last_error or '缓存已超出容量限制。'
+            self._cache_error = self.favorite_cache.last_error or tr(
+                'Cache exceeded the capacity limit.',
+                '缓存已超出容量限制。',
+            )

@@ -8,6 +8,7 @@ import os
 
 from . import operations, settings
 from .catalog import FILTERS, FILTER_DEFAULT_SPECS, VULKAN_FILTER_IDS
+from ..i18n import tr
 from .qtcompat import (
     QColor,
     QCheckBox,
@@ -186,21 +187,36 @@ class FilterSettingsDialog(QWidget):
 
         columns = QHBoxLayout()
         left = QVBoxLayout()
-        filter_label = QLabel("Filters")
-        filter_label.setToolTip(
+        filter_label = QLabel(tr("Filters", "滤镜"))
+        filter_label.setToolTip(tr(
             "Check a filter to register it in Krita's Filter menu (requires Save Filters, then restart Krita). "
-            "Uncheck to hide it after restart. Drag a filter onto another category header to move it.")
+            "Uncheck to hide it after restart. Drag a filter onto another category header to move it.",
+            "勾选滤镜以注册到 Krita 的滤镜菜单（需「保存滤镜」并重启 Krita）。"
+            "取消勾选后重启才会隐藏。拖到其他分类标题可移动。",
+        ))
         left.addWidget(filter_label)
-        from ..ui_chrome import apply_muted_label
-        restart_note = QLabel(
-            "Enable/disable changes need Save Filters, then a Krita restart before the Filter menu updates.")
+        from ..ui_chrome import apply_muted_label, apply_warning_label
+        restart_note = QLabel(tr(
+            "Enable/disable changes need Save Filters, then a Krita restart before the Filter menu updates.",
+            "启用/禁用需先「保存滤镜」，再重启 Krita 后滤镜菜单才会更新。",
+        ))
         apply_muted_label(restart_note)
         left.addWidget(restart_note)
+        self._restart_banner = QLabel("")
+        self._restart_banner.setWordWrap(True)
+        self._restart_banner.hide()
+        apply_warning_label(self._restart_banner)
+        left.addWidget(self._restart_banner)
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Search...")
+        self._search.setPlaceholderText(tr("Search…", "搜索…"))
         self._search.textChanged.connect(self._reload)
         left.addWidget(self._search)
         self._category_list = _CategoryList(self)
+        # Push filter rows (checkbox + label) under the category title text, like Krita's Filter menu.
+        self._category_list.setStyleSheet(
+            "QListWidget::indicator { margin-left: 28px; }"
+            "QListWidget::item { padding-left: 2px; }"
+        )
         self._category_list.setDragDropMode((QAbstractItemView.DragDropMode.DragDrop if PYQT6 else QAbstractItemView.DragDrop))
         self._category_list.setAcceptDrops(True)
         self._category_list.setDragDropOverwriteMode(False)
@@ -214,18 +230,22 @@ class FilterSettingsDialog(QWidget):
         self._category_list.customContextMenuRequested.connect(self._category_menu)
         left.addWidget(self._category_list, 1)
         middle = QVBoxLayout()
-        middle.addWidget(QLabel("Filter Details"))
+        middle.addWidget(QLabel(tr("Filter Details", "滤镜详情")))
         self._detail = QTextBrowser()
         self._detail.setOpenExternalLinks(False)
         middle.addWidget(self._detail, 1)
-        middle.addWidget(QLabel("Default Parameters"))
+        middle.addWidget(QLabel(tr("Default Parameters", "默认参数")))
         self._parameter_scroll = QScrollArea()
         self._parameter_scroll.setWidgetResizable(True)
         self._parameter_scroll.setMinimumHeight(180)
         middle.addWidget(self._parameter_scroll, 2)
-        self._restore_defaults = QPushButton("Restore Factory Defaults")
+        self._restore_defaults = QPushButton(tr("Restore Factory Defaults", "恢复出厂默认"))
         self._restore_defaults.clicked.connect(self._restore_selected_defaults)
         middle.addWidget(self._restore_defaults)
+        self._open_models = QPushButton(tr("Open BiRefNet models folder", "打开 BiRefNet 模型文件夹"))
+        self._open_models.clicked.connect(self._open_birefnet_models)
+        self._open_models.hide()
+        middle.addWidget(self._open_models)
 
         self._status = QLabel()
         self._status.setWordWrap(True)
@@ -237,7 +257,7 @@ class FilterSettingsDialog(QWidget):
 
         line = QHBoxLayout()
         line.addStretch(1)
-        self._save = QPushButton("Save Filters")
+        self._save = QPushButton(tr("Save Filters", "保存滤镜"))
         self._save.clicked.connect(self.save_filters)
         line.addWidget(self._save)
         root.addLayout(line)
@@ -312,7 +332,8 @@ class FilterSettingsDialog(QWidget):
                 if needle and needle not in name.lower() and needle not in row["label"].lower() and needle not in ident.lower():
                     continue
                 enabled = ident in self._enabled
-                item = QListWidgetItem(row["label"])
+                # Extra text indent so the label sits under the category name, not the ▸.
+                item = QListWidgetItem("\u2003" + row["label"])
                 item.setData(_ROLE, ident)
                 item.setData(_ROLE + 1, name)
                 item.setToolTip(row["description"])
@@ -368,24 +389,87 @@ class FilterSettingsDialog(QWidget):
             lines.append("</ul>")
         self._detail.setHtml("".join(lines))
 
+    def _birefnet_models_dir(self):
+        from . import settings as filter_settings
+        root = filter_settings.resource_directory()
+        if not root:
+            return ""
+        return os.path.join(root, "TFM", "background-removal", "models")
+
+    def _ensure_birefnet_models_readme(self, models):
+        readme = os.path.join(models, "README.txt")
+        if os.path.isfile(readme):
+            return
+        body = (
+            "TFM Background Removal — BiRefNet models\n"
+            "========================================\n"
+            "\n"
+            "Place BiRefNet .gguf weights in this folder, then reopen the filter:\n"
+            "  - BiRefNet-lite-F16.gguf\n"
+            "  - BiRefNet-dynamic-F16.gguf\n"
+            "\n"
+            "Models are optional and are not shipped inside the TFM zip.\n"
+            "Obtain compatible GGUF builds from the project release notes / docs,\n"
+            "then keep filenames exactly as above (or pick them in the filter UI).\n"
+            "\n"
+            "Optional Vulkan/GGML runtime DLLs go in the sibling runtime/ folder.\n"
+        )
+        try:
+            with open(readme, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(body)
+        except OSError:
+            pass
+
+    def _open_birefnet_models(self):
+        models = self._birefnet_models_dir()
+        if not models:
+            self._status.setText(tr(
+                "Could not locate Krita’s resource directory.",
+                "无法定位 Krita 资源目录。",
+            ))
+            return
+        try:
+            os.makedirs(models, exist_ok=True)
+        except OSError as error:
+            self._status.setText(str(error))
+            return
+        self._ensure_birefnet_models_readme(models)
+        from qtcompat import QDesktopServices, QUrl
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(models)):
+            self._status.setText(tr("Could not open {}.", "无法打开 {}。").format(models))
+
     def _actionable_filter_tip(self, ident):
-        if ident in ("tfm_background_removal", "fxmanager_background_removal"):
-            from . import settings as filter_settings
-            root = filter_settings.resource_directory()
-            if not root:
-                return ("Could not locate Krita’s resource directory. "
-                        "Models belong in ResourceDirectory/TFM/background-removal/models/.")
-            models = os.path.join(root, "TFM", "background-removal", "models")
+        show_models = ident in ("tfm_background_removal", "fxmanager_background_removal")
+        if hasattr(self, "_open_models"):
+            self._open_models.setVisible(show_models)
+        if show_models:
+            models = self._birefnet_models_dir()
+            if not models:
+                return tr(
+                    "Could not locate Krita’s resource directory. "
+                    "Models belong in ResourceDirectory/TFM/background-removal/models/.",
+                    "无法定位 Krita 资源目录。模型应放在 ResourceDirectory/TFM/background-removal/models/。",
+                )
             try:
                 names = [name for name in os.listdir(models) if name.lower().endswith(".gguf")]
             except OSError:
                 names = []
             if names:
-                return "Models found in {} ({}).".format(models, ", ".join(sorted(names)[:4]))
-            return ("No .gguf models in {}. Download BiRefNet into that folder, then reopen this filter.".format(models))
+                return tr(
+                    "Models found in {} ({}).",
+                    "已在 {} 找到模型（{}）。",
+                ).format(models, ", ".join(sorted(names)[:4]))
+            return tr(
+                "No .gguf models in {}. Download BiRefNet into that folder (button below), then reopen this filter.",
+                "{} 中没有 .gguf 模型。请把 BiRefNet 下载到该文件夹（可用下方按钮打开），然后重新打开此滤镜。",
+            ).format(models)
         if ident in VULKAN_FILTER_IDS:
-            return ("If GPU fails (missing worker / timeout), set Compute backend to CPU here, "
-                    "or put tfm_vulkan_worker.exe beside kritatfm.dll.")
+            return tr(
+                "If GPU fails (missing worker / timeout), set Compute backend to CPU here, "
+                "or put tfm_vulkan_worker.exe beside kritatfm.dll.",
+                "若 GPU 失败（缺少 worker / 超时），在此将计算后端设为 CPU，"
+                "或把 tfm_vulkan_worker.exe 放到 kritatfm.dll 同目录。",
+            )
         return ""
 
     def _show_parameters(self, ident):
@@ -399,20 +483,22 @@ class FilterSettingsDialog(QWidget):
         if vulkan:
             control = QComboBox()
             for label, value in (
-                ("Default (Settings)", "auto"),
-                ("CPU", "cpu"),
-                ("GPU (Vulkan)", "gpu"),
+                (tr("Default (Settings)", "默认（设置）"), "auto"),
+                (tr("CPU", "CPU"), "cpu"),
+                (tr("GPU (Vulkan)", "GPU（Vulkan）"), "gpu"),
             ):
                 control.addItem(label, value)
             current = self._pending.get("filter_backends", {}).get(ident, "auto")
             control.setCurrentIndex(max(0, control.findData(current)))
-            control.setToolTip(
-                "Per-filter compute path. Default follows Settings → Default filter backend.")
+            control.setToolTip(tr(
+                "Per-filter compute path. Default follows Settings → Default filter backend.",
+                "单滤镜计算路径。默认跟随 设置 → 默认滤镜后端。",
+            ))
             control.currentIndexChanged.connect(
                 lambda _index, i=ident, c=control: self._set_backend(i, c.currentData()))
             control.setObjectName("filter_backend")
             self._parameter_controls["__backend__"] = control
-            form.addRow("Compute backend", control)
+            form.addRow(tr("Compute backend", "计算后端"), control)
         for spec in specs:
             key = spec["key"]
             value = values.get(key, spec["default"])
@@ -438,7 +524,10 @@ class FilterSettingsDialog(QWidget):
             self._parameter_controls[key] = control
             form.addRow(spec["label"], control)
         if not specs:
-            form.addRow(QLabel("No editable defaults for this filter."))
+            form.addRow(QLabel(tr(
+                "No editable defaults for this filter.",
+                "此滤镜没有可编辑的默认参数。",
+            )))
         self._parameter_scroll.setWidget(container)
 
     def _set_default(self, ident, key, value):
@@ -469,6 +558,18 @@ class FilterSettingsDialog(QWidget):
         else:
             self._enabled.discard(ident)
         self._style_filter_item(item, enabled)
+        self._update_restart_banner()
+
+    def _update_restart_banner(self):
+        if not hasattr(self, "_restart_banner"):
+            return
+        pending = self.is_dirty()
+        self._restart_banner.setVisible(pending)
+        if pending:
+            self._restart_banner.setText(tr(
+                "Unsaved enable/disable changes. Click Save Filters, then restart Krita to refresh the Filter menu.",
+                "启用/禁用有未保存更改。请点「保存滤镜」，再重启 Krita 以刷新滤镜菜单。",
+            ))
 
     def _current_category(self):
         item = self._category_list.currentItem()
@@ -529,7 +630,7 @@ class FilterSettingsDialog(QWidget):
         self._category_list.setCurrentItem(item)
         ident = item.data(_ROLE)
         menu = QMenu(self)
-        submenu = menu.addMenu("Move to category")
+        submenu = menu.addMenu(tr("Move to category", "移动到分类"))
         moves = {submenu.addAction(name): name for name in self._categories if name != item.data(_ROLE + 1)}
         if not moves:
             return
@@ -554,7 +655,7 @@ class FilterSettingsDialog(QWidget):
                    "filter_defaults", "filter_backends")}
         if settings.save(values):
             self._saved_filter_state = self._filter_state()
-            from ..i18n import tr
+            self._update_restart_banner()
             self._status.setText(tr(
                 "Filter settings saved. Backend choice applies on the next filter run.\n"
                 "Restart Krita to update enable/disable changes in the Filter menu.",
@@ -564,8 +665,12 @@ class FilterSettingsDialog(QWidget):
             font = self._status.font()
             font.setBold(True)
             self._status.setFont(font)
+            self._restart_banner.setVisible(True)
+            self._restart_banner.setText(tr(
+                "Saved. Restart Krita now so the Filter menu picks up enable/disable changes.",
+                "已保存。请立即重启 Krita，使滤镜菜单应用启用/禁用更改。",
+            ))
         else:
-            from ..i18n import tr
             self._status.setText(tr(
                 "Could not save TFM filter settings.",
                 "无法保存 TFM 滤镜设置。",

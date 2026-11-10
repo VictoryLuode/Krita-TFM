@@ -1,4 +1,4 @@
-#include "../src/fxmanager_background_mask.h"
+#include "../src/tfm_background_mask.h"
 
 #include <cassert>
 #include <cstdio>
@@ -7,7 +7,7 @@
 int main()
 {
     const uint8_t mask[] = {0, 1, 64, 127, 128, 200, 254, 255};
-    const QImage result = fxmanager::background_removal::grayscaleMaskImage(mask, 4, 2);
+    const QImage result = tfm::background_removal::grayscaleMaskImage(mask, 4, 2);
     assert(!result.isNull());
     assert(result.format() == QImage::Format_ARGB32);
     assert(result.width() == 4 && result.height() == 2);
@@ -23,8 +23,8 @@ int main()
         }
     }
 
-    const QImage nullInput = fxmanager::background_removal::grayscaleMaskImage(nullptr, 4, 2);
-    const QImage invalidExtent = fxmanager::background_removal::grayscaleMaskImage(mask, 0, 2);
+    const QImage nullInput = tfm::background_removal::grayscaleMaskImage(nullptr, 4, 2);
+    const QImage invalidExtent = tfm::background_removal::grayscaleMaskImage(mask, 0, 2);
     assert(nullInput.isNull());
     assert(invalidExtent.isNull());
 

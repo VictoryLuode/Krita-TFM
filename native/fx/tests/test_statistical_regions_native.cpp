@@ -1,7 +1,7 @@
 // Exercise the production widget with real Krita devices and XML configuration.
-#include "fxmanager_clipboard_color_match.h"
-#include "fxmanager_clipboard_color_match_widget.h"
-#include "fxmanager_statistical_profile.h"
+#include "tfm_clipboard_color_match.h"
+#include "tfm_clipboard_color_match_widget.h"
+#include "tfm_statistical_profile.h"
 #include <QApplication>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -17,7 +17,7 @@
 #include <memory>
 #include <stdexcept>
 
-using namespace fxmanager::statistical;
+using namespace tfm::statistical;
 void check(bool ok, const char *message) {
     if (!ok) throw std::runtime_error(message);
     std::cout << "PASS " << message << std::endl;
@@ -40,13 +40,13 @@ void region(QWidget &w, const QString &prefix, double x, double y, double width,
     number(w, prefix+"_region_w", width); number(w, prefix+"_region_h", height);
 }
 KisFilterConfigurationSP xml(KisPropertiesConfigurationSP props) {
-    KisFilterConfigurationSP result = new KisFilterConfiguration("fxmanager_clipboard_color_match", 1, KisGlobalResourcesInterface::instance());
+    KisFilterConfigurationSP result = new KisFilterConfiguration("tfm_clipboard_color_match", 1, KisGlobalResourcesInterface::instance());
     check(result->fromXML(props->toXML()), "real Krita XML roundtrip succeeds");
     return result;
 }
 int main(int argc, char **argv) try {
     QApplication app(argc, argv);
-    const QString runtime = QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime = [](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime + "/lib");
     KoResourcePaths::addAssetDir("icc_profiles", runtime + "/share/color/icc/krita");
     const auto *lab = KoColorSpaceRegistry::instance()->lab16();

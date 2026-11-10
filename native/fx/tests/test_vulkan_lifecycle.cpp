@@ -1,7 +1,7 @@
 // Links the actual plugin IPC implementation; the child is a deliberately
 // faulty protocol peer, never the user's installed worker or Krita instance.
-#include "fxmanager_vulkan.h"
-#include "fxmanager_vulkan_ipc.h"
+#include "tfm_vulkan.h"
+#include "tfm_vulkan_ipc.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -15,7 +15,7 @@
 
 using namespace tfm_vulkan_ipc;
 using Clock = std::chrono::steady_clock;
-using Status = FxManagerVulkan::Status;
+using Status = TfmVulkan::Status;
 
 void require(bool ok, const char *message) {
     if (!ok) { std::cerr << message << std::endl; std::exit(1); }
@@ -72,14 +72,16 @@ int main(int argc, char **) {
     SetEnvironmentVariableA("TFM_VULKAN_DISABLE", "0"); _putenv_s("TFM_VULKAN_DISABLE", "0");
     _putenv_s("TFM_VULKAN_STARTUP_TIMEOUT_MS", "250");
     _putenv_s("TFM_VULKAN_DISPATCH_TIMEOUT_MS", "250");
-    FxManagerVulkan client;
+    // Keep the production default (30s) out of this fixture; pin idle retire.
+    _putenv_s("TFM_VULKAN_IDLE_MS", "2000");
+    TfmVulkan client;
     std::vector<std::uint32_t> shader{0x07230203};
     std::vector<std::uint8_t> input(4u*1024*1024, 7), output{1,2,3};
     auto run = [&](const char *mode, Status expected, bool cancel) {
         client.shutdown();
         _putenv_s("TFM_PEER_MODE", mode);
         const auto start = Clock::now();
-        FxManagerVulkan::Dispatch dispatch;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = [=] { return cancel && Clock::now()-start > std::chrono::milliseconds(100); };
         output = {1,2,3};
         const auto result = client.dispatchResult(shader,input.data(),input.size(),nullptr,0,1024,dispatch,output);
@@ -110,7 +112,7 @@ int main(int argc, char **) {
     client.shutdown(); _putenv_s("TFM_PEER_MODE","result_hang");
     std::atomic<bool> entered{false};
     std::thread busy([&] {
-        FxManagerVulkan other; FxManagerVulkan::Dispatch config;
+        TfmVulkan other; TfmVulkan::Dispatch config;
         config.cancelled = [&] { entered = true; return false; };
         std::vector<std::uint8_t> data;
         const auto result = other.dispatchResult(shader,input.data(),input.size(),nullptr,0,1024,config,data);
@@ -118,7 +120,7 @@ int main(int argc, char **) {
     });
     while (!entered) std::this_thread::yield();
     Sleep(50);
-    FxManagerVulkan::Dispatch waiting;
+    TfmVulkan::Dispatch waiting;
     const auto start = Clock::now();
     waiting.cancelled = [=] { return Clock::now()-start > std::chrono::milliseconds(50); };
     const auto result = client.dispatchResult(shader,input.data(),input.size(),nullptr,0,1024,waiting,output);

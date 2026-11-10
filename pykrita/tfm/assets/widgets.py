@@ -408,30 +408,6 @@ def _dimensions(path):
     return None
 
 
-def _thumbnail(path, edge):
-    reader = QImageReader(path)
-    reader.setAutoTransform(True)
-    size = reader.size()
-    if size.isValid() and size.width() > 0 and size.height() > 0:
-        longest = max(size.width(), size.height())
-        if longest > edge:
-            scale = edge / float(longest)
-            reader.setScaledSize(QSize(
-                max(1, int(round(size.width() * scale))),
-                max(1, int(round(size.height() * scale))),
-            ))
-    image = reader.read()
-    if image.isNull():
-        return QIcon()
-    if image.width() > edge or image.height() > edge:
-        image = image.scaled(
-            edge, edge,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-    return QIcon(QPixmap.fromImage(image))
-
-
 def _insertion_point(doc):
     root = doc.rootNode()
     if root is None:
@@ -465,6 +441,8 @@ class FolderTree(QTreeWidget):
         self._drop_target = None
         self._drop_line = None
         self.setHeaderHidden(True)
+        self.setRootIsDecorated(False)
+        self.setItemsExpandable(False)
         self.setItemDelegate(FolderDelegate(self))
         self.setToolTip(
             "Drag a category to change its order. "

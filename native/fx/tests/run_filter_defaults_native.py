@@ -28,6 +28,7 @@ def main():
     env['PATH'] = ';'.join([str(host / 'bin'), str(deps / 'bin'), str(runtime / 'bin'), str(compiler.parent), env['PATH']])
     env['QT_PLUGIN_PATH'] = str(runtime / 'plugins')
     env['QT_QPA_PLATFORM'] = 'windows'
+    env['TFM_KRITA_RUNTIME'] = str(runtime)
     env['FXMANAGER_KRITA_RUNTIME'] = str(runtime)
     env['KLOCALAPPDATA'] = str(out / 'KLocalAppData')
     env['LOCALAPPDATA'] = str(out / 'LocalAppData-unused')
@@ -43,13 +44,13 @@ def main():
         if result.returncode:
             raise SystemExit(result.returncode)
 
-    stems = ['fxmanager_processing', 'fxmanager_bloom', 'fxmanager_film_grain',
-             'fxmanager_lens_distortion', 'fxmanager_lens_distortion_widget',
-             'fxmanager_vignette', 'fxmanager_vignette_widget', 'fxmanager_color_range_mask',
-             'fxmanager_color_range_mask_widget', 'fxmanager_clipboard_color_match',
-             'fxmanager_clipboard_color_match_widget', 'fxmanager_guided_color_match_filter',
-             'fxmanager_background_removal', 'fxmanager_birefnet', 'fxmanager_filter_widget',
-             'fxmanager_drag_spinbox']
+    stems = ['tfm_processing', 'tfm_bloom', 'tfm_film_grain',
+             'tfm_lens_distortion', 'tfm_lens_distortion_widget',
+             'tfm_vignette', 'tfm_vignette_widget', 'tfm_color_range_mask',
+             'tfm_color_range_mask_widget', 'tfm_clipboard_color_match',
+             'tfm_clipboard_color_match_widget', 'tfm_guided_color_match_filter',
+             'tfm_background_removal', 'tfm_birefnet', 'tfm_filter_widget',
+             'tfm_drag_spinbox']
     objects = []
     for stem in stems:
         source = root / 'src' / (stem + '.cpp')
@@ -60,20 +61,20 @@ def main():
         run([compiler, *flags, '-o', obj, '-c', source], 'compile_' + stem)
         objects.append(obj)
     test = root / 'tests/test_filter_defaults_native.cpp'
-    flags = split('compiler ' + (build / 'obj/fxmanager_bloom.cpp.rsp').read_text())[1:]
+    flags = split('compiler ' + (build / 'obj/tfm_bloom.cpp.rsp').read_text())[1:]
     flags = flags[:flags.index('-o')]
     flags.insert(0, '-I' + str(root / 'src'))
     obj = out / 'test_filter_defaults_native.obj'
     run([compiler, *flags, '-o', obj, '-c', test], 'compile_test')
     objects.append(obj)
-    headers = ['fxmanager_filter_widget', 'fxmanager_drag_spinbox', 'fxmanager_lens_distortion_widget',
-               'fxmanager_vignette_widget', 'fxmanager_color_range_mask_widget',
-               'fxmanager_clipboard_color_match_widget']
+    headers = ['tfm_filter_widget', 'tfm_drag_spinbox', 'tfm_lens_distortion_widget',
+               'tfm_vignette_widget', 'tfm_color_range_mask_widget',
+               'tfm_clipboard_color_match_widget']
     for stem in headers:
         moc_obj = out / ('moc_' + stem + '.obj')
         moc_cpp = out / ('moc_' + stem + '.cpp')
         run([deps / 'bin/moc.exe', root / 'src' / (stem + '.h'), '-o', moc_cpp], 'moc_' + stem)
-        flags = split('compiler ' + (build / 'obj/fxmanager_bloom.cpp.rsp').read_text())[1:]
+        flags = split('compiler ' + (build / 'obj/tfm_bloom.cpp.rsp').read_text())[1:]
         flags = flags[:flags.index('-o')]
         flags.insert(0, '-I' + str(root / 'src'))
         run([compiler, *flags, '-o', moc_obj, '-c', moc_cpp], 'compile_moc_' + stem)

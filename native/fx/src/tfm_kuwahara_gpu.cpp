@@ -1,5 +1,5 @@
 #include "tfm_kuwahara_gpu.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_vulkan.h"
 #include "tfm_kuwahara_spv.h"
 
 #include <QDebug>
@@ -42,9 +42,9 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
     params.padding = 0;
     const std::size_t bytes = std::size_t(source.width()) * source.height() * sizeof(std::uint32_t);
     try {
-        static FxManagerVulkan *instance = new FxManagerVulkan();
-        FxManagerVulkan &vulkan = *instance;
-        FxManagerVulkan::Dispatch dispatch;
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;

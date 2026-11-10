@@ -1,9 +1,9 @@
 // Executes production filters, conversion bridges and actual tiled paint devices.
-#include "fxmanager_vibrance.h"
-#include "fxmanager_color_temperature.h"
-#include "fxmanager_processing.h"
-#include "fxmanager_film_grain.h"
-#include "fxmanager_vignette.h"
+#include "tfm_vibrance.h"
+#include "tfm_color_temperature.h"
+#include "tfm_processing.h"
+#include "tfm_film_grain.h"
+#include "tfm_vignette.h"
 #include <kis_default_bounds_base.h>
 #include <QApplication>
 #include <QDir>
@@ -43,7 +43,7 @@ static QByteArray bytes(KisPaintDeviceSP d) {
 static KisPaintDeviceSP fixture(const KoColorSpace *cs, bool hdr) {
     KisPaintDeviceSP d = new KisPaintDevice(cs);
     d->setDefaultBounds(new Bounds);
-    fxmanager::FloatRgbaImage image;
+    tfm::FloatRgbaImage image;
     image.width=area.width(); image.height=area.height(); image.pixels.resize(area.width()*area.height()*4);
     for(int y=0;y<area.height();++y) for(int x=0;x<area.width();++x) {
         auto *p=image.pixels.data()+4*(y*area.width()+x);
@@ -52,7 +52,7 @@ static KisPaintDeviceSP fixture(const KoColorSpace *cs, bool hdr) {
         p[1]=0.02f+v*0.4f; p[2]=0.03f+v*0.2f;
         p[3]=y==0 ? 0.0f : y==1 ? v : 1.0f;
     }
-    require(fxmanager::writeFloatImage(d,image,area),"fixture float conversion failed");
+    require(tfm::writeFloatImage(d,image,area),"fixture float conversion failed");
     return d;
 }
 int main(int argc,char **argv) try {
@@ -60,7 +60,7 @@ int main(int argc,char **argv) try {
     require(argc>=3,"output path and mode required");
     const bool baseline=QString::fromLocal8Bit(argv[2])=="baseline";
     const QDir out(QString::fromLocal8Bit(argv[1]));
-    const QString runtime=QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
     auto *registry=KoColorSpaceRegistry::instance();
@@ -109,8 +109,8 @@ int main(int argc,char **argv) try {
             for(int x=area.left();x<=area.right();x+=73)
                 filter->processImpl(tiled,QRect(x,area.top(),73,area.height()).intersected(area),config,nullptr);
             require(bytes(tiled)==expected,"pointwise full/tiled results differ");
-            const auto input=fxmanager::readFloatImage(fixture(cs,hdr),area);
-            const auto output=fxmanager::readFloatImage(d,area);
+            const auto input=tfm::readFloatImage(fixture(cs,hdr),area);
+            const auto output=tfm::readFloatImage(d,area);
             std::set<float> values;
             float maxAlpha=0, lo=1e9f, hi=-1e9f;
             for(int i=0;i<output.pixels.size();i+=4) {
@@ -131,7 +131,7 @@ int main(int argc,char **argv) try {
             const QString name=names[kind]+depth+QString("-profile%1").arg(profileIndex);
             QFile file(out.filePath(name+".raw")); require(file.open(QIODevice::WriteOnly),"cannot write output");
             file.write(expected);
-            fxmanager::readImage(d,area).save(out.filePath(name+".png"));
+            tfm::readImage(d,area).save(out.filePath(name+".png"));
             results.append(QJsonObject{{"filter",name},{"blend_zero_unchanged",zero},
                 {"gradient_levels",int(values.size())},{"alpha_max_error",maxAlpha},
                 {"minimum_red",lo},{"maximum_red",hi},{"milliseconds",timings}});

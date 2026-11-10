@@ -1,6 +1,6 @@
 // Exercise the production filter on Krita's real tiled paint device.
-#include "fxmanager_bloom.h"
-#include "fxmanager_processing.h"
+#include "tfm_bloom.h"
+#include "tfm_processing.h"
 #include <QApplication>
 #include <KoColorSpaceRegistry.h>
 #include <KoResourcePaths.h>
@@ -28,7 +28,7 @@ static KisPaintDeviceSP fixture() {
             image.setPixel(x,y,qRgba(v, std::min(245,v+17), std::max(0,v-23),
                                     (x+y)%11 == 0 ? 0 : 80+(x*3+y*7)%176));
         }
-    fxmanager::writeImage(d,image,area);
+    tfm::writeImage(d,image,area);
     return d;
 }
 static QByteArray bytes(KisPaintDeviceSP d) {
@@ -60,7 +60,7 @@ static void apply(KisPaintDeviceSP d, bool diffusion, int order, bool transactio
 }
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
-    const QString runtime=QString::fromLocal8Bit(qgetenv("FXMANAGER_KRITA_RUNTIME"));
+    const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
     bool allChunksMatch=true;

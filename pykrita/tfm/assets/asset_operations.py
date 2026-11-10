@@ -3,6 +3,33 @@ from .panel_context import *  # shared Qt/asset dependencies
 from tfm_diagnostics import record_error
 
 
+class _InsertSignals(QObject):
+    finished = QtCore.pyqtSignal(object)
+
+
+class _DecodeInsertJob(QtCore.QRunnable):
+    def __init__(self, generation, items, signals):
+        super().__init__()
+        self.generation = generation
+        self.items = items
+        self.signals = signals
+
+    def run(self):
+        decoded = []
+        error = None
+        try:
+            for rel, path in self.items:
+                image = QImage(path)
+                size = _dimensions(path)
+                if size is None and not image.isNull():
+                    size = (image.width(), image.height())
+                decoded.append((rel, path, image, size))
+        except Exception as caught:  # noqa: BLE001 — report any decode failure on the UI thread
+            error = caught
+            decoded = []
+        self.signals.finished.emit((self.generation, decoded, error))
+
+
 class AssetOperationsMixin:
     def _document(self):
         try:
@@ -50,50 +77,102 @@ class AssetOperationsMixin:
         if rel:
             self._insert_rels([rel], None, "paint")
 
+    def _ensure_insert_bridge(self):
+        if getattr(self, "_insert_signals", None) is None:
+            self._insert_signals = _InsertSignals(self)
+            self._insert_signals.finished.connect(self._finish_insert_rels)
+            self._insert_generation = 0
+
     def _insert_rels(self, rels, center, mode="paint"):
         if not rels:
-            self._tell("Select an image first.")
+            self._tell(tr("Select an image first.", "请先选择图片。"))
             return
         doc = self._document()
         if doc is None:
-            self._tell("Open a document first.")
+            self._tell(tr("Open a document first.", "请先打开文档。"))
             return
-        view = self._active_view()
+        self._ensure_insert_bridge()
+        self._insert_generation += 1
+        generation = self._insert_generation
+        items = [(rel, store.image_path(self._root, rel)) for rel in rels]
+        self._pending_insert = {
+            "generation": generation,
+            "center": center,
+            "mode": mode,
+            "doc": doc,
+            "view": self._active_view(),
+        }
+        set_status = getattr(self, "_set_status", None)
+        if callable(set_status):
+            set_status(tr("Loading selected images…", "正在加载所选图片…"))
+        QtCore.QThreadPool.globalInstance().start(
+            _DecodeInsertJob(generation, items, self._insert_signals)
+        )
+
+    def _finish_insert_rels(self, result):
+        generation, decoded, error = result
+        pending = getattr(self, "_pending_insert", None)
+        if pending is None or generation != pending.get("generation"):
+            return
+        self._pending_insert = None
+        set_status = getattr(self, "_set_status", None)
+        if error is not None:
+            record_error("asset.insert", error)
+            self._tell(tr("Could not insert that image.", "无法插入该图片。"))
+            if callable(set_status):
+                set_status("")
+            return
+        doc = pending["doc"]
+        view = pending["view"]
+        center = pending["center"]
+        mode = pending["mode"]
+        if self._document() is not doc:
+            self._tell(tr("The active document has changed.", "当前文档已切换。"))
+            if callable(set_status):
+                set_status("")
+            return
         try:
             with _wait_cursor():
-                for index, rel in enumerate(rels):
+                for index, (rel, path, image, size) in enumerate(decoded):
                     point = None if center is None else (center[0] + index * 16, center[1] + index * 16)
-                    self._insert_one(doc, view, rel, mode, point)
-        except store.AssetError as error:
-            self._tell(str(error))
+                    self._insert_one(doc, view, rel, mode, point, path=path, image=image, size=size)
+        except store.AssetError as asset_error:
+            self._tell(str(asset_error))
+            if callable(set_status):
+                set_status("")
             return
-        except Exception as error:
-            record_error('asset.insert', error)
-            self._tell("Could not insert that image.")
+        except Exception as caught:
+            record_error('asset.insert', caught)
+            self._tell(tr("Could not insert that image.", "无法插入该图片。"))
+            if callable(set_status):
+                set_status("")
             return
         try:
             doc.refreshProjection()
-            doc.waitForDone()
             doc.setModified(True)
         except Exception:
             pass
+        if callable(set_status):
+            set_status("")
 
-    def _insert_one(self, doc, view, rel, mode, center):
-        path = store.image_path(self._root, rel)
+    def _insert_one(self, doc, view, rel, mode, center, path=None, image=None, size=None):
+        path = path or store.image_path(self._root, rel)
         name = os.path.splitext(os.path.basename(path))[0]
-        size = _dimensions(path)
-        image = QImage(path)
-        if size is None and not image.isNull():
+        if size is None:
+            size = _dimensions(path)
+        if image is None:
+            image = QImage(path)
+        if size is None and image is not None and not image.isNull():
             size = (image.width(), image.height())
         width = size[0] if size else 0
         height = size[1] if size else 0
         x, y = self._top_left(doc, view, width, height, center)
         if mode == "reference":
-            self._insert_reference(path, x, y)
+            self._insert_reference(path, x, y, image=image)
             return
         parent, above = _insertion_point(doc)
         if parent is None:
-            raise store.AssetError("Open a document first.")
+            raise store.AssetError(tr("Open a document first.", "请先打开文档。"))
         sidecar = store.read_sidecar(path) or {}
         kind = sidecar.get("kind")
         if kind == filter_asset.KIND:
@@ -118,25 +197,37 @@ class AssetOperationsMixin:
                 pass
             return
         if not self._can_bake(doc, path):
-            raise store.AssetError("That image can only be placed in an RGBA 8-bit or 16-bit document.")
-        if image.isNull():
+            raise store.AssetError(tr(
+                "That image can only be placed in an RGBA 8-bit or 16-bit document.",
+                "该图片只能放到 RGBA 8 位或 16 位文档中。",
+            ))
+        if image is None or image.isNull():
             image = QImage(path)
         if image.isNull():
-            raise store.AssetError("Could not read that image.")
+            raise store.AssetError(tr("Could not read that image.", "无法读取该图片。"))
         if width * height > MAX_BAKE_PIXELS:
-            raise store.AssetError("That image is too large to place as a paint layer.")
+            raise store.AssetError(tr(
+                "That image is too large to place as a paint layer.",
+                "该图片太大，无法作为绘制图层放入。",
+            ))
         payload = pixels.paint_bytes(image, doc.colorDepth())
         if not payload or payload[1] < 1:
-            raise store.AssetError("Could not write the image into a layer.")
+            raise store.AssetError(tr(
+                "Could not write the image into a layer.",
+                "无法将图片写入图层。",
+            ))
         raw, width, height = payload
         x, y = self._top_left(doc, view, width, height, center)
         node = doc.createNode(name, "paintlayer")
         if node is None:
-            raise store.AssetError("Could not create a paint layer.")
+            raise store.AssetError(tr("Could not create a paint layer.", "无法创建绘制图层。"))
         if not node.setPixelData(pixels.qbytearray_from(raw), x, y, width, height):
-            raise store.AssetError("Could not write the image into a layer.")
+            raise store.AssetError(tr(
+                "Could not write the image into a layer.",
+                "无法将图片写入图层。",
+            ))
         if not parent.addChildNode(node, above):
-            raise store.AssetError("Could not add the layer.")
+            raise store.AssetError(tr("Could not add the layer.", "无法添加图层。"))
         try:
             doc.setActiveNode(node)
         except Exception:
@@ -153,10 +244,11 @@ class AssetOperationsMixin:
             pass
         return (doc.width() - width) // 2, (doc.height() - height) // 2
 
-    def _insert_reference(self, path, x, y):
-        image = QImage(path)
+    def _insert_reference(self, path, x, y, image=None):
+        if image is None or image.isNull():
+            image = QImage(path)
         if image.isNull():
-            raise store.AssetError("Could not read that image.")
+            raise store.AssetError(tr("Could not read that image.", "无法读取该图片。"))
         QApplication.clipboard().setImage(image)
         host = self._host()
         tool = self._reference_tool(host)

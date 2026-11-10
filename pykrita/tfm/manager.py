@@ -203,8 +203,16 @@ class ManagerDialog(QtWidgets.QDialog):
         self._tabs = tabs
         self.menu_page = None
         self.filter_page = None
+        # Keep permanent tab hosts. Swapping via removeTab/insertTab can leave a blank
+        # Filters page (page constructed but not shown) under Krita's Qt binding.
         self._menu_placeholder = QtWidgets.QWidget()
         self._filter_placeholder = QtWidgets.QWidget()
+        self._menu_placeholder.setObjectName("tfm_tab_menus")
+        self._filter_placeholder.setObjectName("tfm_tab_filters")
+        self._menu_host = QtWidgets.QVBoxLayout(self._menu_placeholder)
+        self._menu_host.setContentsMargins(0, 0, 0, 0)
+        self._filter_host = QtWidgets.QVBoxLayout(self._filter_placeholder)
+        self._filter_host.setContentsMargins(0, 0, 0, 0)
         tabs.addTab(self._menu_placeholder, tr("Menus", "菜单"))
         tabs.addTab(self._filter_placeholder, tr("Filters", "滤镜"))
         tabs.currentChanged.connect(self._ensure_tab_page)
@@ -259,26 +267,41 @@ class ManagerDialog(QtWidgets.QDialog):
         self.default_height.setRange(620, 8192)
         self.default_height.setValue(self._window_height)
         self.cpu_threads = QtWidgets.QComboBox()
-        self.cpu_threads.addItem('Auto (safe default: 1)', 0)
+        self.cpu_threads.addItem(tr('Auto (safe default: 1)', '自动（安全默认：1）'), 0)
         for count in (1, 2, 4, 6, 8, 12, 16, 24, 32):
             self.cpu_threads.addItem(str(count), count)
         filter_options = filter_settings.load()
         cpu = filter_options.get('cpu_threads', 0)
         self.cpu_threads.setCurrentIndex(max(0, self.cpu_threads.findData(cpu)))
         self.filter_backend = QtWidgets.QComboBox()
-        for label, value in (('Auto (Vulkan when available)', 'auto'),
-                             ('CPU', 'cpu'), ('GPU (Vulkan)', 'gpu')):
+        for label, value in (
+            (tr('Auto (Vulkan when available)', '自动（可用时用 Vulkan）'), 'auto'),
+            (tr('CPU', 'CPU'), 'cpu'),
+            (tr('GPU (Vulkan)', 'GPU（Vulkan）'), 'gpu'),
+        ):
             self.filter_backend.addItem(label, value)
         self.filter_backend.setCurrentIndex(max(0, self.filter_backend.findData(filter_options.get('backend', 'auto'))))
-        settings_form.addRow('Default window width', self.default_width)
-        settings_form.addRow('Default window height', self.default_height)
-        self.cpu_threads.setToolTip('Controls plugin filters using the shared CPU worker pool. Other processing paths may use their own threads.')
-        settings_form.addRow('Plugin filters CPU threads', self.cpu_threads)
-        settings_form.addRow('Default filter backend', self.filter_backend)
+        settings_form.addRow(tr('Default window width', '默认窗口宽度'), self.default_width)
+        settings_form.addRow(tr('Default window height', '默认窗口高度'), self.default_height)
+        self.cpu_threads.setToolTip(tr(
+            'Controls plugin filters using the shared CPU worker pool. Other processing paths may use their own threads.',
+            '控制使用共享 CPU 线程池的插件滤镜。其他处理路径可能使用各自的线程。',
+        ))
+        settings_form.addRow(tr('Plugin filters CPU threads', '插件滤镜 CPU 线程'), self.cpu_threads)
+        settings_form.addRow(tr('Default filter backend', '默认滤镜后端'), self.filter_backend)
         settings_layout.addLayout(settings_form)
-        backend_note = QtWidgets.QLabel(
+        backend_note = QtWidgets.QLabel(tr(
             'Default for filters that support Vulkan. Override one filter under Filters → Compute backend. '
-            'GPU falls back to CPU when Vulkan is unavailable. Background Removal keeps its own backend.')
+            'GPU falls back to CPU when Vulkan is unavailable. Background Removal keeps its own backend. '
+            'Auto keeps Vibrance on CPU until the image is large enough; after the GPU worker is warm '
+            '(idle TTL 30s), Vibrance prefers GPU from 2048². Other Auto-calibrated filters stay on CPU '
+            'across the measured U8 range; use explicit GPU for interactive preview preference.',
+            '适用于支持 Vulkan 的滤镜默认值。可在 滤镜 → 计算后端 单独覆盖。'
+            'Vulkan 不可用时 GPU 会回退到 CPU。背景移除使用自己的后端。'
+            '自动模式下 Vibrance 仅在图像足够大时用 GPU；GPU worker 已热（空闲 TTL 30 秒）后，'
+            'Vibrance 从 2048² 起偏好 GPU。其他已标定滤镜在测得的 U8 范围内保持 CPU；'
+            '交互预览若要偏好 GPU，请显式选择 GPU。',
+        ))
         backend_note.setWordWrap(True)
         settings_layout.addWidget(backend_note)
         self.backend_status = QtWidgets.QLabel()
@@ -287,7 +310,10 @@ class ManagerDialog(QtWidgets.QDialog):
         settings_layout.addWidget(self.backend_status)
         self._refresh_backend_status()
         tabs.currentChanged.connect(lambda index: self._refresh_backend_status() if tabs.widget(index) is settings_page else None)
-        self.settings_status = QtWidgets.QLabel('Settings save automatically when this window closes. Window size applies when TFM is reopened; CPU threads after Krita restarts.')
+        self.settings_status = QtWidgets.QLabel(tr(
+            'Settings save automatically when this window closes. Window size applies when TFM is reopened; CPU threads after Krita restarts.',
+            '关闭窗口时自动保存设置。窗口大小在下次打开 TFM 时生效；CPU 线程数需重启 Krita。',
+        ))
         self.settings_status.setWordWrap(True)
         settings_layout.addWidget(self.settings_status)
         settings_layout.addStretch()
@@ -301,27 +327,52 @@ class ManagerDialog(QtWidgets.QDialog):
         self._saved_general = self._general_settings()
 
     def _ensure_tab_page(self, index):
-        # Tab indices shift when Tools is wrapped; match by title.
-        title = self._tabs.tabText(index) if 0 <= index < self._tabs.count() else ''
-        if title == tr("Menus", "菜单") and self.menu_page is None:
-            from .menus.dialog import ListMenuDialog
-            self.menu_page = ListMenuDialog(self._tabs)
-            self._replace_tab_page(index, self.menu_page, title)
-        elif title == tr("Filters", "滤镜") and self.filter_page is None:
-            from .filters.dialog import FilterSettingsDialog
-            self.filter_page = FilterSettingsDialog(self._tabs)
-            self._replace_tab_page(index, self.filter_page, title)
+        # Match by placeholder widget, not translated tab title (locale/accelerator mismatch
+        # was leaving Filters as an empty host forever).
+        if index < 0 or index >= self._tabs.count():
+            return
+        page = self._tabs.widget(index)
+        if page is self._menu_placeholder and self.menu_page is None:
+            try:
+                from .menus.dialog import ListMenuDialog
+                self.menu_page = ListMenuDialog(self._menu_placeholder)
+                self._mount_tab_page(self._menu_host, self.menu_page)
+            except Exception as error:
+                self.menu_page = self._tab_error_page(self._menu_placeholder, error)
+                self._mount_tab_page(self._menu_host, self.menu_page)
+        elif page is self._filter_placeholder and self.filter_page is None:
+            try:
+                from .filters.dialog import FilterSettingsDialog
+                self.filter_page = FilterSettingsDialog(self._filter_placeholder)
+                self.filter_page.setMinimumSize(0, 0)
+                self._mount_tab_page(self._filter_host, self.filter_page)
+            except Exception as error:
+                self.filter_page = self._tab_error_page(self._filter_placeholder, error)
+                self._mount_tab_page(self._filter_host, self.filter_page)
 
-    def _replace_tab_page(self, index, page, title):
-        # removeTab emits currentChanged before Qt finishes updating its stack.
-        # Loading another page from that signal re-enters removeTab and can crash.
-        placeholder = self._tabs.widget(index)
-        with QtCore.QSignalBlocker(self._tabs):
-            self._tabs.removeTab(index)
-            self._tabs.insertTab(index, page, title)
-            self._tabs.setCurrentIndex(index)
-        if placeholder is not None:
-            placeholder.deleteLater()
+    def _mount_tab_page(self, host, page):
+        expanding = getattr(getattr(QtWidgets.QSizePolicy, "Policy", QtWidgets.QSizePolicy), "Expanding")
+        page.setSizePolicy(expanding, expanding)
+        host.addWidget(page, 1)
+
+    def _tab_error_page(self, parent, error):
+        import traceback
+        page = QtWidgets.QWidget(parent)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(16, 12, 16, 12)
+        detail = "".join(traceback.format_exception_only(type(error), error)).strip()
+        label = QtWidgets.QLabel(
+            tr("Could not open this tab:\n{}", "无法打开此页：\n{}").format(detail or str(error))
+        )
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            if hasattr(QtCore.Qt, "TextInteractionFlag")
+            else QtCore.Qt.TextSelectableByMouse
+        )
+        layout.addWidget(label)
+        layout.addStretch(1)
+        return page
 
     def _maybe_show_first_run_guide(self):
         app = Krita.instance()

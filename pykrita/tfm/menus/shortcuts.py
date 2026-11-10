@@ -4,7 +4,7 @@ Krita keeps user shortcut overrides in a KConfig INI file named
 ``kritashortcutsrc``, sitting next to ``kritarc`` (Windows: ``%LOCALAPPDATA%``,
 Linux: ``~/.config``).  Krita re-reads that file on every start, so merely
 clearing a QAction at runtime only *looks* permanent: on the next start the
-action gets its shortcut back and steals the key from MenuBelt again.  Writing
+action gets its shortcut back and steals the key from TFM again.  Writing
 an entry here is what makes an override survive a restart.
 
 File format (KDE KConfig, CRLF on Windows)::
@@ -246,7 +246,7 @@ def restore(path, previous):
 
 
 def migrate_legacy_shortcuts(path):
-    """Copy bindings from legacy menubelt_/fxmanager_ actions to tfm_ if unset."""
+    """Copy bindings from legacy predecessor actions to tfm_ if unset."""
     if not path:
         return {}
     text = read_text(path)

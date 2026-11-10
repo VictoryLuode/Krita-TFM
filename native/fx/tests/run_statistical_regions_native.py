@@ -34,7 +34,7 @@ def main():
     out = options.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     entries = json.loads((options.build/'compile_commands.json').read_text())
-    entry = next(e for e in entries if e['file'].endswith('fxmanager_clipboard_color_match.cpp'))
+    entry = next(e for e in entries if e['file'].endswith('tfm_clipboard_color_match.cpp'))
     flags = entry.get('arguments') or split(entry['command'])
     compiler = flags[0]
     flags = flags[1:flags.index('-o')]
@@ -44,6 +44,7 @@ def main():
     env['PATH'] = ';'.join([str(host_bin), str(options.deps/'bin'), str(options.runtime/'bin'), str(Path(compiler).parent), env['PATH']])
     env['QT_PLUGIN_PATH'] = str(options.runtime/'plugins')
     env['QT_QPA_PLATFORM'] = 'windows'
+    env['TFM_KRITA_RUNTIME'] = str(options.runtime)
     env['FXMANAGER_KRITA_RUNTIME'] = str(options.runtime)
 
     def run(args, label):
@@ -55,8 +56,8 @@ def main():
         if result.returncode:
             raise SystemExit(result.returncode)
 
-    sources = [root/'src/fxmanager_clipboard_color_match.cpp', root/'src/fxmanager_drag_spinbox.cpp', root/'tests/test_statistical_regions_native.cpp']
-    for stem in ('fxmanager_clipboard_color_match_widget', 'fxmanager_drag_spinbox'):
+    sources = [root/'src/tfm_clipboard_color_match.cpp', root/'src/tfm_drag_spinbox.cpp', root/'tests/test_statistical_regions_native.cpp']
+    for stem in ('tfm_clipboard_color_match_widget', 'tfm_drag_spinbox'):
         moc = out/('moc_'+stem+'.cpp')
         run([str(options.deps/'bin/moc.exe'), str(root/'src'/(stem+'.h')), '-o', str(moc)], 'moc_'+stem)
         sources.append(moc)

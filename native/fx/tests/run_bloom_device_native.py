@@ -20,7 +20,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    flags = split('compiler '+(args.build/'obj/fxmanager_bloom.cpp.rsp').read_text())[1:]
+    flags = split('compiler '+(args.build/'obj/tfm_bloom.cpp.rsp').read_text())[1:]
     flags = flags[:flags.index('-o')]
     flags.insert(0, '-I'+str(root/'src'))
     host = Path(json.loads((args.build/'compile_commands.json').read_text())[0]['directory'])
@@ -28,6 +28,7 @@ def main():
     env['PATH'] = ';'.join([str(host/'bin'), str(args.deps/'bin'), str(args.runtime/'bin'), str(args.compiler.parent), env['PATH']])
     env['QT_PLUGIN_PATH'] = str(args.runtime/'plugins')
     env['QT_QPA_PLATFORM'] = 'windows'
+    env['TFM_KRITA_RUNTIME'] = str(args.runtime)
     env['FXMANAGER_KRITA_RUNTIME'] = str(args.runtime)
 
     def run(command, label):
@@ -39,16 +40,16 @@ def main():
         if result.returncode:
             raise SystemExit(result.returncode)
 
-    bloom = root/'src/fxmanager_bloom.cpp'
+    bloom = root/'src/tfm_bloom.cpp'
     if args.baseline:
         text = bloom.read_text()
         start = text.index('    // Neighbouring chunks')
         end = text.index('    if(source.isNull())', start)
-        text = text[:start]+'    const QImage source=fxmanager::readImage(d,read);\n'+text[end:]
+        text = text[:start]+'    const QImage source=tfm::readImage(d,read);\n'+text[end:]
         bloom = out/'baseline_bloom.cpp'
         bloom.write_text(text)
-    sources = [bloom, root/'src/fxmanager_processing.cpp', root/'src/fxmanager_filter_widget.cpp', root/'src/fxmanager_drag_spinbox.cpp', root/'tests/test_bloom_device_native.cpp']
-    for stem in ('fxmanager_filter_widget', 'fxmanager_drag_spinbox'):
+    sources = [bloom, root/'src/tfm_processing.cpp', root/'src/tfm_filter_widget.cpp', root/'src/tfm_drag_spinbox.cpp', root/'tests/test_bloom_device_native.cpp']
+    for stem in ('tfm_filter_widget', 'tfm_drag_spinbox'):
         moc = out/('moc_'+stem+'.cpp')
         run([args.deps/'bin/moc.exe', root/'src'/(stem+'.h'), '-o', moc], 'moc_'+stem)
         sources.append(moc)

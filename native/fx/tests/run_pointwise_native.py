@@ -31,7 +31,7 @@ def main():
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     entries = json.loads((args.build / 'compile_commands.json').read_text(encoding='utf-8'))
-    entry = next(e for e in entries if e['file'].endswith('fxmanager_vibrance.cpp'))
+    entry = next(e for e in entries if e['file'].endswith('tfm_vibrance.cpp'))
     command = entry.get('arguments') or split(entry['command'])
     compiler = command[0]
     flags = ['-I' + str(source_root), *command[1:command.index('-o')]]
@@ -39,7 +39,7 @@ def main():
         flags.append('-DTFM_RECORD_BASELINE')
     runtime = args.runtime.resolve()
     env = dict(os.environ, QT_PLUGIN_PATH=str(runtime / 'bin'), QT_QPA_PLATFORM='offscreen',
-               FXMANAGER_KRITA_RUNTIME=str(runtime), KRITA_PLUGIN_PATH=str(runtime / 'lib/kritaplugins'), TFM_THREADS='2', TFM_VULKAN_DISABLE='1')
+               TFM_KRITA_RUNTIME=str(runtime),FXMANAGER_KRITA_RUNTIME=str(runtime), KRITA_PLUGIN_PATH=str(runtime / 'lib/kritaplugins'), TFM_THREADS='2', TFM_VULKAN_DISABLE='1')
     env['PATH'] = os.pathsep.join([str(runtime / 'bin'), str(Path(entry['directory']) / 'bin'),
                                   str(args.deps.resolve() / 'bin'), str(Path(compiler).parent), env['PATH']])
 
@@ -56,16 +56,16 @@ def main():
 
     exe = out / (args.test_suite + '-native.exe')
     if not args.run_only:
-        stems = ('fxmanager_vibrance', 'fxmanager_color_temperature', 'fxmanager_processing',
-                 'fxmanager_film_grain', 'fxmanager_vignette', 'fxmanager_vignette_widget',
-                 'fxmanager_filter_widget', 'fxmanager_drag_spinbox', 'tfm_pointwise_gpu', 'fxmanager_vulkan')
-        widgets=['fxmanager_filter_widget','fxmanager_drag_spinbox','fxmanager_vignette_widget']
+        stems = ('tfm_vibrance', 'tfm_color_temperature', 'tfm_processing',
+                 'tfm_film_grain', 'tfm_vignette', 'tfm_vignette_widget',
+                 'tfm_filter_widget', 'tfm_drag_spinbox', 'tfm_pointwise_gpu', 'tfm_vulkan')
+        widgets=['tfm_filter_widget','tfm_drag_spinbox','tfm_vignette_widget']
         if args.test_suite=='spatial':
-            stems += ('fxmanager_bloom','fxmanager_halation','fxmanager_kuwahara','fxmanager_flare',
-                      'fxmanager_lens_distortion','fxmanager_lens_distortion_widget',
-                      'fxmanager_color_range_mask','fxmanager_color_range_mask_widget',
+            stems += ('tfm_bloom','tfm_halation','tfm_kuwahara','tfm_flare',
+                      'tfm_lens_distortion','tfm_lens_distortion_widget',
+                      'tfm_color_range_mask','tfm_color_range_mask_widget',
                       'tfm_bloom_gpu','tfm_halation_gpu','tfm_kuwahara_gpu','tfm_flare_gpu','tfm_lens_gpu')
-            widgets += ['fxmanager_lens_distortion_widget','fxmanager_color_range_mask_widget']
+            widgets += ['tfm_lens_distortion_widget','tfm_color_range_mask_widget']
         sources = [source_root / (stem + '.cpp') for stem in stems]
         for stem in widgets:
             moc = out / ('moc_' + stem + '.cpp')

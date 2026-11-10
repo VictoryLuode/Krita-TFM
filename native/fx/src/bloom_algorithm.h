@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace fxmanager { namespace bloom {
+namespace tfm { namespace bloom {
 constexpr int blurPasses = 3;
 inline int boundedRadius(int radius) { return std::clamp(radius, 1, 64); }
 inline int halo(int radius) { return blurPasses * boundedRadius(radius); }

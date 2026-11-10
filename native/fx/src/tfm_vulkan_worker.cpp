@@ -1,9 +1,9 @@
 // Process that owns the Vulkan device for TFM filters. The Krita process
-// launches this and speaks fxmanager_vulkan_ipc.h. When this process exits,
+// launches this and speaks tfm_vulkan_ipc.h. When this process exits,
 // the Vulkan driver state exits with it and cannot stick to the canvas.
 
-#include "fxmanager_vulkan.h"
-#include "fxmanager_vulkan_ipc.h"
+#include "tfm_vulkan.h"
+#include "tfm_vulkan_ipc.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -54,7 +54,7 @@ int serve()
     auto read = [&](void *data, std::size_t size, std::size_t &moved) { return io.read(data, size, moved); };
     auto write = [&](const void *data, std::size_t size, std::size_t &moved) { return io.write(data, size, moved); };
 
-    FxManagerVulkan vulkan;
+    TfmVulkan vulkan;
     std::string error;
     const bool ready = vulkan.initialize(&error);
     if (!writeHello(io, ready, ready && vulkan.supportsShaderFloat64(), vulkan.deviceName(), error)) return 1;
@@ -86,7 +86,7 @@ int serve()
 
         std::vector<std::uint32_t> spirv(spirvBytes / sizeof(std::uint32_t));
         if (!spirvRaw.empty()) std::memcpy(spirv.data(), spirvRaw.data(), spirvRaw.size());
-        FxManagerVulkan::Dispatch dispatch;
+        TfmVulkan::Dispatch dispatch;
         dispatch.groupsX = groups[0];
         dispatch.groupsY = groups[1];
         dispatch.groupsZ = groups[2];
@@ -119,7 +119,7 @@ int serve()
 int main(int argc, char **argv)
 {
     if (argc > 1 && std::strcmp(argv[1], "--ping") == 0) {
-        FxManagerVulkan vulkan;
+        TfmVulkan vulkan;
         std::string error;
         if (!vulkan.initialize(&error)) {
             std::fprintf(stderr, "%s\n", error.c_str());

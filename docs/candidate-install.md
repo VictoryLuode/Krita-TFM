@@ -64,7 +64,11 @@ For a later authorized daily installation, close Krita, back up the **complete**
 previous TFM program inventory and both native binaries before copying anything.
 Restore that full program set together to roll back; do not mix an old DLL with a
 new worker. Keep the existing `TFM/config.json`, `settings.json`, assets, models
-and scripts. No user-data migration is introduced by this quality candidate.
+and scripts. Brand/path upgrades still run the existing Menubelt/FxManager → TFM
+migration in `deploy.py` and the Python/native settings loaders; see
+`SOURCE-NOTES.md` § Legacy migration. Keep that path until a major version drops
+upgrade support. No additional user-data rewrite is introduced by this quality
+candidate.
 
 If build publication is interrupted, the former `current.json` identifies the
 previous intact batch. Rebuilding republishes complete mirrors. Do not manually
@@ -82,4 +86,4 @@ backend fallback reasons and logs unsupported HDR profile conversions.
 Worker deadlines default to 10 seconds for startup and 120 seconds for a request.
 `TFM_VULKAN_STARTUP_TIMEOUT_MS` and `TFM_VULKAN_DISPATCH_TIMEOUT_MS` accept positive
 millisecond overrides up to one hour. Cancellation does not restart CPU work.
-The two-second worker idle retirement remains unchanged.
+Idle worker retirement defaults to thirty seconds (`TFM_VULKAN_IDLE_MS`).

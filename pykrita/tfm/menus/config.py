@@ -88,7 +88,7 @@ def _rewrite_legacy_menu_text(raw_text):
 
 
 def _migrate_legacy_config():
-    """Copy menubelt config into TFM/config.json. Never use os.link (fails on Windows)."""
+    """Copy legacy menu config into TFM/config.json. Never use os.link (fails on Windows)."""
     if os.path.exists(CONFIG_FILE) or not os.path.isfile(LEGACY_CONFIG_FILE):
         return
     temporary = None
@@ -103,7 +103,7 @@ def _migrate_legacy_config():
             target.write(text)
         os.replace(temporary, CONFIG_FILE)
         temporary = None
-        print("tfm: migrated menu config from menubelt -> TFM/config.json")
+        print("tfm: migrated legacy menu config -> TFM/config.json")
     except (OSError, ValueError, UnicodeError) as error:
         record_error("menu.migrate", error, path=LEGACY_CONFIG_FILE)
     finally:
@@ -437,7 +437,7 @@ def load_config():
         if isinstance(raw_lists, list) and (not raw_lists or lists):
             popup = data.get("popup_shortcut", "") or ""
             if path == LEGACY_CONFIG_FILE:
-                print("tfm: using legacy menubelt config until TFM/config.json is created")
+                print("tfm: using legacy menu config until TFM/config.json is created")
             return popup, lists
     return DEFAULT_POPUP_SHORTCUT, [dict(lst) for lst in DEFAULT_LISTS]
 
@@ -473,7 +473,7 @@ def save_config(popup_shortcut, lists):
         return False
 
 
-# ---------- Shortcut overrides (Krita bindings MenuBelt took over) ----------
+# ---------- Shortcut overrides (Krita bindings TFM took over) ----------
 def _read_raw(strict=False):
     _migrate_legacy_config()
     errors = []
@@ -515,7 +515,7 @@ def _write_raw(data):
 
 
 def load_overrides():
-    """Return {"<list name>": [record, ...]} of Krita shortcuts MenuBelt took over.
+    """Return {"<list name>": [record, ...]} of Krita shortcuts TFM took over.
 
     A record is {"id", "label", "key", "prev_runtime", "prev_file"} where
     prev_file is the value that was in kritashortcutsrc (None = no entry, so

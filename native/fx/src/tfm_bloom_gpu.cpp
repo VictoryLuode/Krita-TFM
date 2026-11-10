@@ -1,5 +1,5 @@
 #include "tfm_bloom_gpu.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_vulkan.h"
 #include "tfm_bloom_legacy_spv.h"
 
 #include <cmath>
@@ -44,9 +44,9 @@ bool renderLegacy(const QImage &source, const QRect &outputRect, double threshol
     const std::size_t inputBytes = std::size_t(source.width()) * source.height() * sizeof(std::uint32_t);
     const std::size_t outputBytes = std::size_t(outputRect.width()) * outputRect.height() * sizeof(std::uint32_t);
     try {
-        static FxManagerVulkan *instance = new FxManagerVulkan();
-        FxManagerVulkan &vulkan = *instance;
-        FxManagerVulkan::Dispatch dispatch;
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(outputRect.width()) + 15u) / 16u;

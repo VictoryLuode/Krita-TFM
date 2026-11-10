@@ -1,4 +1,4 @@
-#include "../src/fxmanager_color_range_mask_algorithm.h"
+#include "../src/tfm_color_range_mask_algorithm.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>

@@ -10,8 +10,8 @@ SRC = ROOT / "src"
 class BackgroundImageBehaviorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.filter_source = (SRC / "fxmanager_background_removal.cpp").read_text(encoding="utf-8")
-        cls.runtime_source = (SRC / "fxmanager_birefnet.cpp").read_text(encoding="utf-8")
+        cls.filter_source = (SRC / "tfm_background_removal.cpp").read_text(encoding="utf-8")
+        cls.runtime_source = (SRC / "tfm_birefnet.cpp").read_text(encoding="utf-8")
 
     def test_model_directory_has_runtime_fallback_when_resource_directory_is_empty(self):
         self.assertRegex(

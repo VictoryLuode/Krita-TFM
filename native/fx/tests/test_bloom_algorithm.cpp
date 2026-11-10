@@ -2,7 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
-using namespace fxmanager::bloom;
+using namespace tfm::bloom;
 int main() {
     assert(highlight(.6,.7,0)==0);
     assert(highlight(.6,.7,.2)>0);

@@ -29,8 +29,16 @@ path. High-depth algorithms retain their existing required colour encoding.
 
 Manual GPU selection is respected where supported. Unsupported float GPU paths
 report a CPU fallback; no high-depth image is quantized to U8 to claim GPU
-success. The existing 128 MiB per-buffer GPU limit and two-second idle exit remain.
+success. The existing 128 MiB per-buffer GPU limit remains. Idle worker exit
+defaults to thirty seconds (`TFM_VULKAN_IDLE_MS`). High-depth float GPU is
+implemented for motion blur (`tfm_motion_gpu.cpp` float worker buffers). Pointwise,
+guided and other U8-packed GPU paths still require ARGB32 and fall back on
+high-depth with `"High-depth CPU: float GPU implementation unavailable"` until
+matching float shaders/buffers exist. Extending those paths is a shader-sized
+change, not a warm-threshold tweak.
 AI model files and optional external GPU inference runtimes are not in the zip.
+Place BiRefNet `.gguf` models under `TFM/background-removal/models/` (Configure
+TFM → Filters can open that folder and seed a local README).
 
 ## Image checks
 

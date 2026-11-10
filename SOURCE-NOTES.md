@@ -1,15 +1,15 @@
 # Source and license notes
 
-TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native filters, and the Advanced Selection tool into a single Krita plugin.
+TFM (Tool & Filter & Menu) combines custom menus, native filters, Asset Library, Quick Image Search, and Advanced Selection into a single Krita plugin.
 
 ## Architecture and paths
 
-- Python package: `pykrita/tfm/` (`menus/`, `filters/`, `assets/`, `color_range*.py`, `manager.py`), registered via `pykrita/tfm.desktop` and `actions/tfm.action`.
+- Python package: `pykrita/tfm/` (`menus/extension.py`, `filters/`, `assets/`, `color_range*.py`, `manager.py`), registered via `pykrita/tfm.desktop` and `actions/tfm.action`.
 - Quick Image Search tool package: `pykrita/quick_image_search/` (imported by `tfm/search.py`; no separate `.desktop`).
 - Shared Qt shim: `pykrita/qtcompat.py` (re-exported by `tfm/menus`, `tfm/filters`, and `quick_image_search`).
 - Action IDs: `tfm_popup`, `tfm_edit`, `tfm_color_range`, `tfm_assets`, `tfm_save_asset`, `tfm_image_search`, `tfm_convert_color_space`, `tfm_tools_menu`.
 
-- Native filter plugin: `native/fx/` builds `kritatfm.dll` plus `tfm_vulkan_worker.exe` (same folder as the DLL). Vulkan compute for supported filters runs in the worker process over a local pipe; `kritatfm.dll` must not load `vulkan-1.dll`.
+- Native filter plugin: `native/fx/` builds `kritatfm.dll` plus `tfm_vulkan_worker.exe` (same folder as the DLL). Vulkan compute for supported filters runs in the worker process over a local pipe; `kritatfm.dll` must not load `vulkan-1.dll`. Native sources and symbols use the `tfm_*` / `Tfm*` prefix; the host Autogen graph still originates from `filtermanager` and is remapped by `native/fx/build.py`.
 - Registered filters: `tfm_bloom`, `tfm_filmgrain`, `tfm_lens_distortion`, `tfm_vignette`, `tfm_color_temperature`, `tfm_vibrance`, `tfm_kuwahara`, `tfm_halation`, `tfm_lens_flare`, `tfm_anamorphic_flare`, `tfm_color_range_mask`, `tfm_clipboard_color_match`, `tfm_guided_color_match`, `tfm_background_removal`, `tfm_motion_blur_circular`, `tfm_motion_blur_zoom`, and `tfm_focus_blur`.
 - Native selection kernel: `native/color_range.c` builds `pykrita/tfm/native/tfm_color_range.dll`.
 - User data under Krita's active `ResourceDirectory`:
@@ -17,6 +17,16 @@ TFM (Tool & Filter & Menu) combines custom menus, the filter manager and native 
   - `<ResourceDirectory>/TFM/scripts/` (user scripts)
   - `<ResourceDirectory>/TFM/settings.json` (global backend, per-filter `filter_backends`, defaults; shared by Python and `kritatfm.dll`)
   - `<ResourceDirectory>/TFM/background-removal/models/` and `runtime/` (BiRefNet `.gguf` models and optional Vulkan/GGML runtime DLLs)
+
+## Legacy migration (keep)
+
+`deploy.py` and the Python/native settings loaders still migrate predecessor installs.
+Do **not** delete these until a major version explicitly drops upgrade support:
+
+- Paths: `pykrita/menubelt/`, `pykrita/fxmanager/`, `FilterManager/settings.json`
+- Action / shortcut IDs: `menubelt_*`, `fxmanager_menu`, `filtermanager_menu`
+- Filter ID aliases: `fxmanager_*` / `filtermanager_*` → `tfm_*`
+- Archived host DLLs: `kritafxmanager.dll`, `kritafiltermanager.dll`
 
 ## Provenance and licensing
 

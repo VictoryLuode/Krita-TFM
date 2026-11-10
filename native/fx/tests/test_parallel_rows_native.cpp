@@ -1,4 +1,4 @@
-#include "fxmanager_processing.h"
+#include "tfm_processing.h"
 #include <QCoreApplication>
 #include <atomic>
 #include <chrono>
@@ -10,7 +10,7 @@ int main(int argc, char **argv) {
     qputenv("TFM_THREADS","2");
     std::atomic<bool> blocked{false}, release{false}, complete{false};
     std::thread unrelated([&] {
-        fxmanager::parallelRows(2,[&](int first,int) {
+        tfm::parallelRows(2,[&](int first,int) {
             if (first == 0) {
                 blocked = true;
                 while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -19,9 +19,9 @@ int main(int argc, char **argv) {
     });
     while (!blocked) std::this_thread::yield();
     std::thread own([&] {
-        fxmanager::parallelRows(2,[&](int,int) {
+        tfm::parallelRows(2,[&](int,int) {
             // Nested requests must not wait on their own occupied pool.
-            fxmanager::parallelRows(2,[](int,int) {});
+            tfm::parallelRows(2,[](int,int) {});
         });
         complete = true;
     });

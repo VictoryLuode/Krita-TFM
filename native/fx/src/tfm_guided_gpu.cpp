@@ -1,5 +1,5 @@
 #include "tfm_guided_gpu.h"
-#include "fxmanager_vulkan.h"
+#include "tfm_vulkan.h"
 #include "tfm_guided_lut_spv.h"
 
 #include <cmath>
@@ -12,12 +12,12 @@ namespace tfm_guided_gpu {
 namespace {
 struct ShaderParameters {
     std::int32_t sourceW, sourceH, outputW, outputH;
-    float lut[fxmanager::guided::Lut::Size * fxmanager::guided::Lut::Size * fxmanager::guided::Lut::Size * 3];
+    float lut[tfm::guided::Lut::Size * tfm::guided::Lut::Size * tfm::guided::Lut::Size * 3];
 };
 static_assert(offsetof(ShaderParameters, lut) == 16, "Guided LUT parameter layout mismatch");
 }
 
-bool render(const QImage &source, const fxmanager::guided::Lut &lut,
+bool render(const QImage &source, const tfm::guided::Lut &lut,
             QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled)
 {
     reason.clear();
@@ -36,9 +36,9 @@ bool render(const QImage &source, const fxmanager::guided::Lut &lut,
     std::copy(lut.values.begin(), lut.values.end(), std::begin(params.lut));
     const std::size_t bytes = std::size_t(source.width()) * source.height() * sizeof(std::uint32_t);
     try {
-        static FxManagerVulkan *instance = new FxManagerVulkan();
-        FxManagerVulkan &vulkan = *instance;
-        FxManagerVulkan::Dispatch dispatch;
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
         dispatch.cancelled = cancelled;
         dispatch.parametersBinding = 2;
         dispatch.groupsX = (std::uint32_t(source.width()) + 15u) / 16u;

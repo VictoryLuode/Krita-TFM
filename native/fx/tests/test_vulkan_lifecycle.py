@@ -24,7 +24,7 @@ def test_production_ipc_lifecycle(tmp_path):
     subprocess.run([compiler,'-shared',str(stub),'-o',str(tmp_path/'kritatfm.dll')],check=True,timeout=60)
     exe = tmp_path/'test.exe'
     subprocess.run([compiler,'-std=c++17','-O2','-I'+str(source),str(test),
-                    str(source/'fxmanager_vulkan.cpp'),'-o',str(exe)],check=True,timeout=90)
+                    str(source/'tfm_vulkan.cpp'),'-o',str(exe)],check=True,timeout=90)
     shutil.copy2(exe,tmp_path/'tfm_vulkan_worker.exe')
     run = subprocess.run([str(exe),'--test'],cwd=tmp_path,capture_output=True,text=True,timeout=30)
     out = Path(os.environ.get('TFM_TEST_ARTIFACTS',root/'build/test-results'))/'vulkan-lifecycle'
@@ -33,5 +33,5 @@ def test_production_ipc_lifecycle(tmp_path):
     assert run.returncode == 0, run.stdout+run.stderr
     (out/'provenance.json').write_text(json.dumps({
         'sources':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in
-                   (source/'fxmanager_vulkan.cpp',source/'fxmanager_vulkan.h',test)},
+                   (source/'tfm_vulkan.cpp',source/'tfm_vulkan.h',test)},
         'status':'passed'},indent=2),encoding='utf-8')

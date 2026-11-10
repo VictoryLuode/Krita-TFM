@@ -1,9 +1,10 @@
 """Interactive sampled-color selection for Krita."""
 from krita import Krita, Selection
 from .menus.qtcompat import (
-    Qt, QByteArray, QTimer, pyqtSignal, QApplication, QCheckBox, QComboBox,
-    QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QSlider, QSpinBox, QVBoxLayout, QImage, QPixmap, QColor, QtWidgets,
+    Qt, QByteArray, QObject, QRunnable, QThreadPool, QTimer, pyqtSignal,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
+    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout,
+    QImage, QPixmap, QColor, QtWidgets,
 )
 from .i18n import tr
 from .color_range_native import channel_mask as native_channel_mask
@@ -13,6 +14,30 @@ from .color_range_native import perceptual as native_perceptual
 from .color_range_overlay import ColorRangeOverlay
 
 TOOL_TITLE = lambda: tr('Advanced Selection', '高级选区')
+
+_MODE_GROUPS = (
+    ((('Sampled Color', '取样颜色'), 'color'),),
+    (
+        (('Reds', '红色'), 'hue_red'),
+        (('Yellows', '黄色'), 'hue_yellow'),
+        (('Greens', '绿色'), 'hue_green'),
+        (('Cyans', '青色'), 'hue_cyan'),
+        (('Blues', '蓝色'), 'hue_blue'),
+        (('Magentas', '品红'), 'hue_magenta'),
+        (('Skin Tones', '肤色'), 'skin'),
+    ),
+    (
+        (('Highlights', '高光'), 'highlights'),
+        (('Midtones', '中间调'), 'midtones'),
+        (('Shadows', '阴影'), 'shadows'),
+        (('Brightness', '亮度'), 'luminance'),
+    ),
+    (
+        (('Red Channel', '红色通道'), 'red'),
+        (('Green Channel', '绿色通道'), 'green'),
+        (('Blue Channel', '蓝色通道'), 'blue'),
+    ),
+)
 
 
 def _enum(group, name):
@@ -32,6 +57,42 @@ def _image_format(name):
     return _enum(QImage.Format, name)
 
 
+def _luminance_bytes(source):
+    """Pack grayscale8 pixels without row padding; safe on a worker thread."""
+    gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
+    ptr = gray.constBits()
+    ptr.setsize(gray.sizeInBytes())
+    raw = bytes(ptr)
+    width, height = source.width(), source.height()
+    stride = gray.bytesPerLine()
+    if stride == width:
+        return bytearray(raw[: width * height])
+    luminance = bytearray(width * height)
+    for y in range(height):
+        start = y * stride
+        luminance[y * width:(y + 1) * width] = raw[start:start + width]
+    return luminance
+
+
+class _CaptureSignals(QObject):
+    finished = pyqtSignal(object)
+
+
+class _LuminanceJob(QRunnable):
+    def __init__(self, generation, source, signals):
+        super().__init__()
+        self.generation = generation
+        self.source = source
+        self.signals = signals
+
+    def run(self):
+        try:
+            result = (self.generation, self.source, _luminance_bytes(self.source), None)
+        except Exception as error:  # noqa: BLE001 — surface any decode failure to the dialog
+            result = (self.generation, None, None, error)
+        self.signals.finished.emit(result)
+
+
 _open_dialogs = []
 
 
@@ -40,27 +101,21 @@ class ColorRangeDialog(QDialog):
         super().__init__(parent)
         self.document = document
         self.setWindowTitle(TOOL_TITLE())
-        self._source_generation = None
+        self._source_generation = 0
+        self._capture_signals = _CaptureSignals(self)
+        self._capture_signals.finished.connect(self._on_capture_ready)
         self._capture_source()
         self._bind_document_changes()
         self.target_color = QColor(255, 255, 255)
         self.mask_mode = QComboBox()
-        for group in (
-            [('Sampled Color', 'color')],
-            [('Reds', 'hue_red'), ('Yellows', 'hue_yellow'),
-             ('Greens', 'hue_green'), ('Cyans', 'hue_cyan'),
-             ('Blues', 'hue_blue'), ('Magentas', 'hue_magenta'), ('Skin Tones', 'skin')],
-            [('Highlights', 'highlights'), ('Midtones', 'midtones'),
-             ('Shadows', 'shadows'), ('Brightness', 'luminance')],
-            [('Red Channel', 'red'), ('Green Channel', 'green'), ('Blue Channel', 'blue')],
-        ):
+        for group in _MODE_GROUPS:
             if self.mask_mode.count():
                 self.mask_mode.insertSeparator(self.mask_mode.count())
-            for title, key in group:
-                self.mask_mode.addItem(title, key)
+            for (english, chinese), key in group:
+                self.mask_mode.addItem(tr(english, chinese), key)
         self._mask_cache_key = None
         self._mask_cache = None
-        self.color_button = QPushButton('Choose Color…')
+        self.color_button = QPushButton(tr('Choose Color…', '选择颜色…'))
         self.color_button.clicked.connect(self.choose_color)
         self.color_button.setVisible(False)
         self.preview = QLabel()
@@ -69,15 +124,18 @@ class ColorRangeDialog(QDialog):
         self.preview.setMinimumHeight(220)
         # Keep the historical threshold behavior as the default. The new
         # overrides remain off until explicitly enabled.
-        self.threshold_enabled = QCheckBox('Threshold')
+        self.threshold_enabled = QCheckBox(tr('Threshold', '阈值'))
         self.threshold_enabled.setChecked(True)
         self.threshold = QSpinBox(); self.threshold.setRange(0, 255); self.threshold.setValue(128)
         self.slider = QSlider(_enum(Qt, 'Horizontal')); self.slider.setRange(0, 255); self.slider.setValue(128)
         self.slider.valueChanged.connect(self.threshold.setValue)
         self.threshold.valueChanged.connect(self.slider.setValue)
         self.threshold_enabled.toggled.connect(self._set_threshold_controls)
-        self.tolerance_enabled = QCheckBox('Color Tolerance')
-        self.tolerance_enabled.setToolTip('Override the color-match distance independently of Threshold.')
+        self.tolerance_enabled = QCheckBox(tr('Color Tolerance', '颜色容差'))
+        self.tolerance_enabled.setToolTip(tr(
+            'Override the color-match distance independently of Threshold.',
+            '独立于阈值，单独覆盖颜色匹配距离。',
+        ))
         self.tolerance_enabled.setChecked(False)
         self.tolerance = QSpinBox(); self.tolerance.setRange(0, 255); self.tolerance.setValue(32)
         self.tolerance_slider = QSlider(_enum(Qt, 'Horizontal')); self.tolerance_slider.setRange(0, 255); self.tolerance_slider.setValue(32)
@@ -87,8 +145,11 @@ class ColorRangeDialog(QDialog):
         self.tolerance.setEnabled(False)
         self.tolerance_enabled.toggled.connect(self.tolerance_slider.setEnabled)
         self.tolerance_enabled.toggled.connect(self.tolerance.setEnabled)
-        self.softness_enabled = QCheckBox('Softness')
-        self.softness_enabled.setToolTip('Override edge feathering independently of Threshold and Color Tolerance.')
+        self.softness_enabled = QCheckBox(tr('Softness', '柔和度'))
+        self.softness_enabled.setToolTip(tr(
+            'Override edge feathering independently of Threshold and Color Tolerance.',
+            '独立于阈值和颜色容差，单独覆盖边缘羽化。',
+        ))
         self.softness_enabled.setChecked(False)
         self.softness = QSpinBox(); self.softness.setRange(0, 255); self.softness.setValue(12)
         self.softness_slider = QSlider(_enum(Qt, 'Horizontal')); self.softness_slider.setRange(0, 255); self.softness_slider.setValue(12)
@@ -98,7 +159,7 @@ class ColorRangeDialog(QDialog):
         self.softness.setEnabled(False)
         self.softness_enabled.toggled.connect(self.softness_slider.setEnabled)
         self.softness_enabled.toggled.connect(self.softness.setEnabled)
-        self.invert = QCheckBox('Invert')
+        self.invert = QCheckBox(tr('Invert', '反相'))
         defaults = Krita.instance()
         saved_mode = defaults.readSetting('TFM', 'color_range_default_mode', 'luminance')
         self.mask_mode.setCurrentIndex(max(0, self.mask_mode.findData(saved_mode)))
@@ -127,7 +188,7 @@ class ColorRangeDialog(QDialog):
         preview_inner.addStretch()
         layout.addWidget(preview_frame, 1)
         layout.addWidget(self.invert)
-        self.preview.setToolTip('White: selected. Black: unselected.')
+        self.preview.setToolTip(tr('White: selected. Black: unselected.', '白色：已选。黑色：未选。'))
         buttons = QHBoxLayout()
         self.select_button = QPushButton(tr('Add', '添加'))
         self.deselect_button = QPushButton(tr('Subtract', '减去'))
@@ -166,9 +227,9 @@ class ColorRangeDialog(QDialog):
             signal.connect(self.schedule_refresh)
         self.mask_mode.currentIndexChanged.connect(self.change_mode)
         self.preview_mode = QComboBox()
-        self.preview_mode.addItem('Selection Outline', 'selection')
-        self.preview_mode.addItem('Black & White', 'black_white')
-        self.preview_mode.addItem('Quick Mask', 'quick_mask')
+        self.preview_mode.addItem(tr('Selection Outline', '选区轮廓'), 'selection')
+        self.preview_mode.addItem(tr('Black & White', '黑白预览'), 'black_white')
+        self.preview_mode.addItem(tr('Quick Mask', '快速蒙版'), 'quick_mask')
         self.overlay = None
         self.preview_mode.currentIndexChanged.connect(self.update_canvas_preview)
         self.finished.connect(self._remove_canvas_preview)
@@ -219,20 +280,7 @@ class ColorRangeDialog(QDialog):
         except Exception:
             pass
 
-    def _capture_source(self, source=None):
-        if source is None:
-            source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
-                _image_format('Format_ARGB32'))
-        if source.isNull():
-            raise ValueError('Unable to read the image projection.')
-        gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
-        ptr = gray.constBits()
-        ptr.setsize(gray.sizeInBytes())
-        raw = bytes(ptr)
-        width, height = source.width(), source.height()
-        luminance = bytearray(width * height)
-        for y in range(height):
-            luminance[y * width:(y + 1) * width] = raw[y * gray.bytesPerLine():y * gray.bytesPerLine() + width]
+    def _apply_captured(self, source, luminance):
         self.source = source
         self.luminance = luminance
         self._mask_cache_key = None
@@ -241,23 +289,57 @@ class ColorRangeDialog(QDialog):
         if hasattr(self, 'source_status'):
             self.source_status.setText('')
 
-    def _refresh_source(self):
+    def _read_projection(self):
         source = self.document.projection(0, 0, self.document.width(), self.document.height()).convertToFormat(
             _image_format('Format_ARGB32'))
-        self._capture_source(source)
+        if source.isNull():
+            raise ValueError(tr('Unable to read the image projection.', '无法读取图像投影。'))
+        return source
+
+    def _capture_source(self, source=None, async_=False):
+        if source is None:
+            source = self._read_projection()
+        elif source.isNull():
+            raise ValueError(tr('Unable to read the image projection.', '无法读取图像投影。'))
+        if not async_:
+            self._source_generation += 1
+            self._apply_captured(source, _luminance_bytes(source))
+            return
+        # Projection stays on the UI thread; luminance packing moves off it.
+        self._source_generation += 1
+        generation = self._source_generation
+        if hasattr(self, 'source_status'):
+            self.source_status.setText(tr('Refreshing source…', '正在刷新来源…'))
+        QThreadPool.globalInstance().start(_LuminanceJob(generation, source.copy(), self._capture_signals))
+
+    def _on_capture_ready(self, result):
+        generation, source, luminance, error = result
+        if generation != self._source_generation:
+            return
+        if error is not None:
+            if hasattr(self, 'source_status'):
+                self.source_status.setText('')
+            QMessageBox.warning(self, TOOL_TITLE(), str(error))
+            return
+        self._apply_captured(source, luminance)
+        self.schedule_refresh()
+
+    def _refresh_source(self, async_=False):
+        self._capture_source(self._read_projection(), async_=async_)
         return True
 
     def refresh_source_from_canvas(self):
         """Re-read document projection while the non-modal dialog stays open."""
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), tr(
+                'The active document has changed.',
+                '当前文档已切换。',
+            ))
             return
         try:
-            self._refresh_source()
+            self._refresh_source(async_=True)
         except (RuntimeError, ValueError) as error:
             QMessageBox.warning(self, TOOL_TITLE(), str(error))
-            return
-        self.schedule_refresh()
 
     def _set_threshold_controls(self, enabled):
         self.slider.setEnabled(enabled)
@@ -267,14 +349,15 @@ class ColorRangeDialog(QDialog):
     def change_mode(self, *args):
         color_mode = self.mask_mode.currentData() == 'color'
         self.color_button.setVisible(color_mode)
-        self.threshold_enabled.setText('Threshold')
+        self.threshold_enabled.setText(tr('Threshold', '阈值'))
         self.schedule_refresh()
 
     def choose_color(self):
-        color = QtWidgets.QColorDialog.getColor(self.target_color, self, 'Mask Color')
+        color = QtWidgets.QColorDialog.getColor(
+            self.target_color, self, tr('Mask Color', '蒙版颜色'))
         if color.isValid():
             self.target_color = color
-            self.color_button.setText('Color: ' + color.name())
+            self.color_button.setText(tr('Color: ', '颜色：') + color.name())
             self.schedule_refresh()
 
     def schedule_refresh(self, *args):
@@ -282,7 +365,7 @@ class ColorRangeDialog(QDialog):
 
     def _canvas_for_view(self, window, view):
         if view is None:
-            raise RuntimeError('Unable to identify the active canvas.')
+            raise RuntimeError(tr('Unable to identify the active canvas.', '无法识别当前画布。'))
         names = ('KisOpenGLCanvas2', 'KisQPainterCanvas')
 
         def collect(root):
@@ -318,7 +401,7 @@ class ColorRangeDialog(QDialog):
             found = collect(host)
             if found:
                 return found[0]
-        raise RuntimeError('Unable to identify the active canvas.')
+        raise RuntimeError(tr('Unable to identify the active canvas.', '无法识别当前画布。'))
 
     def update_canvas_preview(self, *args):
         self._remove_canvas_preview()
@@ -329,7 +412,7 @@ class ColorRangeDialog(QDialog):
             window = Krita.instance().activeWindow()
             view = window.activeView() if window else None
             if view is None or view.document() != self.document:
-                raise RuntimeError('The original document is not active.')
+                raise RuntimeError(tr('The original document is not active.', '原文档未处于活动状态。'))
             canvas = self._canvas_for_view(window, view)
             self.overlay = ColorRangeOverlay(canvas, view, self.document,
                                               lambda: window.activeView() == view)
@@ -359,6 +442,7 @@ class ColorRangeDialog(QDialog):
 
     def closeEvent(self, event):
         self.timer.stop()
+        self._source_generation += 1
         self._remove_canvas_preview()
         super().closeEvent(event)
 
@@ -399,30 +483,19 @@ class ColorRangeDialog(QDialog):
                 threshold_enabled=self.threshold_enabled.isChecked(),
                 tolerance=(self.tolerance.value() if self.tolerance_enabled.isChecked() else None),
                 softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
-        raise ValueError('Unknown color range selection mode.')
+        raise ValueError(tr('Unknown color range selection mode.', '未知的高级选区模式。'))
 
     def _show_preview(self, mask):
         width, height = self.source.width(), self.source.height()
-        box = self.preview.size()
-        preview_width, preview_height = width, height
-        pixels = mask
-        if width > box.width() or height > box.height():
-            preview_height = max(1, int(box.height()))
-            preview_width = max(1, int(round(width * (preview_height / height))))
-            if preview_width > box.width():
-                preview_width = max(1, int(box.width()))
-                preview_height = max(1, int(round(height * (preview_width / width))))
-            pixels = bytearray(preview_width * preview_height)
-            for y in range(preview_height):
-                source_y = min(height - 1, y * height // preview_height)
-                source_row = source_y * width
-                dest_row = y * preview_width
-                for x in range(preview_width):
-                    source_x = min(width - 1, x * width // preview_width)
-                    pixels[dest_row + x] = mask[source_row + source_x]
-        image = QImage(bytes(pixels), preview_width, preview_height, preview_width,
-                       _image_format('Format_Indexed8')).copy()
+        image = QImage(bytes(mask), width, height, width, _image_format('Format_Indexed8')).copy()
         image.setColorTable([0xff000000 | v << 16 | v << 8 | v for v in range(256)])
+        box = self.preview.size()
+        if width > box.width() or height > box.height():
+            image = image.scaled(
+                box,
+                _enum(Qt, 'KeepAspectRatio'),
+                _enum(Qt, 'FastTransformation'),
+            )
         self._preview_image = image
         self.preview.setPixmap(QPixmap.fromImage(image))
 
@@ -453,12 +526,15 @@ class ColorRangeDialog(QDialog):
         else:
             old = bytes(existing.pixelData(0, 0, self.source.width(), self.source.height()))
             if len(old) != len(result):
-                raise ValueError('Unable to read the current selection.')
+                raise ValueError(tr('Unable to read the current selection.', '无法读取当前选区。'))
         return native_combine(result, old, mode)
 
     def clean_selection(self):
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), tr(
+                'The active document has changed.',
+                '当前文档已切换。',
+            ))
             return
         try:
             if self.document.selection() is not None:
@@ -475,12 +551,15 @@ class ColorRangeDialog(QDialog):
 
     def apply_mode(self, mode, close=False):
         if Krita.instance().activeDocument() != self.document:
-            QMessageBox.warning(self, TOOL_TITLE(), 'The active document has changed.')
+            QMessageBox.warning(self, TOOL_TITLE(), tr(
+                'The active document has changed.',
+                '当前文档已切换。',
+            ))
             return
         QApplication.setOverrideCursor(_enum(Qt, 'WaitCursor'))
         holder = None
         try:
-            self._refresh_source()
+            self._refresh_source(async_=False)
             width, height = self.source.width(), self.source.height()
             combined = self.combined_mask(mode)
             selection = Selection()
@@ -520,7 +599,11 @@ class ColorRangeDialog(QDialog):
 def open_color_range():
     document = Krita.instance().activeDocument()
     if document is None:
-        QMessageBox.information(QApplication.activeWindow(), TOOL_TITLE(), 'Open a document first.')
+        QMessageBox.information(
+            QApplication.activeWindow(),
+            TOOL_TITLE(),
+            tr('Open a document first.', '请先打开文档。'),
+        )
         return
     try:
         window = QApplication.activeWindow()

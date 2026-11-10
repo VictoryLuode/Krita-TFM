@@ -59,7 +59,7 @@ Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 3. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder (same directory).
 4. Start Krita and enable **TFM** under **Settings → Manage Resources → Python Plugin Manager** if needed.
 
-Settings and menu lists live under `<ResourceDirectory>/TFM/`. Optional BiRefNet models for Background Removal go under `TFM/background-removal/models/`.
+Settings and menu lists live under `<ResourceDirectory>/TFM/`. Optional BiRefNet models for Background Removal go under `TFM/background-removal/models/` (`BiRefNet-lite-F16.gguf`, `BiRefNet-dynamic-F16.gguf`). They are not in the zip — use **Configure TFM → Filters → Open BiRefNet models folder** (writes a local `README.txt`) after installing compatible GGUF weights.
 
 ## Quick start
 

@@ -82,7 +82,7 @@ def escape(path):
 
 def build_vulkan_worker(env, destination):
     """Link the Vulkan device into its own process, never into kritatfm.dll."""
-    device_src = PROJECT / 'src' / 'fxmanager_vulkan_device.cpp'
+    device_src = PROJECT / 'src' / 'tfm_vulkan_device.cpp'
     worker_src = PROJECT / 'src' / 'tfm_vulkan_worker.cpp'
     if not device_src.is_file() or not worker_src.is_file():
         raise SystemExit('Missing Vulkan worker sources')
@@ -100,7 +100,7 @@ def build_vulkan_worker(env, destination):
     exe.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([str(COMPILER), '-O2', '-o', str(exe), *[str(obj) for obj in objects]], env=env, check=True)
     linked = {path.name for path in objects}
-    if 'fxmanager_vulkan.cpp.obj' in linked:
+    if 'tfm_vulkan.cpp.obj' in linked:
         raise SystemExit('Refusing to link the in-process Vulkan client into the worker')
     ping = subprocess.run([str(exe), '--ping'], env=env, capture_output=True, text=True, timeout=10)
     print('VULKAN_WORKER_PING', ping.returncode, ping.stdout.strip(), ping.stderr.strip(), flush=True)
@@ -144,9 +144,9 @@ def main():
         target = STAGE / p.name
         if not target.is_file() or digest(target) != before[p.name]:
             shutil.copy2(p, target)
-        if p.name == 'fxmanager_plugin.cpp':
+        if p.name == 'tfm_plugin.cpp':
             text = target.read_text(encoding='utf-8')
-            text = text.replace('FxManagerPluginFactory', 'FilterManagerFactory')
+            text = text.replace('TfmPluginFactory', 'FilterManagerFactory')
             target.write_text(text, encoding='utf-8')
     OUT.mkdir(parents=True, exist_ok=True)
     auto = OUT / 'autogen'
@@ -167,13 +167,13 @@ def main():
         if p.suffix == '.cpp':
             for name in re.findall(r'#include\s+"([^"\n]+\.moc)"', text):
                 output = auto / name
-                if p.name == 'fxmanager_plugin.cpp' and name == 'fxmanager_plugin.moc':
+                if p.name == 'tfm_plugin.cpp' and name == 'tfm_plugin.moc':
                     host_moc = HOST / 'plugins/filters/filtermanager/kritafiltermanager_autogen/include/filtermanager_plugin.moc'
                     if not host_moc.is_file():
                         raise SystemExit('Missing reference plugin moc: ' + str(host_moc))
                     moc_text = host_moc.read_text(encoding='utf-8', errors='replace')
                     moc_text = moc_text.replace('FilterManagerFactory', 'FilterManagerFactory')
-                    moc_text = moc_text.replace('filtermanager_plugin.cpp', 'fxmanager_plugin.cpp')
+                    moc_text = moc_text.replace('filtermanager_plugin.cpp', 'tfm_plugin.cpp')
                     output.write_text(moc_text, encoding='utf-8')
                 else:
                     subprocess.run([str(DEPS / 'bin/moc.exe'), *flags, str(STAGE / p.name), '-o', str(output)], env=env, check=True)
@@ -183,11 +183,11 @@ def main():
     (auto / 'mocs_compilation.cpp').write_text('\n'.join(includes) + '\n')
     entries = [e for e in json.loads((HOST / 'compile_commands.json').read_text()) if 'kritafiltermanager.dir' in e.get('output', '')]
     cmaketext = (PROJECT / 'src/CMakeLists.txt').read_text()
-    source_match = re.search(r'set\(KRITA_FXMANAGER_SOURCES(.*?)\)', cmaketext, re.S)
+    source_match = re.search(r'set\(KRITA_TFM_SOURCES(.*?)\)', cmaketext, re.S)
     if source_match is None:
-        raise SystemExit('Missing KRITA_FXMANAGER_SOURCES')
+        raise SystemExit('Missing KRITA_TFM_SOURCES')
     required = set(re.findall(r'\b[\w.-]+\.cpp\b', source_match.group(1)))
-    actual = {Path(e['file']).name.replace('filtermanager', 'fxmanager') for e in entries} - {'mocs_compilation.cpp'}
+    actual = {Path(e['file']).name.replace('filtermanager', 'tfm') for e in entries} - {'mocs_compilation.cpp'}
     stale = actual - required
     if stale:
         raise SystemExit(f'Reference source has stale entries: {stale}')
@@ -199,9 +199,9 @@ def main():
         entries.append(synth)
     graph = ['rule compile', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = COMPILE $out', 'rule link', '  command = ' + str(COMPILER).replace('\\', '/') + ' @$rsp', '  description = LINK $out']
     objects, database = [], []
-    if any('fxmanager_vulkan_device.cpp' in str(entry.get('file', '')) for entry in entries):
+    if any('tfm_vulkan_device.cpp' in str(entry.get('file', '')) for entry in entries):
         raise SystemExit('Vulkan device code must not be compiled into kritatfm.dll')
-    plugin_cpp = (PROJECT / 'src/fxmanager_plugin.cpp').read_text()
+    plugin_cpp = (PROJECT / 'src/tfm_plugin.cpp').read_text()
     moc_outputs = [auto / name for name in re.findall(r'#include\s+"([^"\n]+\.moc)"', plugin_cpp)]
     for e in entries:
         args = split(e['command'])[1:]
@@ -212,7 +212,7 @@ def main():
         if source.name == 'mocs_compilation.cpp':
             source = auto / source.name
         else:
-            source = STAGE / source.name.replace('filtermanager', 'fxmanager')
+            source = STAGE / source.name.replace('filtermanager', 'tfm')
             if not source.is_file():
                 raise SystemExit('Missing staged source: ' + str(source))
         obj = OUT / 'obj' / (source.name + '.obj')
@@ -236,7 +236,7 @@ def main():
         args = [a.replace('\\', '/') if not a.startswith('-D') else a for a in args]
         rsp.write_text(subprocess.list2cmdline(args), encoding='utf-8')
         deps = [STAGE / p.name for p in files]
-        if source.name == 'fxmanager_plugin.cpp':
+        if source.name == 'tfm_plugin.cpp':
             deps += moc_outputs
         graph += ['build ' + escape(obj) + ': compile ' + escape(source) + ' | ' + ' '.join(escape(p) for p in deps), '  rsp = ' + subprocess.list2cmdline([str(rsp)])]
         objects.append(obj)

@@ -125,12 +125,12 @@ def main():
     assert len(instance.extensions) == 1
     # The manager action is registered directly under Tools; popup menus remain separate.
     from PyQt5.QtWidgets import QMenu, QAction
-    from tfm.menus import menubelt
+    from tfm.menus import extension as menus_extension
     extension = instance.extensions[0]
     fake_window = object()
     edit_action = QAction('Configure TFM')
     extension._windows.append({'window': fake_window, 'edit_action': edit_action})
-    with mock.patch.object(menubelt, 'load_lists', return_value=[{'name': 'Quick Tool', 'items': []}]):
+    with mock.patch.object(menus_extension, 'load_lists', return_value=[{'name': 'Quick Tool', 'items': []}]):
         extension._rebuild(fake_window)
         assert edit_action.text() == 'Configure TFM'
         assert edit_action.parent() is None

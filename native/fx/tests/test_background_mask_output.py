@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 
-SOURCE = (Path(__file__).resolve().parents[1] / 'src' / 'fxmanager_background_removal.cpp').read_text(encoding='utf-8')
+SOURCE = (Path(__file__).resolve().parents[1] / 'src' / 'tfm_background_removal.cpp').read_text(encoding='utf-8')
 
 
 class BackgroundMaskOutputTests(unittest.TestCase):
@@ -34,11 +34,11 @@ class BackgroundMaskOutputTests(unittest.TestCase):
         refined = processing.index('} else if (foregroundMode(config)')
         self.assertLess(adjustment, branch)
         mask_branch = processing[branch:refined]
-        self.assertIn('fxmanager::background_removal::grayscaleMaskImage(', mask_branch)
+        self.assertIn('tfm::background_removal::grayscaleMaskImage(', mask_branch)
         self.assertIn('bytes.data(), image.width(), image.height()', mask_branch)
         self.assertNotIn('qAlpha', mask_branch)
         self.assertNotIn('image_estimate_foreground', mask_branch)
-        helper = (Path(__file__).resolve().parents[1] / 'src' / 'fxmanager_background_mask.h').read_text(encoding='utf-8')
+        helper = (Path(__file__).resolve().parents[1] / 'src' / 'tfm_background_mask.h').read_text(encoding='utf-8')
         self.assertIn('row[x] = qRgb(gray, gray, gray)', helper)
         self.assertIn('image_estimate_foreground', processing[refined:])
 

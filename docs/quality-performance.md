@@ -28,7 +28,7 @@ GPU: NVIDIA GeForce RTX 5090. CPU: AMD64 Family 25 Model 97 Stepping 2, Authenti
 | pointwise-128 | 1.377 / 1.600 ms | 0.482 / 0.624 ms |
 | pointwise-1024 | 24.064 / 25.275 ms | 21.691 / 21.887 ms |
 
-Peak worker working set: 92.1 -> 91.9 MiB. Startup varied between runs; this single paired startup sample is not evidence of a startup speedup. The client still retires an idle worker after two seconds.
+Peak worker working set: 92.1 -> 91.9 MiB. Startup varied between runs; this single paired startup sample is not evidence of a startup speedup. The client now retires an idle worker after thirty seconds by default (`TFM_VULKAN_IDLE_MS`); the lifecycle fixture pins two seconds.
 
 ## Auto backend calibration
 
@@ -53,7 +53,7 @@ Actual U8 paint devices, standard sRGB, real filters/conversions/IPC, one CPU th
 | tfm_filmgrain / 5120 | 333.1 ms | 943.6 ms | 724.3 ms |
 | tfm_vignette / 5120 | 536.4 ms | 949.6 ms | 725.1 ms |
 
-Auto uses a conservative 5120 x 5120 pixel-area threshold for Vibrance when one CPU thread is selected. With multiple CPU workers, no measured crossover is assumed. Temperature, grain, vignette and colour-range mask remain on CPU throughout the supported single-buffer U8 range: no crossover was observed up to 5120 x 5120. This does not assert a universal hardware threshold. Explicit GPU selection bypasses the Auto rule, subject to existing precision/memory support. Other filters retain their previous scheduling until individually calibrated.
+Auto uses a conservative 5120 x 5120 pixel-area threshold for Vibrance when one CPU thread is selected and the worker is cold. Once the worker is warm (or `TFM_AUTO_ASSUME_WARM=1`), Vibrance flips at 2048 x 2048 where warm GPU beat single-thread CPU in the table above. With multiple CPU workers, no measured crossover is assumed. Temperature, grain, vignette and colour-range mask remain on CPU throughout the supported single-buffer U8 range: no crossover was observed up to 5120 x 5120. This does not assert a universal hardware threshold. Explicit GPU selection bypasses the Auto rule, subject to existing precision/memory support. Other filters retain their previous scheduling until individually calibrated.
 
 Run `scripts/benchmark_assets.py`, `scripts/benchmark_gpu_worker.py`, and the compiled `native/fx/tests/benchmark_backend_native.cpp` to refresh evidence after relevant hardware or processing changes. The latter uses `TFM_BENCH_LARGE=1` for 4096 and `=2` for 5120.
 
