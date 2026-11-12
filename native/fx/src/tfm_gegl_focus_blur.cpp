@@ -146,6 +146,9 @@ QRect TfmGeglFocusBlur::resolveReferenceFrame(const KisFilterConfigurationSP &co
 
 bool TfmGeglFocusBlur::configurationAllowedForMask(KisFilterConfigurationSP) const
 {
+    // Masks use the same snapshot + staged-core path as paint devices. Edge
+    // cores still inflate through neededRect/halo so F16/F32 mask tiles do not
+    // sample neighbour-written output.
     return true;
 }
 

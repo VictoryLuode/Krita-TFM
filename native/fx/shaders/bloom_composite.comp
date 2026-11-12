@@ -1,0 +1,33 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { uint pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { uint pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Aux {
+    int width, height, padding;
+    float strength;
+    float light[];
+} aux;
+uint packPixel(vec4 v) {
+    return (uint(clamp(round(v.a), 0.0, 255.0)) << 24u)
+        | (uint(clamp(round(v.r), 0.0, 255.0)) << 16u)
+        | (uint(clamp(round(v.g), 0.0, 255.0)) << 8u)
+        | uint(clamp(round(v.b), 0.0, 255.0));
+}
+vec4 unpackPixel(uint v) {
+    return vec4(float((v >> 16u) & 255u), float((v >> 8u) & 255u), float(v & 255u), float((v >> 24u) & 255u));
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= aux.width || y >= aux.height) return;
+    uint packed = src.pixels[y * aux.width + x];
+    vec4 base = unpackPixel(packed);
+    if (base.a < 0.5) {
+        dst.pixels[y * aux.width + x] = packed;
+        return;
+    }
+    int i = (y * aux.width + x) * 3;
+    vec3 glow = vec3(aux.light[i], aux.light[i + 1], aux.light[i + 2]) * clamp(aux.strength, 0.0, 2.0);
+    vec4 outC = base;
+    outC.rgb = clamp(base.rgb + glow, 0.0, 255.0);
+    dst.pixels[y * aux.width + x] = packPixel(outC);
+}

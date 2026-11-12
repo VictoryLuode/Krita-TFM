@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { float values[]; } src;
+layout(std430,binding=1) writeonly buffer Output { float values[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+    int width, height, radius, horizontal;
+} p;
+vec3 fetchLight(ivec2 c) {
+    if (c.x < 0 || c.y < 0 || c.x >= p.width || c.y >= p.height) return vec3(0.0);
+    int i = (c.y * p.width + c.x) * 3;
+    return vec3(src.values[i], src.values[i + 1], src.values[i + 2]);
+}
+void writeLight(ivec2 c, vec3 v) {
+    int i = (c.y * p.width + c.x) * 3;
+    dst.values[i] = v.r;
+    dst.values[i + 1] = v.g;
+    dst.values[i + 2] = v.b;
+}
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= p.width || gid.y >= p.height) return;
+    float scale = 1.0 / float(2 * p.radius + 1);
+    vec3 sum = vec3(0.0);
+    if (p.horizontal != 0) {
+        for (int ox = -p.radius; ox <= p.radius; ++ox)
+            sum += fetchLight(ivec2(gid.x + ox, gid.y));
+    } else {
+        for (int oy = -p.radius; oy <= p.radius; ++oy)
+            sum += fetchLight(ivec2(gid.x, gid.y + oy));
+    }
+    writeLight(gid, sum * scale);
+}

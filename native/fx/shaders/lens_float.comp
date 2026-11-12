@@ -1,0 +1,88 @@
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { float pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { float pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+ int sourceW,sourceH,frameX,frameY,frameW,frameH,outputX,outputY,outputW,outputH,horizontal,fit,jitter;
+ float distortion,dispersion;
+} p;
+vec4 fetchAt(ivec2 q) {
+    if (q.x < 0 || q.y < 0 || q.x >= p.sourceW || q.y >= p.sourceH) return vec4(0.0);
+    int i = (q.y * p.sourceW + q.x) * 4;
+    return vec4(src.pixels[i], src.pixels[i + 1], src.pixels[i + 2], src.pixels[i + 3]);
+}
+vec4 sampleBilinear(vec2 q) {
+    if (q.x < -.5 || q.y < -.5 || q.x > float(p.sourceW) - .5 || q.y > float(p.sourceH) - .5) return vec4(0.0);
+    vec2 s = clamp(q, vec2(0.0), vec2(p.sourceW - 1, p.sourceH - 1));
+    ivec2 b = ivec2(floor(s));
+    vec2 t = s - vec2(b);
+    return mix(mix(fetchAt(b), fetchAt(b + ivec2(1, 0)), t.x),
+               mix(fetchAt(b + ivec2(0, 1)), fetchAt(b + ivec2(1, 1)), t.x), t.y);
+}
+float jitterNoise(int x,int y,int seed) {
+    uint h = uint(x) * 374761393u + uint(y) * 668265263u + uint(seed) * 2246822519u + 71u * 3266489917u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h % 10000u) / 5000.0 - 1.0;
+}
+void writeOut(int x, int y, vec4 v) {
+    int i = (y * p.outputW + x) * 4;
+    dst.pixels[i] = v.r;
+    dst.pixels[i + 1] = v.g;
+    dst.pixels[i + 2] = v.b;
+    dst.pixels[i + 3] = v.a;
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.outputW || y >= p.outputH) return;
+    float w = float(p.frameW), h = float(p.frameH);
+    float ix = float(p.outputX + x) + .5 - float(p.frameX);
+    float iy = float(p.outputY + y) + .5 - float(p.frameY);
+    float cx = w * .5, cy = h * .5;
+    vec4 result;
+    if (p.horizontal != 0) {
+        float dx = p.dispersion * 5.0 / max(1.0, w);
+        vec4 red = sampleBilinear(vec2((ix / w + dx) * w - .5, iy - .5));
+        vec4 green = sampleBilinear(vec2(ix - .5, iy - .5));
+        vec4 blue = sampleBilinear(vec2((ix / w - dx) * w - .5, iy - .5));
+        result = vec4(red.r, green.g, blue.b, (red.a + green.a + blue.a) / 3.0);
+    } else {
+        float ri = clamp(p.distortion + p.dispersion / 4.0, -.999, 1.0);
+        float bi = clamp(p.distortion - p.dispersion / 4.0, -.999, 1.0);
+        float cr = ri * 4.0, cg = p.distortion * 4.0, cb = bi * 4.0;
+        float mx = max(ri, max(p.distortion, bi));
+        float scale = (p.fit != 0 && mx > 0.0) ? 1.0 / (1.0 + 2.0 * mx) : 1.0 / (1.0 + mx);
+        vec2 uv = scale * (vec2(ix - cx, iy - cy) / vec2(cx, cy));
+        float q = dot(uv, uv);
+        if (cr * q > 1.0 || cg * q > 1.0 || cb * q > 1.0) {
+            result = vec4(0.0);
+        } else {
+            float sr = (1.0 / (1.0 + sqrt(max(0.0, 1.0 - cr * q)))) * (1.0 + 0.08 * (cr * q) * q);
+            float sg = (1.0 / (1.0 + sqrt(max(0.0, 1.0 - cg * q)))) * (1.0 + 0.08 * (cg * q) * q);
+            float sb = (1.0 / (1.0 + sqrt(max(0.0, 1.0 - cb * q)))) * (1.0 + 0.08 * (cb * q) * q);
+            int nr = max(1, int(length(uv * (sr - sg) * vec2(w, h)) + 1.0));
+            int nb = max(1, int(length(uv * (sg - sb) * vec2(w, h)) + 1.0));
+            vec4 sum = vec4(0.0);
+            for (int i = 0; i < nr; ++i) {
+                float t = (float(i) + (p.jitter != 0 ? (jitterNoise(x, y, i) + 1.0) * .5 : .5)) / float(nr);
+                float v = cr + t * (cg - cr);
+                float s = (1.0 / (1.0 + sqrt(max(0.0, 1.0 - v * q)))) * (1.0 + 0.08 * (v * q) * q);
+                vec4 z = sampleBilinear((uv * s + .5) * vec2(w, h) - .5);
+                sum.r += (1.0 - t) * z.r;
+                sum.g += t * z.g;
+                sum.a += z.a;
+            }
+            for (int i = 0; i < nb; ++i) {
+                float t = (float(i) + (p.jitter != 0 ? (jitterNoise(x, y, nr + i) + 1.0) * .5 : .5)) / float(nb);
+                float v = cg + t * (cb - cg);
+                float s = (1.0 / (1.0 + sqrt(max(0.0, 1.0 - v * q)))) * (1.0 + 0.08 * (v * q) * q);
+                vec4 z = sampleBilinear((uv * s + .5) * vec2(w, h) - .5);
+                sum.g += (1.0 - t) * z.g;
+                sum.b += t * z.b;
+                sum.a += z.a;
+            }
+            result = vec4(sum.r * 2.0 / float(nr), sum.g * 2.0 / float(nr + nb), sum.b * 2.0 / float(nb), sum.a / float(nr + nb));
+        }
+    }
+    writeOut(x, y, result);
+}

@@ -1,0 +1,46 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { float pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Output { float pixels[]; } dst;
+layout(std430,binding=2) readonly buffer Parameters {
+    int sourceW,sourceH,outputX,outputY,outputW,outputH,radius,step;
+    float threshold,strength;
+} p;
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+vec4 fetchPixel(ivec2 q) {
+    q = clamp(q, ivec2(0), ivec2(p.sourceW - 1, p.sourceH - 1));
+    int i = (q.y * p.sourceW + q.x) * 4;
+    return vec4(src.pixels[i], src.pixels[i + 1], src.pixels[i + 2], src.pixels[i + 3]);
+}
+void writePixel(ivec2 q, vec4 v) {
+    int i = (q.y * p.outputW + q.x) * 4;
+    dst.pixels[i] = v.r;
+    dst.pixels[i + 1] = v.g;
+    dst.pixels[i + 2] = v.b;
+    dst.pixels[i + 3] = v.a;
+}
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (x >= p.outputW || y >= p.outputH) return;
+    int sx = x + p.outputX, sy = y + p.outputY;
+    vec4 base = fetchPixel(ivec2(sx, sy));
+    float lum = dot(base.rgb, kLuma);
+  vec4 result = base;
+    if (lum > p.threshold) {
+        vec3 sum = vec3(0.0);
+        int n = 0;
+        for (int oy = -p.radius; oy <= p.radius; oy += p.step)
+            for (int ox = -p.radius; ox <= p.radius; ox += p.step) {
+                vec4 tap = fetchPixel(ivec2(sx + ox, sy + oy));
+                if (dot(tap.rgb, kLuma) > p.threshold) {
+                    sum += tap.rgb;
+                    ++n;
+                }
+            }
+        if (n > 0) {
+            float a = clamp((lum - p.threshold) / max(0.001, 1.0 - p.threshold) * p.strength, 0.0, 1.0);
+            result.rgb = base.rgb + (sum / float(n)) * a;
+        }
+    }
+    writePixel(ivec2(x, y), result);
+}

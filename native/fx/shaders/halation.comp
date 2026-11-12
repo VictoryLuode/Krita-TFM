@@ -40,6 +40,8 @@ void main() {
     // sampling density is what "Quality" controls.
     int samples = clamp(p.samples, 8, 64);
     float radius = max(0.0, p.radius);
+    float sigma = max(1.0, radius * 0.45);
+    float invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
     vec3 glow = vec3(0.0);
     float weightSum = 0.0;
     for (int i = 0; i < samples; ++i) {
@@ -50,14 +52,15 @@ void main() {
         vec3 sampleValue = fetchPixel(centre + offset);
         float luminance = dot(sampleValue, kLuma) / 255.0;
         float energy = max(0.0, luminance - p.threshold);
-        glow += sampleValue * energy;
-        weightSum += energy;
+        float w = energy * exp(-(distance * distance) * invTwoSigma2);
+        glow += sampleValue * w;
+        weightSum += w;
     }
     if (weightSum <= 0.0) {
         dst.pixels[centre.y * p.width + centre.x] = packed;
         return;
     }
-    glow /= float(samples);
+    glow *= (float(samples) * 0.35) / max(weightSum, 1e-6);
 
     // Two mutually exclusive modes: pick a glow colour, or pick which channels
     // glow. Channel switches are ignored in colour mode and vice versa.

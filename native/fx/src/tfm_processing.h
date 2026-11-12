@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QRect>
 #include <QVector>
+#include <cstdint>
 #include <functional>
 
 #include <kis_paint_device.h>
@@ -53,6 +54,10 @@ bool gpuRequested(const QString &filterId = QString(), qint64 pixels = -1);
 QString cpuBackendReason(const QString &filterId, qint64 pixels);
 void reportBackend(const QString &filter, const QString &actual, const QString &reason,
                    const QString &device = QString());
+// Vulkan per-buffer budget from TFM_VULKAN_MEMORY_MB or settings.json gpu_memory_mb
+// (default 1024 MiB, clamped 128..8192).
+std::uint64_t gpuMemoryBudgetBytes();
+QString gpuMemoryBudgetExceeded(const QString &what);
 
 QImage readImage(KisPaintDeviceSP device, const QRect &rect);
 void writeImage(KisPaintDeviceSP device, const QImage &image, const QRect &rect);

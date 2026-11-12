@@ -52,13 +52,35 @@ void KisFilterBloom::processImpl(KisPaintDeviceSP d,const QRect &rect,const KisF
     if(tfm::requiresFloatProcessing(d)) {
         const auto source=tfm::readEncodedImage(input,read);
         if(source.isNull()) return;
-        const auto output=tfm::bloom::renderFloat(source,threshold,radius,strength,
-            c ? c->getDouble("softness",0.0) : 0.0,diffusion,u);
+        const double softness = c ? c->getDouble("softness",0.0) : 0.0;
+        if (tfm::gpuRequested(id().id(), qint64(read.width()) * read.height())) {
+            tfm::EncodedRgbaImage gpuOutput;
+            QString reason;
+            QString gpuDevice;
+            const bool ok = diffusion
+                ? tfm_bloom_gpu::renderDiffuseFloat(source, threshold, radius, strength, softness,
+                                                    gpuOutput, reason, gpuDevice, [u] { return u && u->interrupted(); })
+                : tfm_bloom_gpu::renderLegacyFloat(source, QRect(), threshold, radius, strength,
+                                                   gpuOutput, reason, gpuDevice, [u] { return u && u->interrupted(); });
+            if (ok) {
+                if(u && u->interrupted()) return;
+                const auto cropped = gpuOutput.copy(QRect(rect.topLeft() - read.topLeft(), rect.size()));
+                const bool written = tfm::writeEncodedImage(d, cropped, rect);
+                tfm::reportBackend(id().id(), QStringLiteral("gpu"), written ? QString() : QStringLiteral("Float output conversion failed; pixels unchanged"), gpuDevice);
+                if(written && u) u->setProgress(100);
+                return;
+            }
+            if(u && u->interrupted()) return;
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
+        const auto output=tfm::bloom::renderFloat(source,threshold,radius,strength,softness,diffusion,u);
         if(output.isNull() || (u && u->interrupted())) return;
         const auto cropped=output.copy(QRect(rect.topLeft()-read.topLeft(),rect.size()));
         const bool written=tfm::writeEncodedImage(d,cropped,rect);
         tfm::reportBackend(id().id(),QStringLiteral("cpu"),written
-            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+            ? QString()
             : QStringLiteral("Float output conversion failed; pixels unchanged"));
         if(written && u) u->setProgress(100);
         return;
@@ -68,10 +90,26 @@ void KisFilterBloom::processImpl(KisPaintDeviceSP d,const QRect &rect,const KisF
     QImage out;
     const QRect localOutput(rect.topLeft() - read.topLeft(), rect.size());
     if (diffusion) {
-        tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("Bloom diffusion remains CPU-only"));
-        out=tfm::bloom::diffuse(source,threshold,radius,strength,c ? c->getDouble("softness",0.0) : 0.0);
+        const double softness = c ? c->getDouble("softness",0.0) : 0.0;
+        if (tfm::gpuRequested(id().id(), qint64(source.width()) * source.height())) {
+            QString reason;
+            QString gpuDevice;
+            if (tfm_bloom_gpu::renderDiffuse(source, threshold, radius, strength, softness,
+                                             out, reason, gpuDevice, [u] { return u && u->interrupted(); })) {
+                if(u && u->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+                tfm::writeImage(d, out.copy(localOutput), rect);
+                if (u) u->setProgress(100);
+                return;
+            }
+            if(u && u->interrupted()) return;
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
+        out=tfm::bloom::diffuse(source,threshold,radius,strength,softness);
     } else {
-        if (tfm::gpuRequested(id().id())) {
+        if (tfm::gpuRequested(id().id(), qint64(source.width()) * source.height())) {
             QImage gpuOutput;
             QString reason;
             QString gpuDevice;

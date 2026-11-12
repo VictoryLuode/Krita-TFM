@@ -2,6 +2,7 @@
 #include "tfm_filter_widget.h"
 #include "tfm_processing.h"
 #include "tfm_pointwise_gpu.h"
+#include "pointwise_math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,12 +42,15 @@ void grainBand(QImage &image, int y0, int y1, double amount, double size, int se
         for (int x = 0; x < width; ++x) {
             const int gx = origin.x() + x;
             const int gy = origin.y() + y;
-            const double common = tfm::deterministicNoise(int(std::floor(gx / std::max(.5, size))), int(std::floor(gy / std::max(.5, size))), seed);
-            const double nr = monochrome ? common : tfm::deterministicNoise(gx, gy, seed, 1);
-            const double ng = monochrome ? common : tfm::deterministicNoise(gx, gy, seed, 2);
-            const double nb = monochrome ? common : tfm::deterministicNoise(gx, gy, seed, 3);
             const QRgb p = row[x];
-            row[x] = qRgba(std::clamp(int(qRed(p) + nr * amplitude), 0, 255), std::clamp(int(qGreen(p) + ng * amplitude), 0, 255), std::clamp(int(qBlue(p) + nb * amplitude), 0, 255), qAlpha(p));
+            const double luma = (0.2126 * qRed(p) + 0.7152 * qGreen(p) + 0.0722 * qBlue(p)) / 255.0;
+            const double response = tfm::pointwise::grainResponse(luma) * amplitude;
+            const double nr = tfm::pointwise::filmGrainSample(gx, gy, size, seed, 1, monochrome);
+            const double ng = monochrome ? nr : tfm::pointwise::filmGrainSample(gx, gy, size, seed, 2, false);
+            const double nb = monochrome ? nr : tfm::pointwise::filmGrainSample(gx, gy, size, seed, 3, false);
+            row[x] = qRgba(std::clamp(int(qRed(p) + nr * response), 0, 255),
+                           std::clamp(int(qGreen(p) + ng * response), 0, 255),
+                           std::clamp(int(qBlue(p) + nb * response), 0, 255), qAlpha(p));
         }
     }
 }
@@ -74,11 +78,40 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
     const bool mono = isCustom ? (c ? c->getBool("monochrome", preset.monochrome) : preset.monochrome) : preset.monochrome;
     if(amount<=0.0) { if(u) u->setProgress(100); return; }
     if(tfm::requiresFloatProcessing(d)) {
+        if (tfm::gpuRequested(id().id(), qint64(r.width()) * r.height())) {
+            auto source = tfm::readEncodedImage(d, r);
+            if (!source.isNull()) {
+                tfm_pointwise_gpu::Parameters gpu;
+                gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
+                gpu.outputRect = r;
+                gpu.amount = float(amount);
+                gpu.size = float(size);
+                gpu.seed = float(seed);
+                gpu.monochrome = mono ? 1 : 0;
+                tfm::EncodedRgbaImage output; QString reason, device;
+                if (tfm_pointwise_gpu::renderFloat(source, gpu, output, reason, device,
+                        [u] { return u && u->interrupted(); })) {
+                    if (u && u->interrupted()) return;
+                    if (tfm::writeEncodedImage(d, output, r)) {
+                        tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+                        if (u) u->setProgress(100);
+                        return;
+                    }
+                    reason = QStringLiteral("Float output conversion failed; pixels unchanged");
+                }
+                if (u && u->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+            }
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"),
+                               tfm::cpuBackendReason(id().id(), qint64(r.width()) * r.height()));
+        }
         tfm::transformEncoded(d,r,id().id(),u,[&](float *p,int gx,int gy) {
-            const double common=tfm::deterministicNoise(int(std::floor(gx/std::max(.5,size))),int(std::floor(gy/std::max(.5,size))),seed);
+            const double luma=0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
+            const double response=tfm::pointwise::grainResponse(luma)*std::clamp(amount,0.0,1.0);
             for(int channel=0;channel<3;++channel) {
-                const double noise=mono ? common : tfm::deterministicNoise(gx,gy,seed,channel+1);
-                p[channel]+=float(noise*std::clamp(amount,0.0,1.0));
+                const double noise=tfm::pointwise::filmGrainSample(gx,gy,size,seed,channel+1,mono);
+                p[channel]+=float(noise*response);
             }
         });
         return;

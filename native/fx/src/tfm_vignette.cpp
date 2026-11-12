@@ -75,12 +75,40 @@ void KisFilterVignette::processImpl(KisPaintDeviceSP d, const QRect &r,
         const double edge = feather <= 1e-6
             ? (distance >= 1.0 ? 1.0 : 0.0)
             : std::clamp((distance - (1.0 - feather)) / feather, 0.0, 1.0);
-        const double mask = edge * factor;
-        const double factorOut = 1.0 - mask;
-        return factorOut;
+        // Blend geometric mask with a soft cos^4 optical falloff.
+        const double optical = std::pow(1.0 / std::sqrt(1.0 + distance * distance), 4.0);
+        const double mask = (edge * 0.65 + (1.0 - optical) * 0.35) * factor;
+        return 1.0 - std::clamp(mask, 0.0, 1.0);
     };
     if(factor==0.0) { if(u) u->setProgress(100); return; }
     if(tfm::requiresFloatProcessing(d)) {
+        if (tfm::gpuRequested(id().id(), qint64(r.width()) * r.height())) {
+            auto source = tfm::readEncodedImage(d, outputRect);
+            if (!source.isNull()) {
+                tfm_pointwise_gpu::Parameters gpu;
+                gpu.operation = tfm_pointwise_gpu::Operation::Vignette;
+                gpu.outputRect = outputRect; gpu.frame = frame;
+                gpu.factor = float(factor); gpu.feather = float(feather); gpu.roundness = float(roundness);
+                gpu.scaleX = float(scaleX); gpu.scaleY = float(scaleY); gpu.offsetX = float(offsetX);
+                gpu.offsetY = float(offsetY); gpu.angle = float(angle);
+                tfm::EncodedRgbaImage output; QString reason, device;
+                if (tfm_pointwise_gpu::renderFloat(source, gpu, output, reason, device,
+                        [u] { return u && u->interrupted(); })) {
+                    if (u && u->interrupted()) return;
+                    if (tfm::writeEncodedImage(d, output, outputRect)) {
+                        tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+                        if (u) u->setProgress(100);
+                        return;
+                    }
+                    reason = QStringLiteral("Float output conversion failed; pixels unchanged");
+                }
+                if (u && u->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+            }
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"),
+                               tfm::cpuBackendReason(id().id(), qint64(r.width()) * r.height()));
+        }
         tfm::transformEncoded(d,outputRect,id().id(),u,[&](float *p,int x,int y) {
             const double gain=attenuation(x-frame.x()+0.5,y-frame.y()+0.5);
             for(int channel=0;channel<3;++channel) p[channel]=float(p[channel]*gain);

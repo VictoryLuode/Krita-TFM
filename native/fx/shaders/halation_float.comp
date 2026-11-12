@@ -1,0 +1,75 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Source { float pixels[]; } src;
+layout(std430, binding = 1) writeonly buffer Output { float pixels[]; } dst;
+layout(std430, binding = 2) readonly buffer Parameters {
+    int width;
+    int height;
+    float threshold;
+    float radius;
+    float intensity;
+    float tintShift;
+    float blend;
+    int samples;
+    float colorR;
+    float colorG;
+    float colorB;
+    int channelR;
+    int channelG;
+    int channelB;
+    int mode;
+} p;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+vec4 fetchPixel(ivec2 c) {
+    c = clamp(c, ivec2(0), ivec2(p.width - 1, p.height - 1));
+    int i = (c.y * p.width + c.x) * 4;
+    return vec4(src.pixels[i], src.pixels[i + 1], src.pixels[i + 2], src.pixels[i + 3]);
+}
+
+void main() {
+    ivec2 centre = ivec2(gl_GlobalInvocationID.xy);
+    if (centre.x >= p.width || centre.y >= p.height) return;
+    int outI = (centre.y * p.width + centre.x) * 4;
+    vec4 base = fetchPixel(centre);
+    int samples = clamp(p.samples, 8, 64);
+    float radius = max(0.0, p.radius);
+    vec3 glow = vec3(0.0);
+    float weightSum = 0.0;
+    float sigma = max(1.0, radius * 0.45);
+    float invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
+    for (int i = 0; i < samples; ++i) {
+        float t = float(i) + 0.5;
+        float angle = t * 2.39996323;
+        float distance = sqrt(t / float(samples)) * radius;
+        ivec2 offset = ivec2(cos(angle) * distance, sin(angle) * distance);
+        vec4 sampleValue = fetchPixel(centre + offset);
+        float energy = max(0.0, dot(sampleValue.rgb, kLuma) - p.threshold);
+        float w = energy * exp(-(distance * distance) * invTwoSigma2);
+        glow += sampleValue.rgb * w;
+        weightSum += w;
+    }
+    glow *= 0.35 / max(weightSum, 1e-6);
+    vec3 tinted;
+    if (p.mode == 1) {
+        tinted = glow * vec3(p.channelR != 0 ? 1.0 : 0.0,
+                             p.channelG != 0 ? 1.0 : 0.0,
+                             p.channelB != 0 ? 1.0 : 0.0);
+    } else {
+        vec3 warm = glow * vec3(p.colorR, p.colorG, p.colorB);
+        tinted = mix(glow, warm, clamp(p.tintShift, 0.0, 1.0));
+    }
+    tinted *= clamp(p.intensity, 0.0, 4.0);
+    float amount = clamp(p.blend, 0.0, 1.0);
+    vec3 outC = base.rgb;
+    for (int c = 0; c < 3; ++c) {
+        float light = clamp(tinted[c], 0.0, 1.0);
+        float headroom = 1.0 - clamp(base[c], 0.0, 1.0);
+        outC[c] = base[c] + headroom * light * amount;
+    }
+    dst.pixels[outI] = outC.r;
+    dst.pixels[outI + 1] = outC.g;
+    dst.pixels[outI + 2] = outC.b;
+    dst.pixels[outI + 3] = base.a;
+}

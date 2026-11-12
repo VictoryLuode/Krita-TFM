@@ -62,6 +62,8 @@ void halationBand(QImage &output, const QImage &source, int y0, int y1, const Ha
         for (int x = 0; x < output.width(); ++x) {
             const QRgb centre = clampedPixel(source, x, y);
             double glowR = 0.0, glowG = 0.0, glowB = 0.0, weightSum = 0.0;
+            const double sigma = std::max(1.0, radius * 0.45);
+            const double invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
             for (int i = 0; i < samples; ++i) {
                 const double t = double(i) + 0.5;
                 const double angle = t * 2.39996323;
@@ -71,14 +73,16 @@ void halationBand(QImage &output, const QImage &source, int y0, int y1, const Ha
                 const QRgb s = clampedPixel(source, x + ox, y + oy);
                 const double luminance = (0.2126 * qRed(s) + 0.7152 * qGreen(s) + 0.0722 * qBlue(s)) / 255.0;
                 const double energy = std::max(0.0, luminance - p.threshold);
-                glowR += qRed(s) * energy;
-                glowG += qGreen(s) * energy;
-                glowB += qBlue(s) * energy;
-                weightSum += energy;
+                const double falloff = std::exp(-(distance * distance) * invTwoSigma2);
+                const double w = energy * falloff;
+                glowR += qRed(s) * w;
+                glowG += qGreen(s) * w;
+                glowB += qBlue(s) * w;
+                weightSum += w;
             }
             if (weightSum <= 0.0) { row[x] = centre; continue; }
-            const double inv = 1.0 / double(samples);
-            glowR *= inv; glowG *= inv; glowB *= inv;
+            const double inv = 1.0 / std::max(weightSum, 1e-6);
+            glowR *= inv * double(samples) * 0.35; glowG *= inv * double(samples) * 0.35; glowB *= inv * double(samples) * 0.35;
             const double tint = std::clamp(p.tintShift, 0.0, 1.0);
             const double gain = std::clamp(p.intensity, 0.0, 4.0);
             double tintedR, tintedG, tintedB;
@@ -129,16 +133,22 @@ tfm::EncodedRgbaImage halationFloat(const tfm::EncodedRgbaImage &source,
         for(int y=y0;y<y1;++y) {
             if(updater && updater->interrupted()) return;
             for(int x=0;x<source.width;++x) {
-                double glow[3]={};
-                for(const auto &offset:offsets) {
+                double glow[3]={}; double weightSum=0.0;
+                const double sigma=std::max(1.0,p.radius*0.45);
+                const double invTwoSigma2=1.0/(2.0*sigma*sigma);
+                for(int i=0;i<offsets.size();++i) {
+                    const auto &offset=offsets[i];
+                    const double distance=std::hypot(double(offset.x()),double(offset.y()));
                     const auto *pixel=src+4*(std::clamp(y+offset.y(),0,source.height-1)*source.width+std::clamp(x+offset.x(),0,source.width-1));
                     const double energy=std::max(0.0,0.2126*pixel[0]+0.7152*pixel[1]+0.0722*pixel[2]-p.threshold);
-                    for(int c=0;c<3;++c) glow[c]+=pixel[c]*energy;
+                    const double w=energy*std::exp(-(distance*distance)*invTwoSigma2);
+                    for(int c=0;c<3;++c) glow[c]+=pixel[c]*w;
+                    weightSum+=w;
                 }
                 auto *pixel=dst+4*(y*source.width+x);
                 for(int c=0;c<3;++c) {
                     const double tint=p.channelMode ? (channels[c] ? 1.0 : 0.0) : 1.0+(colours[c]-1.0)*p.tintShift;
-                    const double light=std::clamp(glow[c]*tint*p.intensity/p.samples,0.0,1.0);
+                    const double light=std::clamp(glow[c]*tint*p.intensity*0.35/std::max(weightSum,1e-6),0.0,1.0);
                     // Screen's illumination is bounded, while out-of-range
                     // source energy stays intact instead of clipping to white.
                     pixel[c]=float(pixel[c]+(1.0-std::clamp(double(pixel[c]),0.0,1.0))*light*p.blend);
@@ -243,20 +253,48 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     if(tfm::requiresFloatProcessing(d)) {
         const auto source=tfm::readEncodedImage(pristine,srcRect);
         if(source.isNull()) return;
-        const auto current=halationFloat(source,params,u);
+        tfm_halation_gpu::Parameters gpu;
+        gpu.srcRect = srcRect;
+        gpu.outputRect = outputRect;
+        gpu.threshold = float(params.threshold);
+        gpu.radius = float(params.radius);
+        gpu.intensity = float(params.intensity);
+        gpu.tintShift = float(params.tintShift);
+        gpu.blend = float(params.blend);
+        gpu.samples = params.samples;
+        gpu.colorR = float(params.colorR);
+        gpu.colorG = float(params.colorG);
+        gpu.colorB = float(params.colorB);
+        gpu.channelR = params.channelR;
+        gpu.channelG = params.channelG;
+        gpu.channelB = params.channelB;
+        gpu.mode = params.channelMode ? 1 : 0;
+        tfm::EncodedRgbaImage current;
+        QString reason;
+        QString device;
+        bool usedGpu = false;
+        if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
+            usedGpu = tfm_halation_gpu::renderFloat(source, gpu, current, reason, device,
+                                                    [u] { return u && u->interrupted(); });
+            if (u && u->interrupted()) return;
+            if (!usedGpu) tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
+        if (!usedGpu) current = halationFloat(source, params, u);
         if(u && u->interrupted()) return;
         const auto cropped=current.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
         const bool written=tfm::writeEncodedImage(d,cropped,outputRect);
-        tfm::reportBackend(id().id(),QStringLiteral("cpu"),written
-            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
-            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
+            written ? QString() : QStringLiteral("Float output conversion failed; pixels unchanged"),
+            usedGpu ? device : QString());
         if(written && u) u->setProgress(100);
         return;
     }
     const QImage source = tfm::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
-    if (tfm::gpuRequested(id().id())) {
+    if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
         tfm_halation_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;

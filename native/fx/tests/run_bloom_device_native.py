@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from run_statistical_regions_native import split
+from run_native_util import split
 
 
 def main():

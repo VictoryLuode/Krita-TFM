@@ -374,7 +374,7 @@
     {
       "id": "tfm_vibrance",
       "label": "Vibrance",
-      "description": "Raise muted colour before saturated colour, with skin and highlight protection.",
+      "description": "Raise muted colour before saturated colour, with optional highlight protection.",
       "category": "Artistic",
       "settings": [
         {
@@ -391,14 +391,6 @@
           "min": -100.0,
           "max": 100.0,
           "default": 0.0,
-          "value_type": "number"
-        },
-        {
-          "key": "skin_protect",
-          "label": "Skin Protection",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 1.0,
           "value_type": "number"
         },
         {
@@ -764,167 +756,6 @@
       }
     },
     {
-      "id": "tfm_clipboard_color_match",
-      "label": "Statistical Color Match",
-      "description": "Statistical Lab colour transfer from a clipboard image or file. The reference is analysed by the filter configuration; the target image is not modified until Krita applies the filter.",
-      "category": "Colors",
-      "settings": [
-        {
-          "key": "reference_source",
-          "label": "Source",
-          "type": "enum",
-          "default": "clipboard",
-          "options": [
-            [
-              "clipboard",
-              "Clipboard"
-            ],
-            [
-              "file",
-              "File"
-            ]
-          ],
-          "value_type": "enum"
-        },
-        {
-          "key": "refresh_reference",
-          "label": "Refresh",
-          "type": "action",
-          "value_type": "action"
-        },
-        {
-          "key": "choose_reference_file",
-          "label": "Choose File…",
-          "type": "action",
-          "value_type": "action"
-        },
-        {
-          "key": "match_strength",
-          "label": "Match Strength",
-          "type": "number",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 1.0,
-          "value_type": "number"
-        },
-        {
-          "key": "luminance",
-          "label": "Luminance",
-          "type": "number",
-          "min": 0.0,
-          "max": 2.0,
-          "default": 1.0,
-          "value_type": "number"
-        },
-        {
-          "key": "color_intensity",
-          "label": "Color Intensity",
-          "type": "number",
-          "min": 0.0,
-          "max": 2.0,
-          "default": 1.0,
-          "value_type": "number"
-        },
-        {
-          "key": "fade",
-          "label": "Fade",
-          "type": "number",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 0.0,
-          "value_type": "number"
-        },
-        {
-          "key": "preserve_alpha",
-          "label": "Preserve Alpha",
-          "type": "bool",
-          "default": true,
-          "editable": false,
-          "value_type": "bool"
-        },
-        {
-          "key": "tone_distribution",
-          "label": "Tone Distribution",
-          "type": "slider",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 0.0,
-          "value_type": "number"
-        },
-        {
-          "key": "tonal_color",
-          "label": "Tonal Color",
-          "type": "slider",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 0.0,
-          "value_type": "number"
-        },
-        {
-          "key": "color_correlation",
-          "label": "Color Correlation",
-          "type": "slider",
-          "min": 0.0,
-          "max": 1.0,
-          "default": 0.0,
-          "value_type": "number"
-        },
-        {
-          "key": "gain_limit",
-          "label": "Gain Limit",
-          "type": "number",
-          "min": 1.0,
-          "max": 8.0,
-          "default": 2.0,
-          "value_type": "number"
-        },
-        {
-          "key": "shift_limit",
-          "label": "Color Shift Limit",
-          "type": "number",
-          "min": 0.0,
-          "max": 100.0,
-          "default": 51.0,
-          "value_type": "number"
-        },
-        {
-          "key": "variance_floor",
-          "label": "Variance Floor",
-          "type": "number",
-          "min": 0.1,
-          "max": 10.0,
-          "default": 2.55,
-          "value_type": "number"
-        },
-        {
-          "key": "gamut_protection",
-          "label": "sRGB Gamut Protection",
-          "type": "bool",
-          "default": false,
-          "value_type": "bool"
-        },
-        {
-          "key": "reanalyze_target",
-          "label": "Re-analyze Target",
-          "type": "action",
-          "value_type": "action"
-        }
-      ],
-      "aliases": [
-        "fxmanager_clipboard_color_match"
-      ],
-      "backends": {
-        "cpu": [
-          "U8",
-          "U16",
-          "F16",
-          "F32"
-        ],
-        "vulkan": [],
-        "model_backend": false
-      }
-    },
-    {
       "id": "tfm_guided_color_match",
       "label": "Guided Color Match",
       "description": "Match a layer to a reference preview: histogram brightness, then the reference colour at that brightness.",
@@ -1128,6 +959,22 @@
             [
               "saturation",
               "Saturation"
+            ],
+            [
+              "lightness",
+              "Lightness (OKLab)"
+            ],
+            [
+              "chroma",
+              "Chroma (OKLab)"
+            ],
+            [
+              "ok_hue",
+              "OKLab Hue"
+            ],
+            [
+              "delta_e",
+              "ΔE from mid-gray"
             ]
           ],
           "value_type": "enum"
@@ -1289,7 +1136,7 @@
     {
       "id": "tfm_focus_blur",
       "label": "Focus Blur",
-      "description": "Native CPU depth-of-field / tilt-shift blur. F32 filter masks may show small boundary differences; use a paint layer or adjustment layer for F32 documents.",
+      "description": "Native CPU depth-of-field / tilt-shift blur. Not offered as a filter mask (F32/F16 mask boundaries remain incorrect); use a paint or adjustment layer instead.",
       "category": "Blur",
       "settings": [
         {

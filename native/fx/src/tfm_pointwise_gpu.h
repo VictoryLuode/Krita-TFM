@@ -2,6 +2,7 @@
 
 #include <functional>
 
+#include "tfm_processing.h"
 #include <QImage>
 #include <QRect>
 #include <QString>
@@ -57,5 +58,11 @@ struct Parameters {
 // Returns false without modifying output when Vulkan is unavailable or inputs are unsupported.
 bool render(const QImage &source, const Parameters &parameters,
             QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
+
+// High-depth path: dense EncodedRgbaImage (RGBA F32). Supports FilmGrain,
+// Vignette, ColorTemperature and Vibrance. Other operations return false.
+bool renderFloat(const tfm::EncodedRgbaImage &source, const Parameters &parameters,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_pointwise_gpu

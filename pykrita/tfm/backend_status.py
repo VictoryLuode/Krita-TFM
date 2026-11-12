@@ -24,4 +24,9 @@ def backend_action_tip(reason):
             'Action: unset TFM_VULKAN_DISABLE, or keep using CPU for this filter.',
             '操作：取消环境变量 TFM_VULKAN_DISABLE，或继续对该滤镜使用 CPU。',
         )
+    if 'mib budget' in lowered or 'memory budget' in lowered:
+        return tr(
+            'Action: raise GPU memory budget in Settings, or switch this filter to CPU.',
+            '操作：在设置里提高 GPU 显存上限，或将该滤镜改为 CPU。',
+        )
     return ''

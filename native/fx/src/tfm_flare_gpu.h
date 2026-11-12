@@ -51,4 +51,8 @@ QVector<FlareSource> detectSources(const tfm::EncodedRgbaImage &source, double t
 bool render(const QImage &source, const Parameters &parameters,
             QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
 
+bool renderFloat(const tfm::EncodedRgbaImage &source, const Parameters &parameters,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled = {});
+
 } // namespace tfm_flare_gpu

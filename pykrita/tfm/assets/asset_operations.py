@@ -253,7 +253,7 @@ class AssetOperationsMixin:
         host = self._host()
         tool = self._reference_tool(host)
         if tool is None:
-            raise store.AssetError("Could not create a reference image.")
+            raise store.AssetError(tr("Could not create a reference image.", "无法创建参考图。"))
         QtCore.QMetaObject.invokeMethod(tool, "pasteReferenceImage")
         self._move_reference(host, x, y)
         QTimer.singleShot(0, lambda host=host, x=x, y=y: self._move_reference(host, x, y))
@@ -322,14 +322,14 @@ class AssetOperationsMixin:
             return
         doc = self._document()
         if doc is None:
-            self._tell("Open a document first.")
+            self._tell(tr("Open a document first.", "请先打开文档。"))
             return
         try:
             node = doc.activeNode()
         except Exception:
             node = None
         if node is None:
-            self._tell("Select a layer first.")
+            self._tell(tr("Select a layer first.", "请先选择图层。"))
             return
         if filter_asset.is_filter_layer(node):
             self._persist_structured_asset(
@@ -360,10 +360,10 @@ class AssetOperationsMixin:
         try:
             bounds = node.bounds()
         except Exception:
-            self._tell("This layer cannot be saved.")
+            self._tell(tr("This layer cannot be saved.", "无法保存此图层。"))
             return
         if bounds.isEmpty() or bounds.width() < 1 or bounds.height() < 1:
-            self._tell("The active layer has no pixels to save.")
+            self._tell(tr("The active layer has no pixels to save.", "当前图层没有可保存的像素。"))
             return
         try:
             path = store.new_image_path(self._root, folder, node.name() or "Layer")
@@ -378,7 +378,7 @@ class AssetOperationsMixin:
                 else:
                     saved = node.save(path, doc.xRes() or 1.0, doc.yRes() or 1.0, InfoObject(), bounds)
                     if not saved:
-                        raise store.AssetError("Krita could not export this layer.")
+                        raise store.AssetError(tr("Krita could not export this layer.", "Krita 无法导出此图层。"))
         except store.AssetError as error:
             if os.path.isfile(path):
                 try:
@@ -394,7 +394,7 @@ class AssetOperationsMixin:
                     os.remove(path)
                 except OSError:
                     pass
-            self._tell("Krita could not export this layer.")
+            self._tell(tr("Krita could not export this layer.", "Krita 无法导出此图层。"))
             return
         try:
             store.write_meta(path, bounds.x(), bounds.y())
@@ -454,7 +454,7 @@ class AssetOperationsMixin:
                     os.remove(sidecar)
                 except OSError:
                     pass
-            self._tell("Could not save that layer.")
+            self._tell(tr("Could not save that layer.", "无法保存该图层。"))
             return
         rel = store.relative_path(self._root, path)
         self._reload(folder, rel)

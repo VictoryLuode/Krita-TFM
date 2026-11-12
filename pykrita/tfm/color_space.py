@@ -5,6 +5,13 @@ The default is the model, depth, and profile used for new images
 space is left alone: only layers in the layer stack are converted.
 """
 
+try:
+    from .i18n import tr
+except ImportError:  # loaded as a flat module by offline unit tests
+    def tr(english, chinese=None):
+        return english
+
+
 CONVERTIBLE = frozenset({
     "paintlayer",
     "grouplayer",
@@ -160,19 +167,19 @@ def target_problem(app, target):
     except Exception:
         models = None
     if models is not None and model not in models:
-        return "The default color model is not available: {}.".format(model)
+        return tr("The default color model is not available: {}.", "默认色彩模型不可用：{}。").format(model)
     try:
         depths = list(app.colorDepths(model))
     except Exception:
         depths = None
     if depths is not None and depth not in depths:
-        return "The default color depth is not available: {}.".format(depth)
+        return tr("The default color depth is not available: {}.", "默认色彩深度不可用：{}。").format(depth)
     try:
         profiles = list(app.profiles(model, depth))
     except Exception:
         profiles = None
     if profiles is not None and profile not in profiles:
-        return "The default color profile is not available:\n{}".format(profile)
+        return tr("The default color profile is not available:\n{}", "默认色彩配置文件不可用：\n{}").format(profile)
     return ""
 
 
@@ -200,50 +207,54 @@ def run_convert(parent=None):
     app = Krita.instance()
     document = app.activeDocument()
     if document is None:
-        QMessageBox.information(parent, "Convert Layers", "Open a document first.")
+        QMessageBox.information(parent, tr("Convert Layers", "转换图层"), tr("Open a document first.", "请先打开文档。"))
         return False
     target = default_color_space(app.readSetting)
     problem = target_problem(app, target)
     if problem:
-        QMessageBox.warning(parent, "Convert Layers", problem)
+        QMessageBox.warning(parent, tr("Convert Layers", "转换图层"), problem)
         return False
     try:
         root = document.rootNode()
     except Exception:
         root = None
     if root is None:
-        QMessageBox.information(parent, "Convert Layers", "This document has no layer stack.")
+        QMessageBox.information(parent, tr("Convert Layers", "转换图层"), tr("This document has no layer stack.", "此文档没有图层栈。"))
         return False
     pending = mismatched_layers(root, target)
     target_text = format_color_space(*target)
     if not pending:
         if any(iter_convertible(root)):
-            message = "Every layer is already in your default color space:\n\n{}.".format(target_text)
+            message = tr("Every layer is already in your default color space:\n\n{}.", "所有图层已是默认色彩空间：\n\n{}。").format(target_text)
         else:
-            message = "This document has no layers."
-        QMessageBox.information(parent, "Convert Layers", message)
+            message = tr("This document has no layers.", "此文档没有图层。")
+        QMessageBox.information(parent, tr("Convert Layers", "转换图层"), message)
         return False
     names = [describe_node(node) for node in pending]
     preview = "\n".join("• " + name for name in names[:20])
     if len(names) > 20:
         preview += "\n• … and {} more".format(len(names) - 20)
-    message = (
+    message = tr(
         "Convert every mismatched layer to your default color space?\n\n"
         "{}\n\n"
         "{} {} will be converted:\n{}\n\n"
-        "Pixels are converted, and Undo can restore them."
+        "Pixels are converted, and Undo can restore them.",
+        "将所有不匹配的图层转换为默认色彩空间？\n\n"
+        "{}\n\n"
+        "将转换 {} {}：\n{}\n\n"
+        "像素会被转换，可用撤销恢复。",
     ).format(
         target_text,
         len(pending),
-        "layer" if len(pending) == 1 else "layers",
+        tr("layer", "图层") if len(pending) == 1 else tr("layers", "图层"),
         preview,
     )
     image = _document_space(document)
     if image and image != target:
-        message += "\n\nThe image color space stays {}.".format(format_color_space(*image))
+        message += tr("\n\nThe image color space stays {}.", "\n\n图像色彩空间保持为 {}。").format(format_color_space(*image))
     buttons = QMessageBox.StandardButton
     if QMessageBox.question(
-            parent, "Convert Layers", message,
+            parent, tr("Convert Layers", "转换图层"), message,
             buttons.Yes | buttons.No, buttons.Yes) != buttons.Yes:
         return False
     QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -264,17 +275,17 @@ def run_convert(parent=None):
     if not remaining:
         QMessageBox.information(
             parent, "Convert Layers",
-            "Converted {} {} to {}.".format(
-                changed, "layer" if changed == 1 else "layers", target_text))
+            tr("Converted {} {} to {}.", "已将 {} {} 转换为 {}。").format(
+                changed, tr("layer", "图层") if changed == 1 else tr("layers", "图层"), target_text))
         return True
-    detail = "Still in another color space: {}.".format(_join_names(remaining))
+    detail = tr("Still in another color space: {}.", "仍处于其他色彩空间：{}。").format(_join_names(remaining))
     if any(node_type(node) == "filelayer" for node in remaining):
-        detail += "\n\nFile layers keep the color space of the linked file."
+        detail += tr("\n\nFile layers keep the color space of the linked file.", "\n\n文件图层保留所链接文件的色彩空间。")
     if changed:
         QMessageBox.warning(
             parent, "Convert Layers",
-            "Converted {} {}.\n\n{}".format(
-                changed, "layer" if changed == 1 else "layers", detail))
+            tr("Converted {} {}.\n\n{}", "已转换 {} {}。\n\n{}").format(
+                changed, tr("layer", "图层") if changed == 1 else tr("layers", "图层"), detail))
         return True
-    QMessageBox.warning(parent, "Convert Layers", "Could not convert the layers.\n\n" + detail)
+    QMessageBox.warning(parent, tr("Convert Layers", "转换图层"), tr("Could not convert the layers.\n\n{}", "无法转换图层。\n\n{}").format(detail))
     return False

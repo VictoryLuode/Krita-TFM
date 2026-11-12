@@ -8,6 +8,12 @@ import shutil
 import tempfile
 import uuid
 
+try:
+    from ..i18n import tr
+except ImportError:  # loaded as a flat module by offline unit tests
+    def tr(english, chinese=None):
+        return english
+
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp")
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {
@@ -92,13 +98,13 @@ def create_folder(root, parent_rel, name):
     try:
         os.mkdir(path)
     except OSError as error:
-        raise AssetError("Could not create that folder.") from error
+        raise AssetError(tr("Could not create that folder.", "无法创建该文件夹。")) from error
     return relative_path(root, path)
 
 
 def rename_folder(root, rel, name):
     if not rel:
-        raise AssetError("The asset library itself cannot be renamed.")
+        raise AssetError(tr("The asset library itself cannot be renamed.", "不能重命名资产库根目录。"))
     source = _folder(root, rel)
     parent = os.path.dirname(source)
     stem = safe_name(name, "Folder")
@@ -109,7 +115,7 @@ def rename_folder(root, rel, name):
     try:
         _rename_path(source, destination)
     except OSError as error:
-        raise AssetError("Could not rename that folder.") from error
+        raise AssetError(tr("Could not rename that folder.", "无法重命名该文件夹。")) from error
     new_rel = relative_path(root, destination)
     _retarget_order(root, rel, new_rel)
     return new_rel
@@ -119,15 +125,15 @@ def move_folder(root, rel, dest_parent):
     rel = _clean_rel(rel)
     dest_parent = _clean_rel(dest_parent)
     if not rel:
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     if dest_parent == rel or dest_parent.startswith(rel + "/"):
-        raise AssetError("A folder cannot be moved into itself.")
+        raise AssetError(tr("A folder cannot be moved into itself.", "不能将文件夹移动到自身内部。"))
     source_parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
     if source_parent == dest_parent:
         return rel
     source = _folder(root, rel)
     if not os.path.isdir(source):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     parent_path = _folder(root, dest_parent)
     try:
         os.makedirs(parent_path, exist_ok=True)
@@ -137,7 +143,7 @@ def move_folder(root, rel, dest_parent):
         )
         _rename_path(source, destination)
     except OSError as error:
-        raise AssetError("Could not move that folder.") from error
+        raise AssetError(tr("Could not move that folder.", "无法移动该文件夹。")) from error
     new_rel = relative_path(root, destination)
     _retarget_order(root, rel, new_rel)
     return new_rel
@@ -145,12 +151,12 @@ def move_folder(root, rel, dest_parent):
 
 def delete_folder(root, rel):
     if not rel:
-        raise AssetError("The asset library itself cannot be removed.")
+        raise AssetError(tr("The asset library itself cannot be removed.", "不能删除资产库根目录。"))
     path = _folder(root, rel)
     try:
         shutil.rmtree(path)
     except OSError as error:
-        raise AssetError("Could not delete that folder.") from error
+        raise AssetError(tr("Could not delete that folder.", "无法删除该文件夹。")) from error
     _forget_order(root, rel)
 
 
@@ -159,7 +165,7 @@ def new_image_path(root, folder_rel, stem, suffix=".png"):
     try:
         os.makedirs(directory, exist_ok=True)
     except OSError as error:
-        raise AssetError("Could not create that folder.") from error
+        raise AssetError(tr("Could not create that folder.", "无法创建该文件夹。")) from error
     suffix = suffix if suffix.startswith(".") else "." + suffix
     name = _unique_stem(directory, safe_name(stem), suffix.lower()) + suffix.lower()
     return os.path.join(directory, name)
@@ -167,16 +173,16 @@ def new_image_path(root, folder_rel, stem, suffix=".png"):
 
 def import_file(root, folder_rel, source):
     if not os.path.isfile(source):
-        raise AssetError("That file cannot be read.")
+        raise AssetError(tr("That file cannot be read.", "无法读取该文件。"))
     suffix = os.path.splitext(source)[1].lower()
     if suffix not in IMAGE_SUFFIXES:
-        raise AssetError("That file is not a supported image.")
+        raise AssetError(tr("That file is not a supported image.", "该文件不是支持的图片格式。"))
     stem = safe_name(os.path.splitext(os.path.basename(source))[0])
     destination = new_image_path(root, folder_rel, stem, suffix)
     try:
         shutil.copyfile(source, destination)
     except OSError as error:
-        raise AssetError("Could not copy that image.") from error
+        raise AssetError(tr("Could not copy that image.", "无法复制该图片。")) from error
     return relative_path(root, destination)
 
 
@@ -190,7 +196,7 @@ def move_image(root, rel, dest_folder):
     try:
         _rename_with_sidecar(source, destination)
     except OSError as error:
-        raise AssetError("Could not move that image.") from error
+        raise AssetError(tr("Could not move that image.", "无法移动该图片。")) from error
     return relative_path(root, destination)
 
 
@@ -206,7 +212,7 @@ def rename_image(root, rel, stem):
     try:
         _rename_with_sidecar(source, destination)
     except OSError as error:
-        raise AssetError("Could not rename that image.") from error
+        raise AssetError(tr("Could not rename that image.", "无法重命名该图片。")) from error
     return relative_path(root, destination)
 
 
@@ -218,15 +224,15 @@ def delete_image(root, rel):
         if os.path.isfile(sidecar):
             os.remove(sidecar)
     except OSError as error:
-        raise AssetError("Could not delete that image.") from error
+        raise AssetError(tr("Could not delete that image.", "无法删除该图片。")) from error
 
 
 def image_path(root, rel):
     path = _inside_path(root, rel)
     if not os.path.isfile(path):
-        raise AssetError("That asset is no longer in the library.")
+        raise AssetError(tr("That asset is no longer in the library.", "该资产已不在库中。"))
     if os.path.splitext(path)[1].lower() not in IMAGE_SUFFIXES:
-        raise AssetError("That file is not a supported image.")
+        raise AssetError(tr("That file is not a supported image.", "该文件不是支持的图片格式。"))
     return path
 
 
@@ -300,7 +306,7 @@ def _parts(rel):
         return []
     parts = text.split("/")
     if any(not _part_ok(part) for part in parts):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     return parts
 
 
@@ -311,14 +317,14 @@ def _inside_path(root, rel):
     case_root = os.path.normcase(root_abs)
     case_path = os.path.normcase(path)
     if case_path != case_root and not case_path.startswith(case_root + os.sep):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     return path
 
 
 def _folder(root, rel):
     path = _inside_path(root, rel)
     if os.path.exists(path) and not os.path.isdir(path):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     return path
 
 
@@ -377,7 +383,7 @@ def insert_marker(root, parent_rel, kind, before=None, text="标题"):
         raise AssetError("That item cannot be added.")
     parent_rel = _clean_rel(parent_rel)
     if parent_rel and not os.path.isdir(_folder(root, parent_rel)):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     children = merged_children(root, parent_rel)
     entry = {"type": kind, "id": _marker_id(root)}
     if kind == "title":
@@ -423,7 +429,7 @@ def relocate_node(root, kind, key, dest_parent, before=None):
     """Move a folder, separator, or title to dest_parent, inserted before `before`."""
     dest_parent = _clean_rel(dest_parent)
     if dest_parent and not os.path.isdir(_folder(root, dest_parent)):
-        raise AssetError("That folder is not in the asset library.")
+        raise AssetError(tr("That folder is not in the asset library.", "该文件夹不在资产库中。"))
     if kind == "folder":
         return _relocate_folder(root, key, dest_parent, before)
     if kind not in ("separator", "title"):
@@ -442,7 +448,7 @@ def _relocate_folder(root, rel, dest_parent, before):
     ):
         return rel
     if not rel or dest_parent == rel or dest_parent.startswith(rel + "/"):
-        raise AssetError("A folder cannot be moved into itself.")
+        raise AssetError(tr("A folder cannot be moved into itself.", "不能将文件夹移动到自身内部。"))
     new_rel = rel
     if source_parent != dest_parent:
         new_rel = move_folder(root, rel, dest_parent)

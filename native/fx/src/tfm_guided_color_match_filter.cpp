@@ -91,6 +91,27 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
     if(cachedIdentity) { if(updater) updater->setProgress(100); return; }
     const auto &lut=cachedLut;
     if(tfm::requiresFloatProcessing(device)) {
+        const bool wantGpu = tfm::gpuRequested(id().id(), qint64(rect.width()) * rect.height());
+        if (wantGpu) {
+            const tfm::EncodedRgbaImage source = tfm::readEncodedImage(device, rect);
+            if (!source.isNull()) {
+                tfm::EncodedRgbaImage gpuOutput;
+                QString gpuReason, gpuDevice;
+                if (tfm_guided_gpu::renderFloat(source, lut, gpuOutput, gpuReason, gpuDevice,
+                        [updater] { return updater && updater->interrupted(); })) {
+                    if (updater && updater->interrupted()) return;
+                    if (tfm::writeEncodedImage(device, gpuOutput, rect)) {
+                        tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
+                        if (updater) updater->setProgress(100);
+                        return;
+                    }
+                }
+                if (updater && updater->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("cpu"), gpuReason);
+            }
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
         tfm::transformEncoded(device,rect,id().id(),updater,[&](float *p,int,int) {
             if(p[3]<=0.0f) return;
             const auto mapped=lut.sampleFloat({p[0],p[1],p[2]});
@@ -103,7 +124,7 @@ void KisFilterGuidedColorMatch::processImpl(KisPaintDeviceSP device,const QRect 
     if(source.isNull()) return;
     QImage output;
     QString gpuReason, gpuDevice;
-    const bool wantGpu = tfm::gpuRequested(id().id());
+    const bool wantGpu = tfm::gpuRequested(id().id(), qint64(rect.width()) * rect.height());
     if (wantGpu && tfm_guided_gpu::render(source, lut, output, gpuReason, gpuDevice, [updater] { return updater && updater->interrupted(); })) {
         tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), gpuDevice);
     } else {

@@ -1,6 +1,8 @@
 #include "tfm_guided_gpu.h"
+#include "tfm_processing.h"
 #include "tfm_vulkan.h"
 #include "tfm_guided_lut_spv.h"
+#include "tfm_guided_lut_float_spv.h"
 
 #include <cmath>
 #include <cstdint>
@@ -57,6 +59,65 @@ bool render(const QImage &source, const tfm::guided::Lut &lut,
         return true;
     } catch (const std::bad_alloc &) {
         reason = QStringLiteral("Guided GPU buffer allocation failed");
+        return false;
+    }
+}
+
+bool renderFloat(const tfm::EncodedRgbaImage &source, const tfm::guided::Lut &lut,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled)
+{
+    reason.clear();
+    deviceName.clear();
+    if (qEnvironmentVariableIntValue("TFM_VULKAN_DISABLE") != 0) {
+        reason = QStringLiteral("Vulkan disabled by TFM_VULKAN_DISABLE");
+        return false;
+    }
+    if (source.isNull() || !lut.valid) {
+        reason = QStringLiteral("Guided float GPU requires a dense EncodedRgbaImage and valid LUT");
+        return false;
+    }
+    const std::uint64_t memoryBudget = tfm::gpuMemoryBudgetBytes();
+    const std::uint64_t bytes = std::uint64_t(source.width) * source.height * 4ull * sizeof(float);
+    if (bytes == 0 || bytes > memoryBudget || bytes * 2 + sizeof(ShaderParameters) > memoryBudget) {
+        reason = tfm::gpuMemoryBudgetExceeded(QStringLiteral("Guided float buffers"));
+        return false;
+    }
+    ShaderParameters params{};
+    params.sourceW = source.width; params.sourceH = source.height;
+    params.outputW = source.width; params.outputH = source.height;
+    std::copy(lut.values.begin(), lut.values.end(), std::begin(params.lut));
+    try {
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
+        dispatch.parametersBinding = 2;
+        dispatch.groupsX = (std::uint32_t(source.width) + 15u) / 16u;
+        dispatch.groupsY = (std::uint32_t(source.height) + 15u) / 16u;
+        std::vector<std::uint8_t> result;
+        const auto outcome = vulkan.dispatchResult(
+            std::vector<std::uint32_t>(std::begin(kGuidedLutFloatSpv), std::end(kGuidedLutFloatSpv)),
+            source.pixels.constData(), std::size_t(bytes), &params, sizeof(params),
+            std::size_t(bytes), dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
+            return false;
+        }
+        if (result.size() != bytes) {
+            reason = QStringLiteral("Guided float GPU returned an incomplete image");
+            return false;
+        }
+        tfm::EncodedRgbaImage out;
+        out.width = source.width;
+        out.height = source.height;
+        out.pixels.resize(int(bytes / sizeof(float)));
+        std::memcpy(out.pixels.data(), result.data(), std::size_t(bytes));
+        output = std::move(out);
+        deviceName = QString::fromStdString(vulkan.deviceName());
+        return true;
+    } catch (const std::bad_alloc &) {
+        reason = QStringLiteral("Guided float GPU buffer allocation failed");
         return false;
     }
 }

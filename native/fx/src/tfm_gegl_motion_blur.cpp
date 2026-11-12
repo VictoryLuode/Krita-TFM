@@ -361,7 +361,7 @@ void TfmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
     }
     if (progressUpdater && progressUpdater->interrupted()) return;
     QString backendReason;
-    if (tfm::gpuRequested(id())) {
+    if (tfm::gpuRequested(id(), qint64(rect.width()) * rect.height())) {
         tfm::FloatRgbaImage gpuOutput;
         QString gpuDevice;
         if (tfm_motion_gpu::render(dense, stored, defaultImage, read, rect, frame,
@@ -412,7 +412,12 @@ void TfmGeglMotionBlur::processImpl(KisPaintDeviceSP device, const QRect &rect,
         return it->image.pixels.constData() + ((y-ty)*side+x-tx)*4;
     };
     if(!std::isfinite(gx)||!std::isfinite(gy)||!std::isfinite(angle)||!std::isfinite(factor)) return;
-    const int samples=(circular ? angle==0.0 : factor==0.0) ? 1 : 200;
+    // Adaptive sample count: short trails stay cheap, large angles/zoom keep density.
+    const int samples = (circular ? angle == 0.0 : factor == 0.0)
+        ? 1
+        : (circular
+               ? std::clamp(int(std::lround(16.0 + angle * 0.5)), 16, 200)
+               : std::clamp(int(std::lround(24.0 + std::abs(factor) * 160.0)), 16, 200));
     double cosine[200],sine[200];
     if(circular) for(int i=0;i<samples;++i){
         const double a=(samples==1?0.0:(-1.0+2.0*i/(samples-1)))*angle*kPi/360.0;

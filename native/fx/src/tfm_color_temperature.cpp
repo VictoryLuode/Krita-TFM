@@ -71,6 +71,34 @@ void KisFilterColorTemperature::processImpl(KisPaintDeviceSP d, const QRect &r,
     if (blend == 0.0 || (temperature == kReferenceKelvin && tint == 0.0)) { if(u) u->setProgress(100); return; }
     if (tfm::requiresFloatProcessing(d)) {
         const auto gains=temperatureGains(temperature,tint);
+        if (tfm::gpuRequested(id().id(), qint64(r.width()) * r.height())) {
+            auto source = tfm::readEncodedImage(d, r);
+            if (!source.isNull()) {
+                tfm_pointwise_gpu::Parameters gpu;
+                gpu.operation = tfm_pointwise_gpu::Operation::ColorTemperature;
+                gpu.outputRect = r;
+                gpu.p0 = float(temperature);
+                gpu.p1 = float(tint);
+                gpu.p2 = float(blend);
+                gpu.p3 = preserve ? 1.0f : 0.0f;
+                tfm::EncodedRgbaImage output; QString reason, device;
+                if (tfm_pointwise_gpu::renderFloat(source, gpu, output, reason, device,
+                        [u] { return u && u->interrupted(); })) {
+                    if (u && u->interrupted()) return;
+                    if (tfm::writeEncodedImage(d, output, r)) {
+                        tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+                        if (u) u->setProgress(100);
+                        return;
+                    }
+                    reason = QStringLiteral("Float output conversion failed; pixels unchanged");
+                }
+                if (u && u->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+            }
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"),
+                               tfm::cpuBackendReason(id().id(), qint64(r.width()) * r.height()));
+        }
         tfm::transformEncoded(d,r,id().id(),u,[&](float *p,int,int) {
             const auto out=tfm::pointwise::temperature({p[0],p[1],p[2]},gains,blend,preserve,false);
             p[0]=float(out.r); p[1]=float(out.g); p[2]=float(out.b);

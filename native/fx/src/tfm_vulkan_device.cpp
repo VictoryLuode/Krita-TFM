@@ -2,6 +2,7 @@
 // kritatfm.dll must not include it: loading Vulkan inside Krita makes the
 // NVIDIA driver stall the OpenGL/ANGLE canvas until that process exits.
 #include "tfm_vulkan.h"
+#include "tfm_gpu_budget.h"
 
 #include <algorithm>
 #include <chrono>
@@ -485,9 +486,9 @@ bool TfmVulkan::dispatch(const std::vector<std::uint32_t> &spirv,
     auto fail = [&](const std::string &message) { if (errorOut) *errorOut = message; return false; };
     ++m_idleGeneration; // keep the device alive for the duration of this dispatch
     if (!m_impl->device) return fail("Vulkan service is not initialized");
-    constexpr std::size_t budget = 128ULL * 1024 * 1024;
+    const std::size_t budget = std::size_t(tfm::gpuMemoryBudgetBytesFromEnv());
     if (inputSize > budget || outputSize > budget || parametersSize > budget)
-        return fail("Vulkan buffer exceeds 128 MiB processing budget");
+        return fail(tfm::gpuMemoryBudgetExceededMessage("Vulkan buffer", budget));
     if (spirv.empty() || spirv.front() != 0x07230203u || (spirv.size() * sizeof(std::uint32_t)) % 4 != 0)
         return fail("Invalid SPIR-V module (expected 32-bit words with SPIR-V magic)");
     if (!inputData && inputSize) return fail("inputData is null while inputSize is non-zero");

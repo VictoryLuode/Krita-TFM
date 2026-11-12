@@ -1,0 +1,58 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Source { float pixels[]; } src;
+layout(std430, binding = 1) writeonly buffer Output { float pixels[]; } dst;
+layout(std430, binding = 2) readonly buffer Parameters {
+    int width;
+    int height;
+    int radius;
+    int padding;
+} p;
+
+vec3 fetchPixel(ivec2 c) {
+    c = clamp(c, ivec2(0), ivec2(p.width - 1, p.height - 1));
+    int i = (c.y * p.width + c.x) * 4;
+    return vec3(src.pixels[i], src.pixels[i + 1], src.pixels[i + 2]);
+}
+
+vec3 classicKuwahara(ivec2 centre, int radius) {
+    vec3 best = vec3(0.0);
+    float bestVariance = 1e30;
+    for (int q = 0; q < 4; ++q) {
+        int sx = (q & 1) == 0 ? -1 : 1;
+        int sy = (q & 2) == 0 ? -1 : 1;
+        vec3 sum = vec3(0.0);
+        vec3 sumSquares = vec3(0.0);
+        int count = 0;
+        for (int dy = 0; dy <= radius; ++dy) {
+            for (int dx = 0; dx <= radius; ++dx) {
+                vec3 sampleValue = fetchPixel(centre + ivec2(dx * sx, dy * sy));
+                sum += sampleValue;
+                sumSquares += sampleValue * sampleValue;
+                ++count;
+            }
+        }
+        float inv = 1.0 / float(count);
+        vec3 mean = sum * inv;
+        vec3 variance = sumSquares * inv - mean * mean;
+        float total = variance.r + variance.g + variance.b;
+        if (total < bestVariance) {
+            bestVariance = total;
+            best = mean;
+        }
+    }
+    return best;
+}
+
+void main() {
+    ivec2 centre = ivec2(gl_GlobalInvocationID.xy);
+    if (centre.x >= p.width || centre.y >= p.height) return;
+    int i = (centre.y * p.width + centre.x) * 4;
+    float alpha = src.pixels[i + 3];
+    int radius = clamp(p.radius, 1, 16);
+    vec3 result = classicKuwahara(centre, radius);
+    dst.pixels[i] = result.r;
+    dst.pixels[i + 1] = result.g;
+    dst.pixels[i + 2] = result.b;
+    dst.pixels[i + 3] = alpha;
+}

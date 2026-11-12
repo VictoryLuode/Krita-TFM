@@ -199,6 +199,42 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
         if(requested.mode==tfm_flare_gpu::Mode::Anamorphic)
             sources={tfm_flare_gpu::FlareSource{0.5f,0.5f,1.0f,0.06f}};
         if(sources.isEmpty()) return;
+        if (requested.mode == tfm_flare_gpu::Mode::Anamorphic && sources.size() > 1) {
+            const auto strongest = std::max_element(sources.cbegin(), sources.cend(),
+                [](const auto &a, const auto &b) { return a.strength < b.strength; });
+            sources = {*strongest};
+        }
+        const bool wantGpu = tfm::gpuRequested(id, qint64(srcRect.width()) * srcRect.height());
+        if (wantGpu) {
+            tfm_flare_gpu::Parameters gpu;
+            gpu.srcRect = srcRect;
+            gpu.outputRect = outputRect;
+            gpu.mode = requested.mode;
+            gpu.threshold = float(requested.threshold);
+            gpu.length = float(requested.length);
+            gpu.intensity = float(requested.intensity);
+            gpu.tintShift = float(requested.tintShift);
+            gpu.decay = float(requested.decay);
+            gpu.aspect = float(requested.aspect);
+            gpu.blend = float(requested.blend);
+            gpu.sources = sources;
+            tfm::EncodedRgbaImage gpuOutput;
+            QString reason, device;
+            if (tfm_flare_gpu::renderFloat(source, gpu, gpuOutput, reason, device,
+                    [u] { return u && u->interrupted(); })) {
+                if (u && u->interrupted()) return;
+                const auto cropped = gpuOutput.copy(QRect(outputRect.topLeft() - srcRect.topLeft(), outputRect.size()));
+                if (tfm::writeEncodedImage(d, cropped, outputRect)) {
+                    tfm::reportBackend(id, QStringLiteral("gpu"), QString(), device);
+                    if (u) u->setProgress(100);
+                    return;
+                }
+            }
+            if (u && u->interrupted()) return;
+            tfm::reportBackend(id, QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id, QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
         auto output=source.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
         float *pixels=output.pixels.data();
         const auto sample=[&](int x,int y) {
@@ -223,9 +259,10 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
         });
         if(u && u->interrupted()) return;
         const bool written=tfm::writeEncodedImage(d,output,outputRect);
-        tfm::reportBackend(id,QStringLiteral("cpu"),written
-            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
-            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        if (!written) {
+            tfm::reportBackend(id, QStringLiteral("cpu"),
+                QStringLiteral("Float output conversion failed; pixels unchanged"));
+        }
         if(written && u) u->setProgress(100);
         return;
     }
@@ -252,7 +289,7 @@ void runFlare(KisPaintDeviceSP d, const QRect &r,
         sources = {primary};
     }
 
-    if (tfm::gpuRequested(id)) {
+    if (tfm::gpuRequested(id, qint64(srcRect.width()) * srcRect.height())) {
         tfm_flare_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;

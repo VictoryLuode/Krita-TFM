@@ -31,8 +31,8 @@ the two already-deleted files and all original content.
 | 1. Baseline/testing | Python 3.13 + Qt5 runner, separate unit/offline/native/experimental suites, both languages, import isolation, production algorithm tests | Final aggregate results are in the batch-bound validation report |
 | 2. Image correctness | Skin protection and CPU tint fixes; all 17 registered filters audited; high-depth float paths, precise alpha, identity returns, staged/snapshot processing | Actual device, GPU, inference and ICC checks passed; live preview/application remains unverified |
 | 3. Lifecycle | Cancellable bounded worker IPC, structured outcomes, owned-process cleanup, search generations/deadlines, asynchronous close | Fault-injection and local-network checks passed; real external providers remain unverified |
-| 4. Performance | Async bounded thumbnail pool/cache, visible priority, lazy directories, pipeline/buffer cache, calibrated Auto thresholds, scoped CPU waits, stable status layout | Fixed-fixture measurements and interaction regressions recorded in quality-performance.md |
-| 5. Structure | Menu editor/model/shortcuts/scripts, asset views/operations/drag-drop, action/persistence separation; canonical parameter metadata; shared diagnostics | Existing catalog contract, 17 factories/111 parameters, presets and compatibility exports tested |
+| 4. Performance | Async bounded thumbnail pool/cache, visible priority, lazy directories, pipeline/buffer cache, Auto/GPU prefer Vulkan with CPU fallback, scoped CPU waits, stable status layout | Fixed-fixture measurements and interaction regressions recorded in quality-performance.md |
+| 5. Structure | Menu editor/model/shortcuts/scripts, asset views/operations/drag-drop, action/persistence separation; canonical parameter metadata; shared diagnostics | Existing catalog contract, 16 factories, presets and compatibility exports tested |
 | 6. Delivery | Deterministic generation checks, immutable complete batches, shared file inventory, licenses, source/binary/package hash validation, isolated staging and rollback | Candidate package and final verification record; actual-host gate explicitly outstanding |
 
 ## Correctness evidence
@@ -87,11 +87,11 @@ On the fixed 1000-item mixed-asset fixture, directory-switch median changed
 measurements, not a promise for every disk or live document.
 
 All 32 worker-cache comparison outputs remained byte-identical. Shader/pipeline
-LRU capacity is 16; buffers reuse capacity within the existing 128 MiB limit.
+LRU capacity is 16; buffers reuse capacity within the configured GPU memory budget
+(default 1024 MiB, Settings / `TFM_VULKAN_MEMORY_MB`).
 The worker idle lifetime defaults to thirty seconds (`TFM_VULKAN_IDLE_MS`;
-lifecycle tests pin two seconds). Auto backend thresholds use
-actual end-to-end measurements; unsupported/high-depth paths explain CPU fallback.
-Manual GPU choice remains available where the backend supports it.
+lifecycle tests pin two seconds). Auto/GPU prefer Vulkan; unsupported/high-depth
+or rejected worker jobs explain CPU fallback. Explicit CPU remains available.
 
 ## Delivery records
 
@@ -118,10 +118,18 @@ The launcher now refuses that environment before opening the GUI. Re-running
 `scripts/host_acceptance.py` on this machine still exits before a GUI start for
 the same Known Folder reason (and requires a source-matching native batch).
 
-Live preview/apply, undo/redo, preset reopening, asset canvas insertion, native
-panel integration and external search/browser provider smoke tests remain
+Live preview/apply, undo/redo, preset reopening, asset canvas insertion and native
+panel integration remain unverified. Offline search Backend wiring is covered by
+`scripts/smoke_search_providers.py`; live Google/Pinterest browser sessions remain
 unverified. A separate OS user/test environment is required to run the isolated
 live-host probe. Offline checks are not substituted for this acceptance.
 Existing Focus Blur F32 filter-mask limits and unsupported nonlinear ICC cases
 are documented in quality-compatibility.md. Formal deployment, versioning and
 release remain separate user decisions.
+
+## 0.1.10 polish
+
+Deployed to the local Scoop Krita + ResourceDirectory after filter hot-sync,
+CPU-thread mtime refresh, Guided/Flare float GPU, BiRefNet in-filter CTA,
+module splits, Relight research doc, GEGL license checklist, and search smoke.
+Bloom diffusion / float bloom GPU remain CPU-only by documented policy.

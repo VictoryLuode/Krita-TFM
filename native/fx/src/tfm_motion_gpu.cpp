@@ -1,8 +1,10 @@
 #include "tfm_motion_gpu.h"
+#include "tfm_processing.h"
 #include "tfm_vulkan.h"
 #include "tfm_motion_spv.h"
 
 #include <QDebug>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -25,7 +27,6 @@ struct Parameters {
 static_assert(sizeof(Parameters) == 112, "Motion shader parameter layout mismatch");
 static_assert(offsetof(Parameters, centerX) == 64, "Motion shader float layout mismatch");
 static_assert(offsetof(Parameters, defaultR) == 96, "Motion shader default pixel layout mismatch");
-constexpr std::uint64_t memoryBudget = 128ULL * 1024 * 1024;
 }
 
 bool render(const tfm::FloatRgbaImage &source, const QRect &stored,
@@ -55,11 +56,12 @@ bool render(const tfm::FloatRgbaImage &source, const QRect &stored,
         reason = QStringLiteral("Invalid motion geometry");
         return false;
     }
+    const std::uint64_t memoryBudget = tfm::gpuMemoryBudgetBytes();
     const std::uint64_t inputBytes = std::uint64_t(source.width) * source.height * 4 * sizeof(float);
     const std::uint64_t outputBytes = std::uint64_t(outputRect.width()) * outputRect.height() * 4 * sizeof(float);
     if (inputBytes > memoryBudget || outputBytes > memoryBudget
         || inputBytes + outputBytes + sizeof(Parameters) > memoryBudget) {
-        reason = QStringLiteral("Motion buffers exceed 128 MiB budget");
+        reason = tfm::gpuMemoryBudgetExceeded(QStringLiteral("Motion buffers"));
         return false;
     }
     // Single precision cannot preserve unit pixel coordinates arbitrarily far
@@ -80,7 +82,12 @@ bool render(const tfm::FloatRgbaImage &source, const QRect &stored,
         outputRect.x(), outputRect.y(), outputRect.width(), outputRect.height(),
         frame.x(), frame.y(), frame.width(), frame.height(),
         float(centerX), float(centerY), float(angle), float(factor),
-        circular ? 1 : 0, (circular ? angle == 0.0 : factor == 0.0) ? 1 : 200, 0, 0,
+        circular ? 1 : 0,
+        (circular ? angle == 0.0 : factor == 0.0)
+            ? 1
+            : (circular ? std::clamp(int(std::lround(16.0 + angle * 0.5)), 16, 200)
+                        : std::clamp(int(std::lround(24.0 + std::abs(factor) * 160.0)), 16, 200)),
+        0, 0,
         d[0], d[1], d[2], d[3]
     };
     try {

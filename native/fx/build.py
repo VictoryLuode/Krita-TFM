@@ -187,10 +187,14 @@ def main():
     if source_match is None:
         raise SystemExit('Missing KRITA_TFM_SOURCES')
     required = set(re.findall(r'\b[\w.-]+\.cpp\b', source_match.group(1)))
-    actual = {Path(e['file']).name.replace('filtermanager', 'tfm') for e in entries} - {'mocs_compilation.cpp'}
+    def mapped_name(entry):
+        return Path(entry['file']).name.replace('filtermanager', 'tfm')
+    actual = {mapped_name(e) for e in entries} - {'mocs_compilation.cpp'}
     stale = actual - required
     if stale:
-        raise SystemExit(f'Reference source has stale entries: {stale}')
+        # Host filtermanager may still list sources TFM intentionally removed.
+        print('Ignoring host-only reference sources:', ', '.join(sorted(stale)))
+        entries = [e for e in entries if mapped_name(e) in required or mapped_name(e) == 'mocs_compilation.cpp']
     extra_sources = sorted(required - actual)
     template_entry = next(e for e in entries if Path(e['file']).name != 'mocs_compilation.cpp')
     for extra_name in extra_sources:

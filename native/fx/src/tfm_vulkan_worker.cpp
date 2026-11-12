@@ -4,6 +4,7 @@
 
 #include "tfm_vulkan.h"
 #include "tfm_vulkan_ipc.h"
+#include "tfm_gpu_budget.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -73,7 +74,8 @@ int serve()
             || !tfm_vulkan_ipc::readU32(read, paramBytes) || !tfm_vulkan_ipc::readU32(read, outputBytes)
             || !tfm_vulkan_ipc::readExact(read, groups, sizeof(groups))
             || !tfm_vulkan_ipc::readExact(read, bindings, sizeof(bindings))) return 1;
-        constexpr std::uint32_t kBudget = 128u * 1024u * 1024u;
+        const std::uint64_t budgetBytes = tfm::gpuMemoryBudgetBytesFromEnv();
+        const std::uint32_t kBudget = std::uint32_t(std::min<std::uint64_t>(budgetBytes, 0xffffffffu));
         if (spirvBytes == 0 || spirvBytes > kBudget || inputBytes > kBudget || paramBytes > kBudget
             || outputBytes == 0 || outputBytes > kBudget || spirvBytes % sizeof(std::uint32_t) != 0) {
             return 1;

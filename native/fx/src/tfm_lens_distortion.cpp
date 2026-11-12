@@ -126,7 +126,11 @@ void renderLens(const QRect &frame,const QRect &outputRect,bool horizontal,doubl
             }
 
             auto distortionScale = [distanceSquared](double value) {
-                return 1.0 / (1.0 + std::sqrt(std::max(0.0, 1.0 - value * distanceSquared)));
+                // Division model plus a mild cubic Brown-Conrady term for outer rays.
+                const double radial = value * distanceSquared;
+                const double division = 1.0 / (1.0 + std::sqrt(std::max(0.0, 1.0 - radial)));
+                const double cubic = 1.0 + 0.08 * radial * distanceSquared;
+                return division * cubic;
             };
 
             const double redScale = distortionScale(chromatic[0]);
@@ -262,36 +266,56 @@ void KisFilterLensDistortion::processImpl(KisPaintDeviceSP device,
     if(tfm::requiresFloatProcessing(device)) {
         const auto source=tfm::readEncodedImage(pristine,frame);
         if(source.isNull()) return;
-        tfm::EncodedRgbaImage output{outputRect.width(),outputRect.height(),QVector<float>(outputRect.width()*outputRect.height()*4)};
-        const float *src=source.pixels.constData();
-        float *dst=output.pixels.data();
-        renderLens(frame,outputRect,horizontal,distortion,dispersion,fit,jitter,updater,
-            [&](double x,double y) {
-                std::array<double,4> value{};
-                if(x<-.5 || y<-.5 || x>source.width-.5 || y>source.height-.5) return value;
-                const double sx=std::clamp(x,0.0,double(source.width-1)),sy=std::clamp(y,0.0,double(source.height-1));
-                const int x0=int(sx),y0=int(sy),x1=std::min(x0+1,source.width-1),y1=std::min(y0+1,source.height-1);
-                const double fx=sx-x0,fy=sy-y0;
-                for(int c=0;c<4;++c) {
-                    const double top=(1-fx)*src[4*(y0*source.width+x0)+c]+fx*src[4*(y0*source.width+x1)+c];
-                    const double bottom=(1-fx)*src[4*(y1*source.width+x0)+c]+fx*src[4*(y1*source.width+x1)+c];
-                    value[c]=(1-fy)*top+fy*bottom;
-                }
-                return value;
-            },[&](int x,int y,std::array<double,4> value) {
-                for(int c=0;c<4;++c) dst[4*(y*output.width+x)+c]=float(value[c]);
-            });
+        tfm::EncodedRgbaImage output;
+        QString reason;
+        QString gpuDevice;
+        bool usedGpu = false;
+        if (tfm::gpuRequested(id().id(), qint64(outputRect.width()) * outputRect.height())) {
+            usedGpu = tfm_lens_gpu::renderFloat(source, frame, outputRect, horizontal, distortion,
+                                                dispersion, fit, jitter, output, reason, gpuDevice,
+                                                [updater] { return updater && updater->interrupted(); });
+            if (updater && updater->interrupted()) return;
+            if (!usedGpu) tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
+        if (!usedGpu) {
+            output = tfm::EncodedRgbaImage{outputRect.width(), outputRect.height(),
+                                           QVector<float>(outputRect.width() * outputRect.height() * 4)};
+            const float *src = source.pixels.constData();
+            float *dst = output.pixels.data();
+            renderLens(frame, outputRect, horizontal, distortion, dispersion, fit, jitter, updater,
+                [&](double x, double y) {
+                    std::array<double, 4> value{};
+                    if (x < -.5 || y < -.5 || x > source.width - .5 || y > source.height - .5) return value;
+                    const double sx = std::clamp(x, 0.0, double(source.width - 1));
+                    const double sy = std::clamp(y, 0.0, double(source.height - 1));
+                    const int x0 = int(sx), y0 = int(sy);
+                    const int x1 = std::min(x0 + 1, source.width - 1), y1 = std::min(y0 + 1, source.height - 1);
+                    const double fx = sx - x0, fy = sy - y0;
+                    for (int c = 0; c < 4; ++c) {
+                        const double top = (1 - fx) * src[4 * (y0 * source.width + x0) + c]
+                            + fx * src[4 * (y0 * source.width + x1) + c];
+                        const double bottom = (1 - fx) * src[4 * (y1 * source.width + x0) + c]
+                            + fx * src[4 * (y1 * source.width + x1) + c];
+                        value[c] = (1 - fy) * top + fy * bottom;
+                    }
+                    return value;
+                }, [&](int x, int y, std::array<double, 4> value) {
+                    for (int c = 0; c < 4; ++c) dst[4 * (y * output.width + x) + c] = float(value[c]);
+                });
+        }
         if(updater && updater->interrupted()) return;
         const bool written=tfm::writeEncodedImage(device,output,outputRect);
-        tfm::reportBackend(id().id(),QStringLiteral("cpu"),written
-            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
-            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
+            written ? QString() : QStringLiteral("Float output conversion failed; pixels unchanged"),
+            usedGpu ? gpuDevice : QString());
         if(written && updater) updater->setProgress(100);
         return;
     }
     const QImage source = tfm::readImage(pristine, frame);
     if (source.isNull()) return;
-    if (tfm::gpuRequested(id().id())) {
+    if (tfm::gpuRequested(id().id(), qint64(outputRect.width()) * outputRect.height())) {
         QImage gpuOutput;
         QString reason;
         QString gpuDevice;

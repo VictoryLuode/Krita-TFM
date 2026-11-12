@@ -5,9 +5,23 @@
 #include <cmath>
 
 namespace tfm { namespace bloom {
+// Multi-scale diffusion: successive box passes with growing radii approximate a
+// mip/pyramid bloom without extra full-resolution buffers.
 constexpr int blurPasses = 3;
 inline int boundedRadius(int radius) { return std::clamp(radius, 1, 64); }
-inline int halo(int radius) { return blurPasses * boundedRadius(radius); }
+inline int levelRadius(int radius, int level)
+{
+    // Finest → coarsest: r/4, r/2, r (clamped).
+    const int base = boundedRadius(radius);
+    const int shift = std::max(0, blurPasses - 1 - std::clamp(level, 0, blurPasses - 1));
+    return std::max(1, base >> shift);
+}
+inline int halo(int radius)
+{
+    int sum = 0;
+    for (int level = 0; level < blurPasses; ++level) sum += levelRadius(radius, level);
+    return sum;
+}
 
 // A quadratic knee joins zero to the hard excess continuously with a
 // continuous first derivative. Softness is an absolute luminance width (0..1).
@@ -52,7 +66,7 @@ inline QImage diffuse(const QImage &input, double threshold, int radius,
     if (source.isNull() || strength<=0) return out;
     radius = boundedRadius(radius);
     threshold = std::clamp(threshold,0.0,1.0);
-    QVector<Light> light(source.width()*source.height()), temp(light.size());
+    QVector<Light> light(source.width()*source.height()), temp(light.size()), accum(light.size());
     for (int y=0; y<source.height(); ++y) {
         const QRgb *row = reinterpret_cast<const QRgb *>(source.constScanLine(y));
         for (int x=0; x<source.width(); ++x) {
@@ -63,10 +77,16 @@ inline QImage diffuse(const QImage &input, double threshold, int radius,
             light[y*source.width()+x]={qRed(p)*gain,qGreen(p)*gain,qBlue(p)*gain};
         }
     }
-    for (int pass=0; pass<blurPasses; ++pass) {
-        boxPass(light,temp,source.width(),source.height(),radius,true);
-        boxPass(temp,light,source.width(),source.height(),radius,false);
+    // Multi-scale: blur the extract at growing radii and accumulate.
+    constexpr double weights[blurPasses] = {0.45, 0.35, 0.20};
+    for (int level = 0; level < blurPasses; ++level) {
+        const int r = levelRadius(radius, level);
+        boxPass(light, temp, source.width(), source.height(), r, true);
+        boxPass(temp, light, source.width(), source.height(), r, false);
+        const double w = weights[level];
+        for (int i = 0; i < accum.size(); ++i) accum[i] = accum[i] + light[i] * w;
     }
+    light = accum;
     for (int y=0; y<source.height(); ++y) {
         QRgb *row=reinterpret_cast<QRgb *>(out.scanLine(y));
         for (int x=0; x<source.width(); ++x) {

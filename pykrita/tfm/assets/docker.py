@@ -394,9 +394,9 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
         if kind in ("separator", "title"):
             marker_id = item.data(0, _ID_ROLE) or ""
             if kind == "title":
-                message = 'Delete the title "{}"?'.format(item.text(0))
+                message = tr('Delete the title "{}"?', '删除标题 "{}"？').format(item.text(0))
             else:
-                message = "Delete this separator?"
+                message = tr("Delete this separator?", "删除此分隔符？")
             if not self._confirm(message):
                 return
             try:
@@ -411,7 +411,7 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
             self._set_status(tr("Select a folder first.", "请先选择文件夹。"))
             return
         label = rel.rsplit("/", 1)[-1]
-        if not self._confirm('Delete the folder "{}" and the images inside it?'.format(label)):
+        if not self._confirm(tr('Delete the folder "{}" and the images inside it?', '删除文件夹 "{}" 及其内图片？').format(label)):
             return
         parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
         try:
@@ -420,7 +420,7 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
             self._set_status(str(error))
             return
         self._forget_view_modes(rel)
-        self._reload(parent, status='Deleted "{}".'.format(label))
+        self._reload(parent, status=tr('Deleted "{}".', '已删除 "{}"。').format(label))
 
     def _delete_images(self):
         rels = self._selected_rels()
@@ -428,9 +428,9 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
             return
         if len(rels) == 1:
             label = os.path.splitext(os.path.basename(rels[0]))[0]
-            message = 'Delete "{}" from the asset library?'.format(label)
+            message = tr('Delete "{}" from the asset library?', '从资产库删除 "{}"？').format(label)
         else:
-            message = "Delete {} images from the asset library?".format(len(rels))
+            message = tr("Delete {} images from the asset library?", "从资产库删除 {} 张图片？").format(len(rels))
         if not self._confirm(message):
             return
         removed = 0
@@ -516,7 +516,7 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
             return
         self._retarget_view_modes(rel, renamed)
         QTimer.singleShot(0, lambda renamed=renamed, label=label: self._reload(
-            renamed, status='Renamed to "{}".'.format(label)))
+            renamed, status=tr('Renamed to "{}".', '已重命名为 "{}"。').format(label)))
 
     def _title_edited(self, item):
         marker_id = item.data(0, _ID_ROLE) or ""
@@ -578,7 +578,7 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
 
     def _tell(self, text):
         if text:
-            QMessageBox.warning(self, "Asset Library", text)
+            QMessageBox.warning(self, tr("Asset Library", "资产库"), text)
 
 
 
@@ -590,7 +590,7 @@ class AssetLibraryDocker(AssetViewMixin, AssetOperationsMixin, AssetDragDropMixi
             self.grid.setCurrentItem(item)
         rels = self._selected_rels()
         menu = QMenu(self)
-        save = menu.addAction("Save Asset", self._save_active_asset)
+        save = menu.addAction(tr("Save Asset", "保存资产"), self._save_active_asset)
         insert = menu.addAction("Insert", self._insert_selected)
         reference = menu.addAction("Place as Reference", self._insert_selected_as_reference)
         rename = menu.addAction("Rename", self._begin_image_rename)

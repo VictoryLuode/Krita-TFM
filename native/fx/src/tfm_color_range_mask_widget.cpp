@@ -23,10 +23,13 @@ ColorRangeMaskConfigurationWidget::ColorRangeMaskConfigurationWidget(const QStri
     m_channel->addItem(QStringLiteral("B"), QStringLiteral("b"));
     m_channel->addItem(i18n("Hue"), QStringLiteral("hue"));
     m_channel->addItem(i18n("Saturation"), QStringLiteral("saturation"));
-    m_channel->setToolTip(i18n("Hue uses a circular range in turns (0 to 1 = 0 to 360 degrees). "
-                              "Min > Max wraps across red. Gray pixels (zero saturation, including black and white) "
-                              "are excluded from hue selection; Invert includes them. "
-                              "Saturation uses HSV saturation from 0 (gray) to 1 (fully saturated)."));
+    m_channel->addItem(i18n("Lightness (OKLab)"), QStringLiteral("lightness"));
+    m_channel->addItem(i18n("Chroma (OKLab)"), QStringLiteral("chroma"));
+    m_channel->addItem(i18n("OKLab Hue"), QStringLiteral("ok_hue"));
+    m_channel->addItem(i18n("ΔE from mid-gray"), QStringLiteral("delta_e"));
+    m_channel->setToolTip(i18n("Hue uses a circular HSV range (0..1). OKLab Lightness/Chroma/Hue are perceptual. "
+                              "ΔE measures OKLab distance from mid-gray. Min > Max wraps across red for hue channels. "
+                              "Gray pixels are excluded from hue selection; Invert includes them."));
     layout->addRow(i18n("Channel"), m_channel);
 
     auto addRange = [&](const QString &key, const QString &label, double value, double maximum = 1.0) {

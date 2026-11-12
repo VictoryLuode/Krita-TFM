@@ -18,4 +18,30 @@ For provenance, upstream GEGL 0.4.72 marks [focus-blur.c](https://raw.githubuser
 
 Before any bundled redistribution, identify the exact DLL versions, their corresponding source and build modifications, transitive dependencies, copyright notices and applicable licenses; prepare the required notices, license texts and corresponding-source or replacement arrangements for the distribution method. Assess TFM's own code provenance and licensing separately. This is an outstanding release review, not a conclusion that a particular bundle is compliant.
 
+## Product policy: never redistribute GIMP/GEGL
+
+**Decision (closed):** TFM packages and installers must **not** ship GIMP,
+GEGL, babl, or curated `TFM/gegl/modules-v1/` trees. Focus / Motion only load
+from a GIMP installation the user already has (or an explicit local
+`TFM_GEGL_PREFIX`). First-run copies under the ResourceDirectory are
+machine-local caches of *that* install, not redistributable product content.
+
+This avoids the GPL/LGPL redistribution checklist for TFM zip/installer
+releases. If a future release ever bundles those binaries, reopen the full
+license/source inventory below before shipping.
+
+| Item | Status | Notes |
+|---|---|---|
+| Decision: ship curated modules vs require local GIMP discovery only | **local discovery only** | Never include GEGL/GIMP DLLs in TFM zip/installer |
+| Exact GIMP version / GEGL / babl build ids on the source machine | n/a (no redistribute) | Only needed if bundling is revisited |
+| SHA-256 inventory of every redistributed DLL / module | n/a (no redistribute) | |
+| Per-file copyright / license (LGPL-2.1+, LGPL-3.0+, GPL-3.0+, others) | n/a (no redistribute) | |
+| Transitive runtime deps (glib, pango, cairo, OpenCL stubs, …) | n/a (no redistribute) | |
+| Required license texts + notices packaged beside the binaries | n/a (no redistribute) | |
+| Corresponding-source / written offer for GPL components if applicable | n/a (no redistribute) | |
+| Confirmation TFM’s own code and shaders are inventoried separately | keep separate | TFM code ≠ GIMP redistributables |
+
+Local use of modules generated from the user’s own GIMP install is not the
+same as redistributing those DLLs. Keep that distinction in release notes.
+
 Offline validation uses the unchanged native KisFilter regression harness linked against production objects, with no GEGL_PATH, BABL_PATH, TFM_GEGL_PREFIX or test prelicense. Use a private kritarc ResourceDirectory, configuration directories and an existing empty KRITA_PLUGIN_PATH. The installed Krita runtime uses its bin directory as QT_PLUGIN_PATH (platforms is inside bin). A successful standalone regression alone does not establish live host filter-layer scheduling or UI behavior.

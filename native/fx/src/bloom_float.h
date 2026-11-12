@@ -23,15 +23,20 @@ inline EncodedRgbaImage renderFloat(const EncodedRgbaImage &source,double thresh
                 light[y*width+x]={p[0]*gain,p[1]*gain,p[2]*gain};
             }
         }
-        for(int pass=0;pass<blurPasses;++pass) {
+        QVector<Light> accum(light.size());
+        constexpr double weights[blurPasses] = {0.45, 0.35, 0.20};
+        for(int level=0;level<blurPasses;++level) {
             if(updater && updater->interrupted()) return {};
-            boxPass(light,temp,width,height,radius,true);
+            const int r=levelRadius(radius,level);
+            boxPass(light,temp,width,height,r,true);
             if(updater && updater->interrupted()) return {};
-            boxPass(temp,light,width,height,radius,false);
+            boxPass(temp,light,width,height,r,false);
+            const double w=weights[level];
+            for(int i=0;i<accum.size();++i) accum[i]=accum[i]+light[i]*w;
         }
         for(int i=0;i<width*height;++i) {
             if(!dst[i*4+3]) continue;
-            const auto glow=light[i]*std::clamp(strength,0.0,2.0);
+            const auto glow=accum[i]*std::clamp(strength,0.0,2.0);
             dst[i*4]+=float(glow.r); dst[i*4+1]+=float(glow.g); dst[i*4+2]+=float(glow.b);
         }
     } else {

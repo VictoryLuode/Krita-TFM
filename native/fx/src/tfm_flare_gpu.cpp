@@ -2,6 +2,7 @@
 #include "tfm_processing.h"
 #include "tfm_vulkan.h"
 #include "tfm_flare_spv.h"
+#include "tfm_flare_float_spv.h"
 
 #include <QDebug>
 #include <algorithm>
@@ -71,8 +72,18 @@ QVector<FlareSource> detectSourcesImpl(int width,int height,double threshold,int
     const double range = std::max(1e-4, 1.0 - threshold);
     for (const Candidate &c : candidates) {
         if (found.size() >= maxSources) break;
-        const float x = float((c.gx + 0.5) / double(gridW));
-        const float y = float((c.gy + 0.5) / double(gridH));
+        // Refine peak to a luminance-weighted centroid in a 3x3 grid neighbourhood.
+        double sumW = 0.0, sumX = 0.0, sumY = 0.0;
+        for (int ny = std::max(0, c.gy - 1); ny <= std::min(gridH - 1, c.gy + 1); ++ny) {
+            for (int nx = std::max(0, c.gx - 1); nx <= std::min(gridW - 1, c.gx + 1); ++nx) {
+                const double w = std::max(0.0, double(luminance[std::size_t(ny) * gridW + nx]) - threshold);
+                sumW += w;
+                sumX += (nx + 0.5) * w;
+                sumY += (ny + 0.5) * w;
+            }
+        }
+        const float x = float((sumW > 1e-6 ? sumX / sumW : (c.gx + 0.5)) / double(gridW));
+        const float y = float((sumW > 1e-6 ? sumY / sumW : (c.gy + 0.5)) / double(gridH));
         // Skip peaks that land almost on top of one already accepted.
         bool tooClose = false;
         for (const FlareSource &existing : found) {
@@ -83,7 +94,8 @@ QVector<FlareSource> detectSourcesImpl(int width,int height,double threshold,int
         source.x = x;
         source.y = y;
         source.strength = float(std::clamp((c.value - threshold) / range, 0.0, 1.0));
-        source.radius = 0.06f;
+        // Brighter sources throw a slightly larger core halo.
+        source.radius = float(0.045 + 0.05 * source.strength);
         found.push_back(source);
     }
     if (found.isEmpty()) {
@@ -179,6 +191,84 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
         return true;
     } catch (const std::bad_alloc &) {
         reason = QStringLiteral("Flare GPU buffer allocation failed");
+        return false;
+    }
+}
+
+bool renderFloat(const tfm::EncodedRgbaImage &source, const Parameters &p,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled)
+{
+    reason.clear();
+    deviceName.clear();
+    if (qEnvironmentVariableIntValue("TFM_VULKAN_DISABLE") != 0) {
+        reason = QStringLiteral("Vulkan disabled by TFM_VULKAN_DISABLE");
+        return false;
+    }
+    if (source.isNull() || p.srcRect.isEmpty()
+        || source.width != p.srcRect.width() || source.height != p.srcRect.height()) {
+        reason = QStringLiteral("Flare float GPU requires a dense EncodedRgbaImage source region");
+        return false;
+    }
+    const std::uint64_t memoryBudget = tfm::gpuMemoryBudgetBytes();
+    const std::uint64_t bytes = std::uint64_t(source.width) * source.height * 4ull * sizeof(float);
+    if (bytes == 0 || bytes > memoryBudget || bytes * 2 + sizeof(ShaderParameters) > memoryBudget) {
+        reason = tfm::gpuMemoryBudgetExceeded(QStringLiteral("Flare float buffers"));
+        return false;
+    }
+    ShaderParameters params{};
+    params.width = source.width;
+    params.height = source.height;
+    params.mode = int(p.mode);
+    params.threshold = p.threshold;
+    params.span = p.length;
+    params.intensity = p.intensity;
+    params.tintShift = p.tintShift;
+    params.decay = p.decay;
+    params.aspect = p.aspect;
+    params.blend = p.blend;
+    params.padding = 0.0f;
+    const int count = std::min(8, int(p.sources.size()));
+    params.sourceCount = std::max(1, count);
+    for (int i = 0; i < count; ++i) {
+        params.sources[i * 4 + 0] = p.sources[i].x;
+        params.sources[i * 4 + 1] = p.sources[i].y;
+        params.sources[i * 4 + 2] = p.sources[i].strength;
+        params.sources[i * 4 + 3] = p.sources[i].radius;
+    }
+    try {
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
+        dispatch.parametersBinding = 2;
+        dispatch.groupsX = (std::uint32_t(source.width) + 15u) / 16u;
+        dispatch.groupsY = (std::uint32_t(source.height) + 15u) / 16u;
+        std::vector<std::uint8_t> result;
+        const auto outcome = vulkan.dispatchResult(
+            std::vector<std::uint32_t>(std::begin(kFlareFloatSpv), std::end(kFlareFloatSpv)),
+            source.pixels.constData(), std::size_t(bytes), &params, sizeof(params),
+            std::size_t(bytes), dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
+            return false;
+        }
+        if (result.size() != bytes) {
+            reason = QStringLiteral("Flare float GPU returned an incomplete image");
+            return false;
+        }
+        tfm::EncodedRgbaImage out;
+        out.width = source.width;
+        out.height = source.height;
+        out.pixels.resize(int(bytes / sizeof(float)));
+        std::memcpy(out.pixels.data(), result.data(), std::size_t(bytes));
+        output = std::move(out);
+        deviceName = QString::fromStdString(vulkan.deviceName());
+        qInfo().noquote() << "TFM Vulkan flare float dispatch completed mode:" << params.mode
+                          << "sources:" << params.sourceCount << "device:" << deviceName;
+        return true;
+    } catch (const std::bad_alloc &) {
+        reason = QStringLiteral("Flare float GPU buffer allocation failed");
         return false;
     }
 }

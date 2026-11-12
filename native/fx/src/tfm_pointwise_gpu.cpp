@@ -1,6 +1,8 @@
 #include "tfm_pointwise_gpu.h"
+#include "tfm_processing.h"
 #include "tfm_vulkan.h"
 #include "tfm_pointwise_spv.h"
+#include "tfm_pointwise_float_spv.h"
 
 #include <QDebug>
 #include <cstdint>
@@ -93,6 +95,94 @@ bool render(const QImage &source, const Parameters &p, QImage &output,
         return true;
     } catch (const std::bad_alloc &) {
         reason = QStringLiteral("Pointwise GPU buffer allocation failed");
+        return false;
+    }
+}
+
+bool renderFloat(const tfm::EncodedRgbaImage &source, const Parameters &p,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled)
+{
+    reason.clear();
+    deviceName.clear();
+    if (qEnvironmentVariableIntValue("TFM_VULKAN_DISABLE") != 0) {
+        reason = QStringLiteral("Vulkan disabled by TFM_VULKAN_DISABLE");
+        return false;
+    }
+    if (source.isNull() || source.width != p.outputRect.width() || source.height != p.outputRect.height()
+        || p.outputRect.isEmpty()) {
+        reason = QStringLiteral("Pointwise float GPU requires a dense EncodedRgbaImage");
+        return false;
+    }
+    if (p.operation == Operation::ColorRangeMask && channelCode(p) < 0) {
+        reason = QStringLiteral("Unsupported color-range channel");
+        return false;
+    }
+    if (p.operation != Operation::FilmGrain && p.operation != Operation::Vignette
+        && p.operation != Operation::ColorTemperature && p.operation != Operation::Vibrance
+        && p.operation != Operation::ColorRangeMask) {
+        reason = QStringLiteral("Pointwise float GPU does not support this operation");
+        return false;
+    }
+    const std::uint64_t memoryBudget = tfm::gpuMemoryBudgetBytes();
+    const std::uint64_t bytes = std::uint64_t(source.width) * source.height * 4ull * sizeof(float);
+    if (bytes == 0 || bytes > memoryBudget || bytes * 2 + sizeof(ShaderParameters) > memoryBudget) {
+        reason = tfm::gpuMemoryBudgetExceeded(QStringLiteral("Pointwise float buffers"));
+        return false;
+    }
+    ShaderParameters params{};
+    params.operation = static_cast<std::int32_t>(p.operation);
+    params.width = source.width;
+    params.height = source.height;
+    params.outputX = p.outputRect.x();
+    params.outputY = p.outputRect.y();
+    params.frameX = p.frame.x(); params.frameY = p.frame.y();
+    params.frameW = p.frame.width(); params.frameH = p.frame.height();
+    params.channel = channelCode(p);
+    params.invert = p.invert ? 1 : 0;
+    params.monochrome = p.monochrome ? 1 : 0;
+    params.seed = static_cast<std::int32_t>(p.seed);
+    params.amount = p.amount; params.size = p.size; params.factor = p.factor;
+    params.feather = p.feather; params.roundness = p.roundness;
+    params.scaleX = p.scaleX; params.scaleY = p.scaleY;
+    params.offsetX = p.offsetX; params.offsetY = p.offsetY; params.angle = p.angle;
+    params.rangeMin = p.rangeMin; params.rangeMax = p.rangeMax; params.softness = p.softness;
+    params.p0 = p.p0; params.p1 = p.p1; params.p2 = p.p2; params.p3 = p.p3;
+    params.p4 = p.p4; params.p5 = p.p5; params.p6 = p.p6; params.p7 = p.p7;
+    params.mode = p.mode;
+    try {
+        static TfmVulkan *instance = new TfmVulkan();
+        TfmVulkan &vulkan = *instance;
+        TfmVulkan::Dispatch dispatch;
+        dispatch.cancelled = cancelled;
+        dispatch.parametersBinding = 2;
+        dispatch.groupsX = (std::uint32_t(source.width) + 15u) / 16u;
+        dispatch.groupsY = (std::uint32_t(source.height) + 15u) / 16u;
+        std::vector<std::uint8_t> result;
+        const auto outcome = vulkan.dispatchResult(
+            std::vector<std::uint32_t>(std::begin(kPointwiseFloatSpv), std::end(kPointwiseFloatSpv)),
+            source.pixels.constData(), std::size_t(bytes), &params, sizeof(params),
+            std::size_t(bytes), dispatch, result);
+        if (!outcome) {
+            reason = QString::fromStdString(outcome.message);
+            return false;
+        }
+        if (result.size() != bytes) {
+            reason = QStringLiteral("Pointwise float GPU returned an incomplete image");
+            return false;
+        }
+        tfm::EncodedRgbaImage out;
+        out.width = source.width;
+        out.height = source.height;
+        out.pixels.resize(int(bytes / sizeof(float)));
+        std::memcpy(out.pixels.data(), result.data(), std::size_t(bytes));
+        output = std::move(out);
+        deviceName = QString::fromStdString(vulkan.deviceName());
+        qInfo().noquote() << "TFM Vulkan pointwise float dispatch completed" << int(p.operation)
+                          << "device:" << deviceName;
+        return true;
+    } catch (const std::bad_alloc &) {
+        reason = QStringLiteral("Pointwise float GPU buffer allocation failed");
         return false;
     }
 }

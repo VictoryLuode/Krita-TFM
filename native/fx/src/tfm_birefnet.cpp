@@ -18,7 +18,7 @@
 
 namespace {
 
-QString modelsDirectory()
+QString resolveModelsDirectory()
 {
     const QString resource = tfm::resourceDirectory();
     const QStringList roots = resource.isEmpty()
@@ -43,9 +43,21 @@ QString modelsDirectory()
     return {};
 }
 
+QString preferredModelsDirectory()
+{
+    const QString found = resolveModelsDirectory();
+    if (!found.isEmpty()) return found;
+    const QString resource = tfm::resourceDirectory();
+    if (!resource.isEmpty())
+        return QDir(resource).filePath(QStringLiteral("TFM/background-removal/models"));
+    const QString fallback = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (fallback.isEmpty()) return {};
+    return QDir(fallback).filePath(QStringLiteral("TFM/background-removal/models"));
+}
+
 QStringList modelFiles()
 {
-    const QDir dir(modelsDirectory());
+    const QDir dir(resolveModelsDirectory());
     QStringList files = dir.entryList({QStringLiteral("BiRefNet-lite-F16.gguf"),
                                        QStringLiteral("BiRefNet-dynamic-F16.gguf")},
                                       QDir::Files, QDir::Name);
@@ -70,6 +82,11 @@ BirefnetRuntime::~BirefnetRuntime() = default;
 QStringList BirefnetRuntime::availableModels() const
 {
     return modelFiles();
+}
+
+QString BirefnetRuntime::modelsDirectory() const
+{
+    return preferredModelsDirectory();
 }
 
 QString BirefnetRuntime::modelName() const
@@ -208,7 +225,7 @@ QString BirefnetRuntime::backendDescription() const
 
 QString BirefnetRuntime::modelPath() const
 {
-    return QDir(modelsDirectory()).filePath(m_modelName);
+    return QDir(preferredModelsDirectory()).filePath(m_modelName);
 }
 
 bool BirefnetRuntime::ensureBackend(QString *error)

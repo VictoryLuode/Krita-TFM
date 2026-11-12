@@ -27,13 +27,6 @@ set(KRITA_TFM_SOURCES
     tfm_drag_spinbox.cpp
     tfm_color_range_mask.cpp
     tfm_color_range_mask_widget.cpp
-    tfm_clipboard_color_match.cpp
-    tfm_clipboard_color_match.h
-    tfm_statistical_transfer.h
-    tfm_statistical_profile.h
-
-    tfm_clipboard_color_match_widget.cpp
-    tfm_clipboard_color_match_widget.h
     tfm_guided_color_match.h
     tfm_guided_widget.h
     tfm_guided_color_match_filter.cpp
@@ -47,6 +40,7 @@ set(KRITA_TFM_SOURCES
     focus_native.h
     tfm_plugin.h
     tfm_processing.h
+    tfm_gpu_budget.h
     tfm_bloom.h
     tfm_film_grain.h
     tfm_lens_distortion.h

@@ -1,5 +1,6 @@
 #include "tfm_processing.h"
 #include "tfm_vulkan.h"
+#include "tfm_gpu_budget.h"
 #include "filter_metadata.h"
 #include "float_profile_transform.h"
 #include "pointwise_math.h"
@@ -207,44 +208,15 @@ QString requestedBackend(const QString &filterId)
 }
 }
 
-namespace {
-int configuredThreadCount();
-bool autoAssumeWarmWorker()
+bool gpuRequested(const QString &filterId, qint64 /*pixels*/)
 {
-    // Offline policy tests can force the warm branch without starting Vulkan.
-    return qEnvironmentVariableIntValue("TFM_AUTO_ASSUME_WARM") == 1 || vulkanWorkerReady();
+    // Auto and GPU both prefer Vulkan; filters fall back to CPU when the worker
+    // rejects the job (unsupported depth, memory, device missing, etc.).
+    return requestedBackend(filterId) != QLatin1String("cpu");
 }
 
-qint64 autoGpuThreshold(const QString &filterId)
+QString cpuBackendReason(const QString & /*filterId*/, qint64 /*pixels*/)
 {
-    const QString id=canonicalFilterId(filterId);
-    // End-to-end U8, one CPU thread, RTX 5090; see docs/quality-performance.md.
-    // Cold crossover for Vibrance was 5120^2; warm GPU already wins from 2048^2.
-    // Idle TTL keeps the worker warm across interactive tweaks so Auto can use
-    // the warmer threshold after the first GPU job (or an explicit GPU probe).
-    if (id == QLatin1String("tfm_vibrance") && configuredThreadCount() <= 1) {
-        return autoAssumeWarmWorker() ? 2048LL * 2048 : 5120LL * 5120;
-    }
-    if (id == QLatin1String("tfm_vibrance") || id == QLatin1String("tfm_color_temperature")
-        || id == QLatin1String("tfm_filmgrain") || id == QLatin1String("tfm_vignette")
-        || id == QLatin1String("tfm_color_range_mask"))
-        return 128LL*1024*1024/4+1; // No measured GPU win within the U8 buffer budget.
-    return 0;
-}
-}
-
-bool gpuRequested(const QString &filterId, qint64 pixels)
-{
-    const QString requested=requestedBackend(filterId);
-    if (requested == QLatin1String("cpu")) return false;
-    if (requested == QLatin1String("gpu")) return true;
-    return pixels < 0 || pixels >= autoGpuThreshold(filterId);
-}
-
-QString cpuBackendReason(const QString &filterId, qint64 pixels)
-{
-    if (requestedBackend(filterId) == QLatin1String("auto") && pixels >= 0 && pixels < autoGpuThreshold(filterId))
-        return QStringLiteral("Auto: CPU selected by measured image-size threshold");
     return QStringLiteral("CPU selected");
 }
 
@@ -354,22 +326,71 @@ namespace {
 
 int configuredThreadCount()
 {
-    static const int cached = [] {
-        const QByteArray raw = qgetenv("TFM_THREADS");
-        if (!raw.isEmpty()) {
-            bool ok = false;
-            const int value = raw.toInt(&ok);
-            if (ok && value > 0) return value;
+    const QByteArray raw = qgetenv("TFM_THREADS");
+    if (!raw.isEmpty()) {
+        bool ok = false;
+        const int value = raw.toInt(&ok);
+        if (ok && value > 0) return value;
+    }
+    struct ThreadCache {
+        QString path;
+        qint64 mtime = -1;
+        int threads = 0;
+    };
+    static ThreadCache cache;
+    migrateLegacySettings();
+    const QString path = settingsReadPath();
+    qint64 mtime = 0;
+    if (!path.isEmpty()) {
+        const QFileInfo info(path);
+        mtime = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    }
+    if (path == cache.path && mtime == cache.mtime) return cache.threads;
+    cache.path = path;
+    cache.mtime = mtime;
+    cache.threads = 0;
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) {
+        const int value = QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("cpu_threads")).toInt(0);
+        if (value > 0) cache.threads = value;
+    }
+    return cache.threads;
+}
+
+std::uint64_t configuredGpuMemoryBudgetMb()
+{
+    if (qEnvironmentVariableIsSet("TFM_VULKAN_MEMORY_MB")) {
+        bool ok = false;
+        const qint64 value = qgetenv("TFM_VULKAN_MEMORY_MB").toLongLong(&ok);
+        if (ok && value > 0) return clampGpuMemoryBudgetMb(std::uint64_t(value));
+    }
+    struct MemoryCache {
+        QString path;
+        qint64 mtime = -1;
+        std::uint64_t mb = kDefaultGpuMemoryBudgetMb;
+    };
+    static MemoryCache cache;
+    migrateLegacySettings();
+    const QString path = settingsReadPath();
+    qint64 mtime = 0;
+    if (!path.isEmpty()) {
+        const QFileInfo info(path);
+        mtime = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    }
+    if (path == cache.path && mtime == cache.mtime) return cache.mb;
+    cache.path = path;
+    cache.mtime = mtime;
+    cache.mb = kDefaultGpuMemoryBudgetMb;
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonValue value = QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("gpu_memory_mb"));
+        if (value.isDouble()) {
+            const double raw = value.toDouble();
+            if (std::isfinite(raw) && raw > 0)
+                cache.mb = clampGpuMemoryBudgetMb(std::uint64_t(std::llround(raw)));
         }
-        migrateLegacySettings();
-        QFile file(settingsReadPath());
-        if (file.open(QIODevice::ReadOnly)) {
-            const int value = QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("cpu_threads")).toInt(0);
-            if (value > 0) return value;
-        }
-        return 0;
-    }();
-    return cached;
+    }
+    return cache.mb;
 }
 
 int workerCount(int rows)
@@ -400,6 +421,16 @@ private:
 };
 
 } // namespace
+
+std::uint64_t gpuMemoryBudgetBytes()
+{
+    return configuredGpuMemoryBudgetMb() * 1024ull * 1024ull;
+}
+
+QString gpuMemoryBudgetExceeded(const QString &what)
+{
+    return QStringLiteral("%1 exceed %2 MiB budget").arg(what).arg(configuredGpuMemoryBudgetMb());
+}
 
 QImage readImage(KisPaintDeviceSP device, const QRect &rect)
 {
@@ -630,7 +661,7 @@ bool transformEncoded(KisPaintDeviceSP device, const QRect &rect, const QString 
     if(updater && updater->interrupted()) return false;
     const bool written=writeEncodedImage(device,output,rect);
     reportBackend(filter,QStringLiteral("cpu"),written
-        ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
+        ? QStringLiteral("High-depth CPU")
         : QStringLiteral("Float output conversion failed; pixels unchanged"));
     if(written && updater) updater->setProgress(100);
     return written;
@@ -640,13 +671,12 @@ void parallelRows(int rows, const std::function<void(int, int)> &body)
 {
     const int workers = workerCount(rows);
     if (workers <= 1 || insideBand) { body(0, rows); return; }
-    // One fixed concurrency cap for this plugin, not a resized pool per patch.
+    // Shared pool; max threads follow TFM/settings.json cpu_threads (mtime refresh).
     // Krita already schedules tiles; the default remains a single CPU worker.
-    static QThreadPool *pool = [] {
-        auto *value = new QThreadPool;
-        value->setMaxThreadCount(workerCount(32));
-        return value;
-    }();
+    static QThreadPool *pool = new QThreadPool;
+    const int configured = configuredThreadCount();
+    const int maxThreads = std::clamp(configured > 0 ? configured : 1, 1, 32);
+    if (pool->maxThreadCount() != maxThreads) pool->setMaxThreadCount(maxThreads);
     auto done = std::make_shared<QSemaphore>(0);
     const int band = (rows + workers - 1) / workers;
     int launched = 0;

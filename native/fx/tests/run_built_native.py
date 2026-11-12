@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from run_statistical_regions_native import split
+from run_native_util import split
 
 
 def main():

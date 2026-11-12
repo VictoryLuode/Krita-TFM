@@ -29,6 +29,10 @@ colormask::Settings settingsFrom(const KisFilterConfigurationSP &c)
     else if (channel == QLatin1String("b")) s.channel = colormask::Settings::Channel::Blue;
     else if (channel == QLatin1String("hue")) s.channel = colormask::Settings::Channel::Hue;
     else if (channel == QLatin1String("saturation")) s.channel = colormask::Settings::Channel::Saturation;
+    else if (channel == QLatin1String("lightness")) s.channel = colormask::Settings::Channel::Lightness;
+    else if (channel == QLatin1String("chroma")) s.channel = colormask::Settings::Channel::Chroma;
+    else if (channel == QLatin1String("ok_hue")) s.channel = colormask::Settings::Channel::OkHue;
+    else if (channel == QLatin1String("delta_e")) s.channel = colormask::Settings::Channel::DeltaE;
     else s.channel = colormask::Settings::Channel::Gray;
     s.rangeMin = colormask::clamp01(c->getDouble("range_min", 0.0));
     s.rangeMax = colormask::clamp01(c->getDouble("range_max", 1.0));
@@ -72,10 +76,31 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     const colormask::Settings s = settingsFrom(config);
 
     if(tfm::requiresFloatProcessing(device)) {
-        const auto colours=tfm::readEncodedImage(device,applyRect);
+        auto colours=tfm::readEncodedImage(device,applyRect);
         if(colours.isNull()) return;
-        // The colour conversion is used only to evaluate selection. Keep the
-        // original colour bytes, including out-of-gamut and hidden RGB.
+        QString reason;
+        QString gpuDevice;
+        bool usedGpu = false;
+        QVector<float> originalAlpha;
+        if (tfm::gpuRequested(id().id(), qint64(applyRect.width()) * applyRect.height())) {
+            const int pixels = applyRect.width() * applyRect.height();
+            originalAlpha.resize(pixels);
+            for (int i = 0; i < pixels; ++i) originalAlpha[i] = colours.pixels[i * 4 + 3];
+            tfm_pointwise_gpu::Parameters gpu;
+            gpu.operation = tfm_pointwise_gpu::Operation::ColorRangeMask;
+            gpu.outputRect = applyRect;
+            gpu.channel = static_cast<int>(s.channel);
+            gpu.rangeMin = float(s.rangeMin);
+            gpu.rangeMax = float(s.rangeMax);
+            gpu.softness = float(s.softness);
+            gpu.invert = s.invert ? 1 : 0;
+            tfm::EncodedRgbaImage masked;
+            usedGpu = tfm_pointwise_gpu::renderFloat(colours, gpu, masked, reason, gpuDevice,
+                [progressUpdater] { return progressUpdater && progressUpdater->interrupted(); });
+            if (usedGpu) colours = masked;
+            else if (progressUpdater && progressUpdater->interrupted()) return;
+        }
+        // Keep original colour bytes; only opacity is scaled from the mask pass.
         const auto *space=device->colorSpace();
         QByteArray raw(applyRect.width()*applyRect.height()*space->pixelSize(),Qt::Uninitialized);
         device->readBytes(reinterpret_cast<quint8*>(raw.data()),applyRect);
@@ -86,7 +111,13 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
                 for(int x=0;x<applyRect.width();++x) {
                     const int i=y*applyRect.width()+x;
                     const auto *p=colours.pixels.constData()+i*4;
-                    const double factor=colormask::alphaFactor(p[0],p[1],p[2],s);
+                    double factor;
+                    if (usedGpu) {
+                        const double original = originalAlpha[i];
+                        factor = original > 0.0 ? double(p[3]) / original : 0.0;
+                    } else {
+                        factor = colormask::alphaFactor(p[0], p[1], p[2], s);
+                    }
                     auto *pixel=dst+i*space->pixelSize();
                     if(factor!=1.0) space->setOpacity(pixel,space->opacityF(pixel)*factor,1);
                 }
@@ -94,7 +125,10 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
         });
         if(progressUpdater && progressUpdater->interrupted()) return;
         device->writeBytes(reinterpret_cast<const quint8*>(raw.constData()),applyRect);
-        tfm::reportBackend(id().id(),QStringLiteral("cpu"),QStringLiteral("High-depth CPU mask; original colour channels retained"));
+        tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
+            usedGpu ? QString() : (tfm::gpuRequested(id().id())
+                ? reason : QStringLiteral("High-depth CPU mask; original colour channels retained")),
+            usedGpu ? gpuDevice : QString());
         if(progressUpdater) progressUpdater->setProgress(100);
         return;
     }

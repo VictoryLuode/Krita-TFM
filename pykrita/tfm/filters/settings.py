@@ -13,6 +13,7 @@ _OPTIONS = {
     "gpu_fallback": "cpu",
     "cpu_threads": 0,
     "cpu_thread_limit": 32,
+    "gpu_memory_mb": 1024,
 
     "managed_filters": [entry["id"] for entry in FILTERS],
     "enabled_filters": [entry["id"] for entry in FILTERS],
@@ -23,6 +24,8 @@ _OPTIONS = {
 _BACKENDS = {"auto", "cpu", "gpu"}
 _FALLBACKS = {"cpu", "error"}
 _THREAD_VALUES = {0, 1, 2, 4, 6, 8, 12, 16, 24, 32}
+_GPU_MEMORY_MIN_MB = 128
+_GPU_MEMORY_MAX_MB = 8192
 
 
 def _kritarc_path():
@@ -173,6 +176,7 @@ def _normalise(values):
     backend = values.get("backend")
     fallback = values.get("gpu_fallback")
     threads = values.get("cpu_threads")
+    gpu_memory = values.get("gpu_memory_mb")
     managed = values.get("managed_filters")
     enabled = values.get("enabled_filters")
     show_native = values.get("show_native_filters")
@@ -210,6 +214,10 @@ def _normalise(values):
         result["gpu_fallback"] = fallback
     if isinstance(threads, int) and not isinstance(threads, bool) and threads in _THREAD_VALUES:
         result["cpu_threads"] = threads
+    if isinstance(gpu_memory, (int, float)) and not isinstance(gpu_memory, bool) and math.isfinite(gpu_memory):
+        mb = int(round(gpu_memory))
+        if _GPU_MEMORY_MIN_MB <= mb <= _GPU_MEMORY_MAX_MB:
+            result["gpu_memory_mb"] = mb
     if isinstance(managed, list):
         managed_ids = [item for item in managed if isinstance(item, str) and item
                        and item not in {"filtermanager_ml_color_match", "fxmanager_ml_color_match", "tfm_ml_color_match"}]

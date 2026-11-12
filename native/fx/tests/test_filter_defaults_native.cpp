@@ -4,7 +4,6 @@
 #include "tfm_lens_distortion.h"
 #include "tfm_vignette.h"
 #include "tfm_color_range_mask.h"
-#include "tfm_clipboard_color_match.h"
 #include "tfm_guided_color_match_filter.h"
 #include "tfm_background_removal.h"
 #include "tfm_color_temperature.h"
@@ -52,7 +51,7 @@ int main(int argc, char **argv) try {
 
     KisFilterBloom bloom; KisFilterFilmGrain grain; KisFilterLensDistortion lens;
     KisFilterVignette vignette; KisFilterColorRangeMask mask;
-    KisFilterClipboardColorMatch statistical; KisFilterGuidedColorMatch guided;
+    KisFilterGuidedColorMatch guided;
     KisFilterBackgroundRemoval background;
     auto defaults = [&](const KisFilter &f) { return f.defaultConfiguration(KisGlobalResourcesInterface::instance()); };
     auto write = [&](const QJsonObject &object) {
@@ -84,16 +83,13 @@ int main(int argc, char **argv) try {
     write(settings("tfm_color_range_mask", {{"channel","hue"},{"range_min",.2},{"range_max",.8},{"softness",.3},{"invert",true}}));
     c = defaults(mask);
     require(c->getString("channel")=="hue" && near(c->getDouble("range_min"),.2) && near(c->getDouble("range_max"),.8) && near(c->getDouble("softness"),.3) && c->getBool("invert"), "Color Range Mask defaults failed");
-    write(settings("tfm_clipboard_color_match", {{"reference_source","file"},{"match_strength",.2},{"luminance",1.3},{"color_intensity",.7},{"fade",.8},{"tone_distribution",.4},{"tonal_color",.3},{"color_correlation",.6},{"gain_limit",3.0},{"shift_limit",20},{"variance_floor",4},{"gamut_protection",true}}));
-    c = defaults(statistical);
-    require(c->getString("reference_source")=="file" && near(c->getDouble("match_strength"),.2) && near(c->getDouble("luminance"),1.3) && near(c->getDouble("color_intensity"),.7) && near(c->getDouble("fade"),.8) && near(c->getDouble("tone_distribution"),.4) && near(c->getDouble("tonal_color"),.3) && near(c->getDouble("color_correlation"),.6) && near(c->getDouble("gain_limit"),3) && near(c->getDouble("shift_limit"),20) && near(c->getDouble("variance_floor"),4) && c->getBool("gamut_protection"), "Statistical Color Match defaults failed");
     write(settings("tfm_guided_color_match", {{"match_strength",.2},{"chroma",1.4},{"smoothness",.6}}));
     c = defaults(guided);
     require(near(c->getDouble("match_strength"),.2) && near(c->getDouble("chroma"),1.4) && near(c->getDouble("smoothness"),.6), "Guided Color Match defaults failed");
     write(settings("tfm_background_removal", {{"model","BiRefNet-dynamic-F16.gguf"},{"backend","gpu"},{"foreground_mode","fast_mask"}}));
     c = defaults(background);
     require(c->getString("model")=="BiRefNet-dynamic-F16.gguf" && c->getString("backend")=="gpu" && c->getString("foreground_mode")=="fast_mask", "Background Removal defaults failed");
-    std::cout << "All eight production filters accept configured values PASS\n";
+    std::cout << "Configured production filters accept values PASS\n";
 
     // Existing independent filter configuration must remain untouched.
     c = defaults(bloom); c->setProperty("threshold", .123); c->setProperty("custom_existing", "preserve");
@@ -110,7 +106,7 @@ int main(int argc, char **argv) try {
     KisFilterHalation halation; KisFilterLensFlare flare; KisFilterAnamorphicFlare anamorphic;
     KisFilterKuwahara kuwahara; TfmGeglFocusBlur focus;
     TfmGeglMotionBlur circular(TfmGeglMotionBlur::Variant::Circular), zoom(TfmGeglMotionBlur::Variant::Zoom);
-    QVector<const KisFilter *> all{&bloom, &grain, &lens, &vignette, &mask, &statistical, &guided,
+    QVector<const KisFilter *> all{&bloom, &grain, &lens, &vignette, &mask, &guided,
         &background, &temperature, &vibrance, &halation, &flare, &anamorphic, &kuwahara, &focus, &circular, &zoom};
     int checked = 0;
     for (const auto *filter : all) {

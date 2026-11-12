@@ -26,5 +26,5 @@ def test_catalog_matches_pre_refactor_contract():
     value = {'filters': catalog['FILTERS'], 'defaults': catalog['FILTER_DEFAULT_SPECS']}
     actual = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     # Frozen from the untouched baseline catalog, not the schema generator.
-    assert actual == '4b8e12338b0622edd25b462acf6b7d72d9a5cefb231c3f0fc720b6f6454801a7'
+    assert actual == 'a2379162c7fe4dc3b6c1e2ad2441170efec977a1e6cfbd889641d994008b8175'
 

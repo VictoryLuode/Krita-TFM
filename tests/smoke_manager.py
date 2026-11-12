@@ -141,7 +141,11 @@ def main():
     window = make_manager()
     tabs = window.findChild(__import__('PyQt5.QtWidgets', fromlist=['QTabWidget']).QTabWidget)
     assert [tabs.tabText(i) for i in range(tabs.count())] == [__import__('i18n').tr(en, zh) for en, zh in [('Menus', '菜单'), ('Filters', '滤镜'), ('Tools', '工具'), ('Settings', '设置')]]
-    assert tabs.widget(0) is window.menu_page and tabs.widget(1) is window.filter_page
+    # Permanent tab hosts stay put; Configure pages mount inside them.
+    assert window.menu_page is not None and window.filter_page is not None
+    assert tabs.widget(0) is window._menu_placeholder and tabs.widget(1) is window._filter_placeholder
+    assert window.menu_page.parentWidget() is window._menu_placeholder
+    assert window.filter_page.parentWidget() is window._filter_placeholder
     managed_action = QAction('Select from Color Range Plus')
     managed_action.setObjectName('tfm_color_range')
     settings = {}
@@ -173,7 +177,9 @@ def main():
         window.filter_page._parameter_controls['threshold'].setValue(0.42)
         tabs.setCurrentIndex(0)
         tabs.setCurrentIndex(1)
-        window.filter_page._save.click()
+        # Call the slot directly; QAbstractButton.click() can abort under this
+        # host's offscreen Qt when the Filters page is hosted in a placeholder.
+        window.filter_page.save_filters()
         assert abs(save.call_args.args[0]['filter_defaults']['tfm_bloom']['threshold'] - 0.42) < 1e-6
     with mock.patch.object(instance, 'actions', return_value=[mock.Mock(objectName=lambda: 'action_a', text=lambda: 'Action A')]), \
          mock.patch.object(window.menu_page, '_action_shortcuts', return_value=['Ctrl+E']):

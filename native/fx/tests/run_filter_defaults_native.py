@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from run_statistical_regions_native import split
+from run_native_util import split
 
 
 def main():
@@ -47,8 +47,7 @@ def main():
     stems = ['tfm_processing', 'tfm_bloom', 'tfm_film_grain',
              'tfm_lens_distortion', 'tfm_lens_distortion_widget',
              'tfm_vignette', 'tfm_vignette_widget', 'tfm_color_range_mask',
-             'tfm_color_range_mask_widget', 'tfm_clipboard_color_match',
-             'tfm_clipboard_color_match_widget', 'tfm_guided_color_match_filter',
+             'tfm_color_range_mask_widget', 'tfm_guided_color_match_filter',
              'tfm_background_removal', 'tfm_birefnet', 'tfm_filter_widget',
              'tfm_drag_spinbox']
     objects = []
@@ -68,8 +67,7 @@ def main():
     run([compiler, *flags, '-o', obj, '-c', test], 'compile_test')
     objects.append(obj)
     headers = ['tfm_filter_widget', 'tfm_drag_spinbox', 'tfm_lens_distortion_widget',
-               'tfm_vignette_widget', 'tfm_color_range_mask_widget',
-               'tfm_clipboard_color_match_widget']
+               'tfm_vignette_widget', 'tfm_color_range_mask_widget']
     for stem in headers:
         moc_obj = out / ('moc_' + stem + '.obj')
         moc_cpp = out / ('moc_' + stem + '.cpp')

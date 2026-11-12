@@ -15,6 +15,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QHBoxLayout>
@@ -25,6 +26,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -34,8 +36,6 @@
 
 namespace {
 
-constexpr auto kLiteModel = "BiRefNet-lite-F16.gguf";
-constexpr auto kDynamicModel = "BiRefNet-dynamic-F16.gguf";
 constexpr auto kFastMaskMode = "fast_mask";
 constexpr auto kRefinedForegroundMode = "refined_foreground";
 constexpr auto kCutoutOutput = "cutout";
@@ -78,12 +78,40 @@ public:
         for (const QString &model : BirefnetRuntime::instance().availableModels()) {
             m_model->addItem(model, model);
         }
-        if (m_model->count() == 0) {
+        const bool missingModels = m_model->count() == 0;
+        if (missingModels) {
             m_model->addItem(i18n("No BiRefNet model files found"));
             m_model->setEnabled(false);
         }
         modelRow->addWidget(m_model, 1);
         layout->addLayout(modelRow);
+        if (missingModels) {
+            auto *cta = new QLabel(
+                i18n("Place BiRefNet-lite-F16.gguf or BiRefNet-dynamic-F16.gguf in the models folder, then reopen this filter."),
+                this);
+            cta->setWordWrap(true);
+            layout->addWidget(cta);
+            auto *openModels = new QPushButton(i18n("Open BiRefNet models folder"), this);
+            openModels->setObjectName(QStringLiteral("background_open_models"));
+            layout->addWidget(openModels);
+            connect(openModels, &QPushButton::clicked, this, [] {
+                const QString directory = BirefnetRuntime::instance().modelsDirectory();
+                if (directory.isEmpty()) {
+                    QMessageBox::warning(nullptr, i18n("Background Removal"),
+                                         i18n("Could not locate Krita’s resource directory."));
+                    return;
+                }
+                if (!QDir().mkpath(directory)) {
+                    QMessageBox::warning(nullptr, i18n("Background Removal"),
+                                         i18n("Could not create %1").arg(directory));
+                    return;
+                }
+                if (!QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
+                    QMessageBox::warning(nullptr, i18n("Background Removal"),
+                                         i18n("Could not open %1").arg(directory));
+                }
+            });
+        }
 
         auto *backendRow = new QHBoxLayout;
         backendRow->addWidget(new QLabel(i18n("Backend"), this));

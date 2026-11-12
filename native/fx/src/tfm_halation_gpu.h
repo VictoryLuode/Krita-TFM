@@ -2,6 +2,8 @@
 
 #include <functional>
 
+#include "tfm_processing.h"
+
 #include <QImage>
 #include <QRect>
 #include <QString>
@@ -32,5 +34,9 @@ struct Parameters {
 // Returns false without modifying output when Vulkan is unavailable.
 bool render(const QImage &source, const Parameters &parameters,
             QImage &output, QString &reason, QString &deviceName, const std::function<bool()> &cancelled = {});
+
+bool renderFloat(const tfm::EncodedRgbaImage &source, const Parameters &parameters,
+                 tfm::EncodedRgbaImage &output, QString &reason, QString &deviceName,
+                 const std::function<bool()> &cancelled = {});
 
 } // namespace tfm_halation_gpu

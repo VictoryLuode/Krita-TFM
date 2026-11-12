@@ -683,6 +683,33 @@ inline Lut buildLut(const std::array<Pair, 4> &pairs, double luminance,
             }
         }
     }
+    // Light 3x3 LUT smoothing reduces banding without changing stored Size.
+    const int smoothPasses = std::clamp(int(std::lround(smoothness * 2.0)), 0, 2);
+    for (int pass = 0; pass < smoothPasses; ++pass) {
+        Lut copy = lut;
+        for (int r = 0; r < Lut::Size; ++r) {
+            for (int g = 0; g < Lut::Size; ++g) {
+                for (int b = 0; b < Lut::Size; ++b) {
+                    for (int c = 0; c < 3; ++c) {
+                        double sum = 0.0, wsum = 0.0;
+                        for (int dr = -1; dr <= 1; ++dr) {
+                            for (int dg = -1; dg <= 1; ++dg) {
+                                for (int db = -1; db <= 1; ++db) {
+                                    const int rr = std::clamp(r + dr, 0, Lut::Size - 1);
+                                    const int gg = std::clamp(g + dg, 0, Lut::Size - 1);
+                                    const int bb = std::clamp(b + db, 0, Lut::Size - 1);
+                                    const double w = (dr == 0 && dg == 0 && db == 0) ? 2.0 : 1.0;
+                                    sum += w * copy.values[Lut::index(rr, gg, bb, c)];
+                                    wsum += w;
+                                }
+                            }
+                        }
+                        lut.values[Lut::index(r, g, b, c)] = float(sum / wsum);
+                    }
+                }
+            }
+        }
+    }
     lut.valid = true;
     return lut;
 }

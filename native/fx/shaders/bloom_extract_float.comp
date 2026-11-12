@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430,binding=0) readonly buffer Source { float pixels[]; } src;
+layout(std430,binding=1) writeonly buffer Light { float values[]; } light;
+layout(std430,binding=2) readonly buffer Parameters {
+    int width, height, padding;
+    float threshold, softness, invDenom;
+} p;
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+vec4 fetchPixel(ivec2 c) {
+    int i = (c.y * p.width + c.x) * 4;
+    return vec4(src.pixels[i], src.pixels[i + 1], src.pixels[i + 2], src.pixels[i + 3]);
+}
+float highlight(float luminance) {
+    float knee = clamp(p.softness, 0.0, 1.0);
+    float excess = luminance - p.threshold;
+    if (knee == 0.0) return max(0.0, excess);
+    float t = clamp(excess + knee, 0.0, 2.0 * knee);
+    return max(excess, t * t / (4.0 * knee));
+}
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= p.width || c.y >= p.height) return;
+    vec4 pix = fetchPixel(c);
+    float lum = dot(pix.rgb, kLuma);
+    float gain = highlight(lum) * p.invDenom * pix.a;
+    int i = (c.y * p.width + c.x) * 3;
+    vec3 emitted = pix.rgb * gain;
+    light.values[i] = emitted.r;
+    light.values[i + 1] = emitted.g;
+    light.values[i + 2] = emitted.b;
+}

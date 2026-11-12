@@ -9,9 +9,16 @@ from pathlib import Path
 
 
 SHADERS = {
-    'motion': 'Motion', 'pointwise': 'Pointwise', 'lens': 'Lens',
-    'bloom_legacy': 'BloomLegacy', 'guided_lut': 'GuidedLut',
-    'kuwahara': 'Kuwahara', 'halation': 'Halation', 'flare': 'Flare',
+    'motion': 'Motion', 'pointwise': 'Pointwise', 'pointwise_float': 'PointwiseFloat',
+    'lens': 'Lens', 'lens_float': 'LensFloat',
+    'bloom_legacy': 'BloomLegacy', 'bloom_legacy_float': 'BloomLegacyFloat',
+    'bloom_extract': 'BloomExtract', 'bloom_extract_float': 'BloomExtractFloat',
+    'bloom_box': 'BloomBox', 'bloom_box_float': 'BloomBoxFloat',
+    'bloom_composite': 'BloomComposite', 'bloom_composite_float': 'BloomCompositeFloat',
+    'guided_lut': 'GuidedLut', 'guided_lut_float': 'GuidedLutFloat',
+    'kuwahara': 'Kuwahara', 'kuwahara_float': 'KuwaharaFloat',
+    'halation': 'Halation', 'halation_float': 'HalationFloat',
+    'flare': 'Flare', 'flare_float': 'FlareFloat',
 }
 ROOT = Path(__file__).resolve().parent
 

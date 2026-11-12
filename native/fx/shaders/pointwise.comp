@@ -49,6 +49,74 @@ uint hash32(uint x, uint y, uint seed, uint channel) {
 float noise(int x, int y, int channel) {
     return float(hash32(uint(x), uint(y), uint(p.seed), uint(channel)) % 10000u) / 5000.0 - 1.0;
 }
+
+float smoothRange(float e0, float e1, float x) {
+    if (e1 <= e0) return x < e0 ? 0.0 : 1.0;
+    float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+float valueNoise(float x, float y, int channel) {
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    float fx = x - float(x0);
+    float fy = y - float(y0);
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
+    float n00 = noise(x0, y0, channel);
+    float n10 = noise(x0 + 1, y0, channel);
+    float n01 = noise(x0, y0 + 1, channel);
+    float n11 = noise(x0 + 1, y0 + 1, channel);
+    float nx0 = mix(n00, n10, sx);
+    float nx1 = mix(n01, n11, sx);
+    return mix(nx0, nx1, sy);
+}
+float grainResponse(float luma) {
+    float shadows = 1.0 - smoothRange(0.0, 0.18, luma) * 0.15;
+    float highlights = 1.0 - smoothRange(0.55, 0.95, luma) * 0.75;
+    return clamp(shadows * highlights, 0.15, 1.15);
+}
+float filmGrainSample(float gx, float gy, int channel, bool mono) {
+    float cell = max(0.5, p.size);
+    float nx = gx / cell;
+    float ny = gy / cell;
+    if (mono) return valueNoise(nx, ny, 0);
+    return valueNoise(nx, ny, 0) * 0.72 + valueNoise(nx, ny, channel) * 0.28;
+}
+
+
+float decodeSRGB(float encoded) {
+    float v = abs(encoded);
+    float lin = v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    return sign(encoded) * lin;
+}
+float encodeSRGB(float linear) {
+    float v = abs(linear);
+    float enc = v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+    return sign(linear) * enc;
+}
+vec3 decodeSRGB3(vec3 c) { return vec3(decodeSRGB(c.r), decodeSRGB(c.g), decodeSRGB(c.b)); }
+vec3 encodeSRGB3(vec3 c) { return vec3(encodeSRGB(c.r), encodeSRGB(c.g), encodeSRGB(c.b)); }
+vec3 linearToOkLab(vec3 c) {
+    float l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
+    float m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
+    float s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
+    float l_ = pow(l, 1.0/3.0), m_ = pow(m, 1.0/3.0), s_ = pow(s, 1.0/3.0);
+    return vec3(
+        0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+        1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+        0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_);
+}
+vec3 okLabToLinear(vec3 lab) {
+    float l_ = lab.x + 0.3963377774*lab.y + 0.2158037573*lab.z;
+    float m_ = lab.x - 0.1055613458*lab.y - 0.0638541728*lab.z;
+    float s_ = lab.x - 0.0894841775*lab.y - 1.2914855480*lab.z;
+    float l = l_*l_*l_, m = m_*m_*m_, s = s_*s_*s_;
+    return vec3(
+        +4.0767416621*l - 3.3077115913*m + 0.2309699292*s,
+        -1.2684380046*l + 2.6097574011*m - 0.3413193965*s,
+        -0.0041960863*l - 0.7034186147*m + 1.7076147010*s);
+}
+
 // Same 24-bit mix as the light-patch CPU hash. It deliberately stops before
 // the extra xor that deterministicNoise applies.
 float hash01(int a, int b) {
@@ -87,11 +155,6 @@ float leakShape(int kind, float x, float y) {
     if (kind == 4) return smoothstep(0.05, 0.60, edge) * (0.50 + 0.50 * sin((x + y) * 8.0));
     return 0.6 * smoothstep(0.0, 0.7, x) + 0.4 * smoothstep(0.0, 0.5, 1.0 - y);
 }
-float smoothRange(float e0, float e1, float x) {
-    if (e1 <= e0) return x < e0 ? 0.0 : 1.0;
-    float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
-}
 vec3 hsv(vec3 c) {
     float mx=max(c.r,max(c.g,c.b)), mn=min(c.r,min(c.g,c.b)), d=mx-mn;
     float h=0.0;
@@ -119,20 +182,39 @@ vec3 kelvin(float kelvinValue) {
     return clamp(vec3(rr, gg, bb) / 255.0, 0.0, 1.0);
 }
 
+
+vec3 decodeSRGB3_mask(vec3 c) {
+    vec3 a = abs(c);
+    vec3 lin = mix(a/12.92, pow((a+0.055)/1.055, vec3(2.4)), step(vec3(0.04045), a));
+    return sign(c)*lin;
+}
+vec3 linearToOkLab_mask(vec3 c) {
+    float l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
+    float m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
+    float s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
+    float l_ = pow(l, 1.0/3.0), m_ = pow(m, 1.0/3.0), s_ = pow(s, 1.0/3.0);
+    return vec3(0.2104542553*l_+0.7936177850*m_-0.0040720468*s_,
+                1.9779984951*l_-2.4285922050*m_+0.4505937099*s_,
+                0.0259040371*l_+0.7827717662*m_-0.8086757660*s_);
+}
+
 void main() {
     int x=int(gl_GlobalInvocationID.x), y=int(gl_GlobalInvocationID.y);
     if(x>=p.width || y>=p.height)return;
     uint packed=src.pixels[y*p.width+x];
     float a=float((packed>>24u)&255u), r=float((packed>>16u)&255u), g=float((packed>>8u)&255u), b=float(packed&255u);
     if(p.operation==0) {
-        // Noise is anchored to the paint-device coordinate, not this patch.
+        // Value-noise grain with film-like tone response; coords are paint-device space.
         int gx=p.outputX+x, gy=p.outputY+y;
-        float cell=max(0.5,p.size);
-        float sharedNoise=noise(int(floor(float(gx)/cell)),int(floor(float(gy)/cell)),0);
-        float amp=clamp(p.amount,0.0,1.0)*255.0;
-        r=clamp(truncTowardZero(r+(p.monochrome!=0?sharedNoise:noise(gx,gy,1))*amp),0.0,255.0);
-        g=clamp(truncTowardZero(g+(p.monochrome!=0?sharedNoise:noise(gx,gy,2))*amp),0.0,255.0);
-        b=clamp(truncTowardZero(b+(p.monochrome!=0?sharedNoise:noise(gx,gy,3))*amp),0.0,255.0);
+        float luma=(0.2126*r+0.7152*g+0.0722*b)/255.0;
+        float amp=clamp(p.amount,0.0,1.0)*255.0*grainResponse(luma);
+        bool mono=p.monochrome!=0;
+        float nr=filmGrainSample(float(gx),float(gy),1,mono);
+        float ng=mono?nr:filmGrainSample(float(gx),float(gy),2,false);
+        float nb=mono?nr:filmGrainSample(float(gx),float(gy),3,false);
+        r=clamp(truncTowardZero(r+nr*amp),0.0,255.0);
+        g=clamp(truncTowardZero(g+ng*amp),0.0,255.0);
+        b=clamp(truncTowardZero(b+nb*amp),0.0,255.0);
     } else if(p.operation==1) {
         float w=max(1.0,float(p.frameW)), h=max(1.0,float(p.frameH));
         float px=float(p.outputX)+float(x)+0.5, py=float(p.outputY)+float(y)+0.5;
@@ -141,14 +223,28 @@ void main() {
         float rx=(nx*cs+ny*sn)/max(0.0001,p.scaleX), ry=(-nx*sn+ny*cs)/max(0.0001,p.scaleY);
         float d=max(abs(rx)*2.0,abs(ry)*2.0)*(1.0-p.roundness)+length(vec2(rx,ry))*2.0*p.roundness;
         float edge=p.feather<=1e-6?(d>=1.0?1.0:0.0):clamp((d-(1.0-p.feather))/p.feather,0.0,1.0);
-        float f=1.0-edge*p.factor; r*=f;g*=f;b*=f;
+        // Mix geometric mask with a soft cos^4 optical falloff for natural corners.
+        float optical=pow(1.0/sqrt(1.0+d*d),4.0);
+        float mask=mix(edge,1.0-optical,0.35);
+        float f=1.0-clamp(mask,0.0,1.0)*p.factor; r*=f;g*=f;b*=f;
     } else if(p.operation==2) {
         vec3 c=vec3(r,g,b)/255.0; vec3 hv=hsv(c); float v;
-        if(p.channel==0)v=0.2126*c.r+0.7152*c.g+0.0722*c.b;
-        else if(p.channel==1)v=c.r; else if(p.channel==2)v=c.g; else if(p.channel==3)v=c.b; else if(p.channel==4)v=hv.x; else v=hv.y;
+        vec3 lab=linearToOkLab_mask(decodeSRGB3_mask(c));
+        float okChroma=length(lab.yz);
+        float okHue=atan(lab.z,lab.y)/6.283185307179586; if(okHue<0.0) okHue+=1.0;
+        float deltaE=clamp(length(lab-vec3(0.5,0.0,0.0))/0.75,0.0,1.0);
+        if(p.channel==0)v=dot(c,kLuma);
+        else if(p.channel==1)v=c.r; else if(p.channel==2)v=c.g; else if(p.channel==3)v=c.b;
+        else if(p.channel==4)v=hv.x; else if(p.channel==5)v=hv.y;
+        else if(p.channel==6)v=clamp(lab.x,0.0,1.0); else if(p.channel==7)v=clamp(okChroma/0.4,0.0,1.0);
+        else if(p.channel==8)v=okHue; else v=deltaE;
         float inside;
-        if(p.channel==4) { bool inRange=p.rangeMin<=p.rangeMax?(v>=p.rangeMin&&v<=p.rangeMax):(v>=p.rangeMin||v<=p.rangeMax); float dist=inRange?0.0:min(hueDistance(v,p.rangeMin),hueDistance(v,p.rangeMax)); inside=hv.y>0.0?1.0-smoothRange(0.0,max(1e-6,p.softness),dist):0.0; }
-        else inside=1.0-smoothRange(0.0,max(1e-6,p.softness),rangeDistance(v,p.rangeMin,p.rangeMax));
+        if(p.channel==4 || p.channel==8) {
+            bool inRange=p.rangeMin<=p.rangeMax?(v>=p.rangeMin&&v<=p.rangeMax):(v>=p.rangeMin||v<=p.rangeMax);
+            float dist=inRange?0.0:min(hueDistance(v,p.rangeMin),hueDistance(v,p.rangeMax));
+            float sat=p.channel==4?hv.y:okChroma;
+            inside=sat>1e-6?1.0-smoothRange(0.0,max(1e-6,p.softness),dist):0.0;
+        } else inside=1.0-smoothRange(0.0,max(1e-6,p.softness),rangeDistance(v,p.rangeMin,p.rangeMax));
         float f=p.invert!=0?1.0-inside:inside; a=clamp(a*f,0.0,255.0);
     } else if(p.operation==3) {
         // White-balance gain between the reference and the target black-body
@@ -158,31 +254,27 @@ void main() {
         vec3 c=vec3(r,g,b)/255.0;
         vec3 gain=kelvin(p.p0)/max(kelvin(6500.0),vec3(1e-4));
         gain.g*=1.0+tint*0.2;
-        vec3 outC=c*gain;
-        if(p.p3>0.5) { float l0=dot(c,kLuma), l1=dot(outC,kLuma); if(l1>1e-5) outC*=l0/l1; }
-        outC=clamp(mix(c,outC,blend),0.0,1.0)*255.0;
+        vec3 lin=decodeSRGB3(c);
+        vec3 outLin=lin*gain;
+        if(p.p3>0.5) { float l0=dot(lin,kLuma), l1=dot(outLin,kLuma); if(l1>1e-5) outLin*=l0/l1; }
+        vec3 outC=clamp(mix(c,encodeSRGB3(outLin),blend),0.0,1.0)*255.0;
         r=outC.r; g=outC.g; b=outC.b;
     } else if(p.operation==4) {
-        // Vibrance raises less-saturated pixels more; optional skin and
-        // highlight protection. p1 is a plain saturation offset.
+        // Vibrance raises less-saturated pixels more; optional highlight protection.
+        // p1 is a plain saturation offset.
         float vib=clamp(p.p0,-100.0,100.0)/100.0;
         float sat=clamp(p.p1,-100.0,100.0)/100.0;
-        float skin=clamp(p.p2,0.0,1.0);
-        float protect=clamp(p.p3,0.0,1.0);
-        float blend=clamp(p.p4,0.0,1.0);
+        float protect=clamp(p.p2,0.0,1.0);
+        float blend=clamp(p.p3,0.0,1.0);
         vec3 c=vec3(r,g,b)/255.0;
-        float mx=max(c.r,max(c.g,c.b)), mn=min(c.r,min(c.g,c.b));
-        float chroma=mx-mn;
-        float lum=dot(c,kLuma);
-        float amt=vib*(1.0-chroma);
-        if(skin>0.0 && chroma>0.0) {
-            vec3 hv=hsv(c);
-            float skinMask=(1.0-smoothRange(0.05,0.18,hueDistance(hv.x,0.07)))*smoothRange(0.04,0.20,chroma);
-            amt*=mix(1.0,0.15,skinMask*skin);
-        }
-        if(protect>0.0) amt*=mix(1.0,0.0,smoothRange(0.70,1.0,lum)*protect);
+        vec3 lin=decodeSRGB3(c);
+        vec3 lab=linearToOkLab(lin);
+        float chroma=length(lab.yz);
+        float amt=vib*(1.0-min(chroma/0.4,1.0));
+        if(protect>0.0) amt*=mix(1.0,0.0,smoothRange(0.70,1.0,lab.x)*protect);
         float gain=max(0.0,1.0+amt+sat);
-        vec3 outC=clamp(mix(c,vec3(lum)+(c-vec3(lum))*gain,blend),0.0,1.0)*255.0;
+        lab.yz*=gain;
+        vec3 outC=clamp(mix(c,encodeSRGB3(okLabToLinear(lab)),blend),0.0,1.0)*255.0;
         r=outC.r; g=outC.g; b=outC.b;
     } else if(p.operation==5) {
         // Light leak. Coordinates are relative to the whole frame, matching

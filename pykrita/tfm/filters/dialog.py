@@ -189,16 +189,16 @@ class FilterSettingsDialog(QWidget):
         left = QVBoxLayout()
         filter_label = QLabel(tr("Filters", "滤镜"))
         filter_label.setToolTip(tr(
-            "Check a filter to register it in Krita's Filter menu (requires Save Filters, then restart Krita). "
-            "Uncheck to hide it after restart. Drag a filter onto another category header to move it.",
-            "勾选滤镜以注册到 Krita 的滤镜菜单（需「保存滤镜」并重启 Krita）。"
-            "取消勾选后重启才会隐藏。拖到其他分类标题可移动。",
+            "Check a filter to register it in Krita's Filter menu (Save Filters; native plugin syncs without a full restart when possible). "
+            "Uncheck to unregister after save. A stale Filter menu entry may linger until restart. Drag a filter onto another category header to move it.",
+            "勾选滤镜以注册到 Krita 的滤镜菜单（「保存滤镜」后原生插件会尽量热同步）。"
+            "取消勾选并保存后会从注册表移除；菜单残留标签可能仍需重启。拖到其他分类标题可移动。",
         ))
         left.addWidget(filter_label)
         from ..ui_chrome import apply_muted_label, apply_warning_label
         restart_note = QLabel(tr(
-            "Enable/disable changes need Save Filters, then a Krita restart before the Filter menu updates.",
-            "启用/禁用需先「保存滤镜」，再重启 Krita 后滤镜菜单才会更新。",
+            "Enable/disable: Save Filters. The native plugin re-syncs the registry and clears stale Filter menu actions.",
+            "启用/禁用：先「保存滤镜」。原生插件会同步注册表并清理滤镜菜单中的残留项。",
         ))
         apply_muted_label(restart_note)
         left.addWidget(restart_note)
@@ -246,6 +246,10 @@ class FilterSettingsDialog(QWidget):
         self._open_models.clicked.connect(self._open_birefnet_models)
         self._open_models.hide()
         middle.addWidget(self._open_models)
+        self._open_runtime = QPushButton(tr("Open BiRefNet runtime folder", "打开 BiRefNet 运行时文件夹"))
+        self._open_runtime.clicked.connect(self._open_birefnet_runtime)
+        self._open_runtime.hide()
+        middle.addWidget(self._open_runtime)
 
         self._status = QLabel()
         self._status.setWordWrap(True)
@@ -389,80 +393,31 @@ class FilterSettingsDialog(QWidget):
             lines.append("</ul>")
         self._detail.setHtml("".join(lines))
 
-    def _birefnet_models_dir(self):
-        from . import settings as filter_settings
-        root = filter_settings.resource_directory()
-        if not root:
-            return ""
-        return os.path.join(root, "TFM", "background-removal", "models")
-
-    def _ensure_birefnet_models_readme(self, models):
-        readme = os.path.join(models, "README.txt")
-        if os.path.isfile(readme):
-            return
-        body = (
-            "TFM Background Removal — BiRefNet models\n"
-            "========================================\n"
-            "\n"
-            "Place BiRefNet .gguf weights in this folder, then reopen the filter:\n"
-            "  - BiRefNet-lite-F16.gguf\n"
-            "  - BiRefNet-dynamic-F16.gguf\n"
-            "\n"
-            "Models are optional and are not shipped inside the TFM zip.\n"
-            "Obtain compatible GGUF builds from the project release notes / docs,\n"
-            "then keep filenames exactly as above (or pick them in the filter UI).\n"
-            "\n"
-            "Optional Vulkan/GGML runtime DLLs go in the sibling runtime/ folder.\n"
-        )
-        try:
-            with open(readme, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(body)
-        except OSError:
-            pass
-
     def _open_birefnet_models(self):
-        models = self._birefnet_models_dir()
-        if not models:
-            self._status.setText(tr(
-                "Could not locate Krita’s resource directory.",
-                "无法定位 Krita 资源目录。",
-            ))
-            return
-        try:
-            os.makedirs(models, exist_ok=True)
-        except OSError as error:
-            self._status.setText(str(error))
-            return
-        self._ensure_birefnet_models_readme(models)
-        from qtcompat import QDesktopServices, QUrl
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(models)):
-            self._status.setText(tr("Could not open {}.", "无法打开 {}。").format(models))
+        from . import birefnet_paths
+        birefnet_paths.open_birefnet_dir(
+            birefnet_paths.birefnet_models_dir(),
+            birefnet_paths.ensure_birefnet_models_readme,
+            self._status.setText,
+        )
+
+    def _open_birefnet_runtime(self):
+        from . import birefnet_paths
+        birefnet_paths.open_birefnet_dir(
+            birefnet_paths.birefnet_runtime_dir(),
+            birefnet_paths.ensure_birefnet_runtime_readme,
+            self._status.setText,
+        )
 
     def _actionable_filter_tip(self, ident):
         show_models = ident in ("tfm_background_removal", "fxmanager_background_removal")
         if hasattr(self, "_open_models"):
             self._open_models.setVisible(show_models)
+        if hasattr(self, "_open_runtime"):
+            self._open_runtime.setVisible(show_models)
         if show_models:
-            models = self._birefnet_models_dir()
-            if not models:
-                return tr(
-                    "Could not locate Krita’s resource directory. "
-                    "Models belong in ResourceDirectory/TFM/background-removal/models/.",
-                    "无法定位 Krita 资源目录。模型应放在 ResourceDirectory/TFM/background-removal/models/。",
-                )
-            try:
-                names = [name for name in os.listdir(models) if name.lower().endswith(".gguf")]
-            except OSError:
-                names = []
-            if names:
-                return tr(
-                    "Models found in {} ({}).",
-                    "已在 {} 找到模型（{}）。",
-                ).format(models, ", ".join(sorted(names)[:4]))
-            return tr(
-                "No .gguf models in {}. Download BiRefNet into that folder (button below), then reopen this filter.",
-                "{} 中没有 .gguf 模型。请把 BiRefNet 下载到该文件夹（可用下方按钮打开），然后重新打开此滤镜。",
-            ).format(models)
+            from . import birefnet_paths
+            return birefnet_paths.models_status_tip(birefnet_paths.birefnet_models_dir())
         if ident in VULKAN_FILTER_IDS:
             return tr(
                 "If GPU fails (missing worker / timeout), set Compute backend to CPU here, "
@@ -563,12 +518,12 @@ class FilterSettingsDialog(QWidget):
     def _update_restart_banner(self):
         if not hasattr(self, "_restart_banner"):
             return
-        pending = self.is_dirty()
+        pending = self.has_unsaved_changes()
         self._restart_banner.setVisible(pending)
         if pending:
             self._restart_banner.setText(tr(
-                "Unsaved enable/disable changes. Click Save Filters, then restart Krita to refresh the Filter menu.",
-                "启用/禁用有未保存更改。请点「保存滤镜」，再重启 Krita 以刷新滤镜菜单。",
+                "Unsaved enable/disable changes. Click Save Filters; the plugin will re-sync after save.",
+                "启用/禁用有未保存更改。请点「保存滤镜」；保存后插件会重新同步。",
             ))
 
     def _current_category(self):
@@ -658,17 +613,17 @@ class FilterSettingsDialog(QWidget):
             self._update_restart_banner()
             self._status.setText(tr(
                 "Filter settings saved. Backend choice applies on the next filter run.\n"
-                "Restart Krita to update enable/disable changes in the Filter menu.",
+                "Enable/disable is re-synced by the native plugin (registry + Filter menu actions).",
                 "滤镜设置已保存。后端选择在下次运行滤镜时生效。\n"
-                "请重启 Krita，以便更新滤镜菜单中的启用/禁用项。",
+                "启用/禁用由原生插件重新同步（注册表与滤镜菜单项）。",
             ))
             font = self._status.font()
             font.setBold(True)
             self._status.setFont(font)
             self._restart_banner.setVisible(True)
             self._restart_banner.setText(tr(
-                "Saved. Restart Krita now so the Filter menu picks up enable/disable changes.",
-                "已保存。请立即重启 Krita，使滤镜菜单应用启用/禁用更改。",
+                "Saved. Filter registry and menu actions sync shortly after save.",
+                "已保存。滤镜注册表与菜单项将在保存后很快同步。",
             ))
         else:
             self._status.setText(tr(

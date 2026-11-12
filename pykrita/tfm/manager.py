@@ -1,12 +1,10 @@
 """TFM management entry point."""
 
-import json
 import os
 
 from .menus.qtcompat import QtCore, QtWidgets, exec_
 from krita import Krita
 from .i18n import tr
-from .menus.version import __version__
 
 
 def color_range_enabled():
@@ -217,112 +215,25 @@ class ManagerDialog(QtWidgets.QDialog):
         tabs.addTab(self._filter_placeholder, tr("Filters", "滤镜"))
         tabs.currentChanged.connect(self._ensure_tab_page)
 
-        tools = QtWidgets.QWidget()
-        tool_layout = QtWidgets.QHBoxLayout(tools)
-        tool_layout.setContentsMargins(16, 12, 16, 12)
-        tool_layout.setSpacing(8)
-        self.tools_list = QtWidgets.QListWidget()
-        self.tool_pages = QtWidgets.QStackedWidget()
-        self._tool_enable = {}
-        self._add_tool('selection', tr('Advanced Selection', '高级选区'), color_range_enabled(),
-                       set_color_range_enabled, self._advance_selection_page())
-        self._add_tool('assets', tr('Asset Library', '资产库'), assets_enabled(),
-                       set_assets_enabled, self._asset_library_page())
-        self._add_tool('search', tr('Quick Image Search', '快速搜图'), search_enabled(),
-                       set_search_enabled, self._image_search_page())
-        self._add_tool('color_space', tr('Layer Color Space', '图层色彩空间'), convert_color_space_enabled(),
-                       set_convert_color_space_enabled, self._color_space_page())
-        self.tools_list.currentRowChanged.connect(self._show_tool_page)
-        self.tools_list.itemChanged.connect(self._tool_enabled_changed)
-        self.tools_list.setCurrentRow(0)
-        tool_layout.addWidget(self.tools_list, 1)
-        tool_layout.addWidget(self.tool_pages, 2)
-        from .ui_chrome import apply_muted_label
-        tools_note = QtWidgets.QLabel(tr(
-            'Tool checkboxes apply immediately. Filter enable/disable needs Save Filters, then a Krita restart.',
-            '工具开关立即生效。滤镜启用/禁用需先「保存滤镜」，再重启 Krita。',
-        ))
-        apply_muted_label(tools_note)
-        tools_wrap = QtWidgets.QWidget()
-        tools_wrap_layout = QtWidgets.QVBoxLayout(tools_wrap)
-        tools_wrap_layout.setContentsMargins(0, 0, 0, 0)
-        tools_wrap_layout.setSpacing(4)
-        tools_wrap_layout.addWidget(tools_note)
-        tools_wrap_layout.addWidget(tools, 1)
+        from . import manager_tools
+        tools_wrap = manager_tools.build_tools_tab(self)
         tabs.addTab(tools_wrap, tr("Tools", "工具"))
         self._saved_tool_defaults = self._tool_defaults()
         QTimer = QtCore.QTimer
         QTimer.singleShot(0, lambda: self._ensure_tab_page(0))
         QTimer.singleShot(0, self._maybe_show_first_run_guide)
         from .filters import settings as filter_settings
+        from . import manager_settings
         self._filter_settings = filter_settings
-        settings_page = QtWidgets.QWidget()
-        settings_layout = QtWidgets.QVBoxLayout(settings_page)
-        settings_layout.setContentsMargins(16, 12, 16, 12)
-        settings_form = QtWidgets.QFormLayout()
-        self.default_width = QtWidgets.QSpinBox()
-        self.default_width.setRange(980, 8192)
-        self.default_width.setValue(self._window_width)
-        self.default_height = QtWidgets.QSpinBox()
-        self.default_height.setRange(620, 8192)
-        self.default_height.setValue(self._window_height)
-        self.cpu_threads = QtWidgets.QComboBox()
-        self.cpu_threads.addItem(tr('Auto (safe default: 1)', '自动（安全默认：1）'), 0)
-        for count in (1, 2, 4, 6, 8, 12, 16, 24, 32):
-            self.cpu_threads.addItem(str(count), count)
-        filter_options = filter_settings.load()
-        cpu = filter_options.get('cpu_threads', 0)
-        self.cpu_threads.setCurrentIndex(max(0, self.cpu_threads.findData(cpu)))
-        self.filter_backend = QtWidgets.QComboBox()
-        for label, value in (
-            (tr('Auto (Vulkan when available)', '自动（可用时用 Vulkan）'), 'auto'),
-            (tr('CPU', 'CPU'), 'cpu'),
-            (tr('GPU (Vulkan)', 'GPU（Vulkan）'), 'gpu'),
-        ):
-            self.filter_backend.addItem(label, value)
-        self.filter_backend.setCurrentIndex(max(0, self.filter_backend.findData(filter_options.get('backend', 'auto'))))
-        settings_form.addRow(tr('Default window width', '默认窗口宽度'), self.default_width)
-        settings_form.addRow(tr('Default window height', '默认窗口高度'), self.default_height)
-        self.cpu_threads.setToolTip(tr(
-            'Controls plugin filters using the shared CPU worker pool. Other processing paths may use their own threads.',
-            '控制使用共享 CPU 线程池的插件滤镜。其他处理路径可能使用各自的线程。',
-        ))
-        settings_form.addRow(tr('Plugin filters CPU threads', '插件滤镜 CPU 线程'), self.cpu_threads)
-        settings_form.addRow(tr('Default filter backend', '默认滤镜后端'), self.filter_backend)
-        settings_layout.addLayout(settings_form)
-        backend_note = QtWidgets.QLabel(tr(
-            'Default for filters that support Vulkan. Override one filter under Filters → Compute backend. '
-            'GPU falls back to CPU when Vulkan is unavailable. Background Removal keeps its own backend. '
-            'Auto keeps Vibrance on CPU until the image is large enough; after the GPU worker is warm '
-            '(idle TTL 30s), Vibrance prefers GPU from 2048². Other Auto-calibrated filters stay on CPU '
-            'across the measured U8 range; use explicit GPU for interactive preview preference.',
-            '适用于支持 Vulkan 的滤镜默认值。可在 滤镜 → 计算后端 单独覆盖。'
-            'Vulkan 不可用时 GPU 会回退到 CPU。背景移除使用自己的后端。'
-            '自动模式下 Vibrance 仅在图像足够大时用 GPU；GPU worker 已热（空闲 TTL 30 秒）后，'
-            'Vibrance 从 2048² 起偏好 GPU。其他已标定滤镜在测得的 U8 范围内保持 CPU；'
-            '交互预览若要偏好 GPU，请显式选择 GPU。',
-        ))
-        backend_note.setWordWrap(True)
-        settings_layout.addWidget(backend_note)
-        self.backend_status = QtWidgets.QLabel()
-        self.backend_status.setWordWrap(True)
-        self.backend_status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        settings_layout.addWidget(self.backend_status)
+        settings_page = manager_settings.build_settings_page(
+            self,
+            filter_settings,
+            self._window_width,
+            self._window_height,
+            on_tab_changed=lambda page: tabs.currentChanged.connect(
+                lambda index: self._refresh_backend_status() if tabs.widget(index) is page else None),
+        )
         self._refresh_backend_status()
-        tabs.currentChanged.connect(lambda index: self._refresh_backend_status() if tabs.widget(index) is settings_page else None)
-        self.settings_status = QtWidgets.QLabel(tr(
-            'Settings save automatically when this window closes. Window size applies when TFM is reopened; CPU threads after Krita restarts.',
-            '关闭窗口时自动保存设置。窗口大小在下次打开 TFM 时生效；CPU 线程数需重启 Krita。',
-        ))
-        self.settings_status.setWordWrap(True)
-        settings_layout.addWidget(self.settings_status)
-        settings_layout.addStretch()
-        version_label = QtWidgets.QLabel('v' + __version__)
-        version_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        settings_layout.addWidget(version_label)
-        full_name_label = QtWidgets.QLabel('Tool & Filter & Menu')
-        full_name_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        settings_layout.addWidget(full_name_label)
         tabs.addTab(settings_page, tr('Settings', '设置'))
         self._saved_general = self._general_settings()
 
@@ -389,43 +300,19 @@ class ManagerDialog(QtWidgets.QDialog):
                 'TFM adds cursor menus, native filters, Advanced Selection, an asset library, and optional tools.\n\n'
                 '• Menus — a Quick Tool sample list is ready (shortcut Q on first install).\n'
                 '• Tools — checkboxes turn panels on immediately.\n'
-                '• Filters — Save Filters, then restart Krita so items appear in the Filter menu.\n\n'
+                '• Filters — Save Filters; the native plugin re-syncs the registry (restart only if a menu label stays stale).\n\n'
                 'Open Tools → TFM anytime, or press Q for Quick Tool after a fresh install.',
                 'TFM 提供光标菜单、原生滤镜、高级选区、资产库与可选工具。\n\n'
                 '• 菜单 — 首次安装带有 Quick Tool 样例（快捷键 Q）。\n'
                 '• 工具 — 勾选后立即生效。\n'
-                '• 滤镜 — 保存滤镜后需重启 Krita，才会出现在滤镜菜单中。\n\n'
+                '• 滤镜 — 保存滤镜后原生插件会同步注册表（仅当菜单标签残留时才需重启）。\n\n'
                 '随时从「工具 → TFM」打开；全新安装后可按 Q 弹出 Quick Tool。',
             ),
         )
 
     def _refresh_backend_status(self):
-        text = tr('Last filter backend: Not used this session', '上次滤镜后端：本会话尚未使用')
-        path = self._filter_settings.config_path()
-        try:
-            if path:
-                with open(os.path.join(os.path.dirname(path), 'backend-status.json'), encoding='utf-8') as handle:
-                    status = json.load(handle)
-                if (isinstance(status, dict) and type(status.get('pid')) is int
-                        and status['pid'] == os.getpid()
-                        and status.get('requested') in ('auto', 'cpu', 'gpu')
-                        and status.get('actual') in ('cpu', 'gpu', 'vulkan')
-                        and all(isinstance(status.get(key), str) for key in ('device', 'reason', 'filter'))
-                        and status['filter'].strip()):
-                    text = tr('Last filter: {}', '上次滤镜：{}').format(status['filter'])
-                    text += '\n' + tr('Requested: {} | Actual: {}', '请求：{} | 实际：{}').format(
-                        status['requested'].upper(), status['actual'].upper())
-                    if status['device'].strip():
-                        text += '\n' + tr('Device: {}', '设备：{}').format(status['device'])
-                    reason = status['reason'].strip()
-                    if reason:
-                        text += '\n' + tr('Reason: {}', '原因：{}').format(reason)
-                        tip = self._backend_action_tip(reason)
-                        if tip:
-                            text += '\n\n' + tip
-        except (OSError, ValueError, TypeError):
-            pass
-        self.backend_status.setText(text)
+        from . import manager_settings
+        manager_settings.refresh_backend_status(self)
 
     @staticmethod
     def _backend_action_tip(reason):
@@ -433,12 +320,26 @@ class ManagerDialog(QtWidgets.QDialog):
         return backend_action_tip(reason)
 
     def _general_settings(self):
-        return (self.default_width.value(), self.default_height.value(), self.cpu_threads.currentData(), self.filter_backend.currentData())
+        return (
+            self.default_width.value(),
+            self.default_height.value(),
+            self.cpu_threads.currentData(),
+            self.gpu_memory_mb.value(),
+            self.filter_backend.currentData(),
+        )
 
     def save_general_settings(self):
-        width, height, threads, backend = self._general_settings()
-        if not self._filter_settings.save({'cpu_threads': threads, 'backend': backend, 'gpu_fallback': 'cpu'}):
-            self.settings_status.setText('Could not save filter settings; window size was not changed.')
+        width, height, threads, gpu_memory_mb, backend = self._general_settings()
+        if not self._filter_settings.save({
+            'cpu_threads': threads,
+            'gpu_memory_mb': gpu_memory_mb,
+            'backend': backend,
+            'gpu_fallback': 'cpu',
+        }):
+            self.settings_status.setText(tr(
+                'Could not save filter settings; window size was not changed.',
+                '无法保存滤镜设置；窗口大小未更改。',
+            ))
             return False
         app = Krita.instance()
         try:
@@ -446,10 +347,16 @@ class ManagerDialog(QtWidgets.QDialog):
                 if app.writeSetting('TFM', key, str(value)) is False:
                     raise RuntimeError('Could not save window settings.')
         except Exception as error:
-            self.settings_status.setText('Could not save window settings: ' + str(error))
+            self.settings_status.setText(tr(
+                'Could not save window settings: {}',
+                '无法保存窗口设置：{}',
+            ).format(error))
             return False
         self._saved_general = self._general_settings()
-        self.settings_status.setText('Settings saved. Reopen TFM for window size; restart Krita for CPU threads.')
+        self.settings_status.setText(tr(
+            'Settings saved. Reopen TFM for window size; CPU threads and GPU memory budget apply on the next filter run.',
+            '设置已保存。窗口大小在下次打开 TFM 时生效；CPU 线程数与 GPU 显存上限在下次滤镜运行时生效。',
+        ))
         return True
 
     def _add_tool(self, ident, label, enabled, on_enabled, page):

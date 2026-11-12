@@ -23,7 +23,7 @@ def test_production_pointwise_devices():
 
 
 @pytest.mark.native
-@pytest.mark.parametrize('name',('spatial','bloom_device','filter_defaults','statistical_regions','transfer','blur','parallel_rows','backend_policy','profile'))
+@pytest.mark.parametrize('name',('spatial','bloom_device','filter_defaults','transfer','blur','parallel_rows','backend_policy','profile'))
 def test_built_production_regression(name):
     root = Path(__file__).resolve().parents[3]
     runtime = os.environ.get('KRITA_ROOT')

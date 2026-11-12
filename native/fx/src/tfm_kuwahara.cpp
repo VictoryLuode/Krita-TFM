@@ -171,15 +171,38 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     if(tfm::requiresFloatProcessing(d)) {
         auto current=tfm::readEncodedImage(pristine,srcRect);
         if(current.isNull()) return;
-        for(int pass=0;pass<params.iterations;++pass) {
-            current=floatPass(current,params.radius,u);
-            if(u && u->interrupted()) return;
+        tfm_kuwahara_gpu::Parameters gpu;
+        gpu.srcRect = srcRect;
+        gpu.outputRect = outputRect;
+        gpu.radius = params.radius;
+        QString reason;
+        QString device;
+        bool usedGpu = false;
+        if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
+            tfm::EncodedRgbaImage passOutput;
+            bool ok = true;
+            for (int pass = 0; pass < params.iterations && ok; ++pass) {
+                ok = tfm_kuwahara_gpu::renderFloat(current, gpu, passOutput, reason, device,
+                                                   [u] { return u && u->interrupted(); });
+                if (ok) current = passOutput;
+            }
+            if (u && u->interrupted()) return;
+            usedGpu = ok;
+            if (!ok) tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+        }
+        if (!usedGpu) {
+            for(int pass=0;pass<params.iterations;++pass) {
+                current=floatPass(current,params.radius,u);
+                if(u && u->interrupted()) return;
+            }
         }
         const auto cropped=current.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
         const bool written=tfm::writeEncodedImage(d,cropped,outputRect);
-        tfm::reportBackend(id().id(),QStringLiteral("cpu"),written
-            ? QStringLiteral("High-depth CPU: float GPU implementation unavailable")
-            : QStringLiteral("Float output conversion failed; pixels unchanged"));
+        tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
+            written ? QString() : QStringLiteral("Float output conversion failed; pixels unchanged"),
+            usedGpu ? device : QString());
         if(written && u) u->setProgress(100);
         return;
     }
@@ -187,7 +210,7 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     if (source.isNull()) return;
 
     bool rendered = false;
-    if (tfm::gpuRequested(id().id())) {
+    if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
         tfm_kuwahara_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
         gpu.outputRect = outputRect;

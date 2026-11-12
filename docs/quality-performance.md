@@ -53,7 +53,7 @@ Actual U8 paint devices, standard sRGB, real filters/conversions/IPC, one CPU th
 | tfm_filmgrain / 5120 | 333.1 ms | 943.6 ms | 724.3 ms |
 | tfm_vignette / 5120 | 536.4 ms | 949.6 ms | 725.1 ms |
 
-Auto uses a conservative 5120 x 5120 pixel-area threshold for Vibrance when one CPU thread is selected and the worker is cold. Once the worker is warm (or `TFM_AUTO_ASSUME_WARM=1`), Vibrance flips at 2048 x 2048 where warm GPU beat single-thread CPU in the table above. With multiple CPU workers, no measured crossover is assumed. Temperature, grain, vignette and colour-range mask remain on CPU throughout the supported single-buffer U8 range: no crossover was observed up to 5120 x 5120. This does not assert a universal hardware threshold. Explicit GPU selection bypasses the Auto rule, subject to existing precision/memory support. Other filters retain their previous scheduling until individually calibrated.
+Production Auto/GPU policy prefers Vulkan for every supported filter; filters fall back to CPU when the worker rejects the job (unsupported depth, memory budget, missing device, etc.). The table above remains historical evidence of cold/warm crossover sizes and is not used as a runtime size gate. Explicit CPU still forces the CPU path.
 
 Run `scripts/benchmark_assets.py`, `scripts/benchmark_gpu_worker.py`, and the compiled `native/fx/tests/benchmark_backend_native.cpp` to refresh evidence after relevant hardware or processing changes. The latter uses `TFM_BENCH_LARGE=1` for 4096 and `=2` for 5120.
 

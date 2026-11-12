@@ -7,6 +7,8 @@
  * factor out, which keeps this header testable by a plain Qt program.
  */
 
+#include "pointwise_math.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -14,7 +16,18 @@
 namespace colormask {
 
 struct Settings {
-    enum class Channel { Gray, Red, Green, Blue, Hue, Saturation };
+    enum class Channel {
+        Gray = 0,
+        Red = 1,
+        Green = 2,
+        Blue = 3,
+        Hue = 4,
+        Saturation = 5,
+        Lightness = 6, // OKLab L
+        Chroma = 7,    // OKLab C (colorfulness / ΔE-from-gray)
+        OkHue = 8,     // OKLab hue
+        DeltaE = 9,    // OKLab ΔE76 from mid-gray reference
+    };
     Channel channel = Channel::Gray;
     double rangeMin = 0.0;
     double rangeMax = 1.0;
@@ -91,6 +104,11 @@ inline double hueRangeDistance(double hue, double lo, double hi)
     return std::min(hueDistance(hue, lo), hueDistance(hue, hi));
 }
 
+inline tfm::pointwise::OkLab pixelOkLab(double r, double g, double b)
+{
+    return tfm::pointwise::linearToOkLab(tfm::pointwise::decodeRgb({r, g, b}));
+}
+
 inline double selectedChannel(double r, double g, double b, Settings::Channel channel)
 {
     switch (channel) {
@@ -99,6 +117,17 @@ inline double selectedChannel(double r, double g, double b, Settings::Channel ch
     case Settings::Channel::Blue: return b;
     case Settings::Channel::Hue: return rgbToHsv(r, g, b).h;
     case Settings::Channel::Saturation: return rgbToHsv(r, g, b).s;
+    case Settings::Channel::Lightness: return clamp01(pixelOkLab(r, g, b).L);
+    case Settings::Channel::Chroma: {
+        // Normalize typical OKLab chroma into ~0..1 for the range UI.
+        return clamp01(tfm::pointwise::okChroma(pixelOkLab(r, g, b)) / 0.4);
+    }
+    case Settings::Channel::OkHue: return tfm::pointwise::okHue(pixelOkLab(r, g, b));
+    case Settings::Channel::DeltaE: {
+        const auto lab = pixelOkLab(r, g, b);
+        const tfm::pointwise::OkLab gray{0.5, 0.0, 0.0};
+        return clamp01(tfm::pointwise::okDeltaE(lab, gray) / 0.75);
+    }
     case Settings::Channel::Gray: return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     }
     return 0.0;
@@ -106,11 +135,15 @@ inline double selectedChannel(double r, double g, double b, Settings::Channel ch
 
 inline double alphaFactor(double r, double g, double b, const Settings &s)
 {
-    if (s.channel == Settings::Channel::Hue) {
-        const Hsv hsv = rgbToHsv(r, g, b);
-        // Achromatic pixels have no hue. Inversion complements this exclusion.
-        const double distance = hueRangeDistance(hsv.h, s.rangeMin, s.rangeMax);
-        const double inside = hsv.s > 0.0
+    if (s.channel == Settings::Channel::Hue || s.channel == Settings::Channel::OkHue) {
+        const double hue = s.channel == Settings::Channel::Hue
+            ? rgbToHsv(r, g, b).h
+            : tfm::pointwise::okHue(pixelOkLab(r, g, b));
+        const double sat = s.channel == Settings::Channel::Hue
+            ? rgbToHsv(r, g, b).s
+            : tfm::pointwise::okChroma(pixelOkLab(r, g, b));
+        const double distance = hueRangeDistance(hue, s.rangeMin, s.rangeMax);
+        const double inside = sat > 1e-6
             ? 1.0 - smoothstep(0.0, std::max(1e-6, s.softness), distance) : 0.0;
         return clamp01(s.invert ? 1.0 - inside : inside);
     }

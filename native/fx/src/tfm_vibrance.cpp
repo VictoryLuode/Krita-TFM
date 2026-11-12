@@ -53,7 +53,6 @@ KisConfigWidget *KisFilterVibrance::createConfigurationWidget(QWidget *p, const 
     return new TfmFilterWidget(id().id(), {
         {"vibrance", i18n("Vibrance"), -100.0, 100.0, 30.0, 1.0, 0},
         {"saturation", i18n("Saturation"), -100.0, 100.0, 0.0, 1.0, 0},
-        {"skin_protect", i18n("Skin Protection"), 0.0, 1.0, 1.0, 0.01, 2},
         {"protect_highlights", i18n("Protect Highlights"), 0.0, 1.0, 0.5, 0.01, 2},
         {"blend", i18n("Blend"), 0.0, 1.0, 1.0, 0.01, 2},
     }, p);
@@ -66,12 +65,39 @@ void KisFilterVibrance::processImpl(KisPaintDeviceSP d, const QRect &r,
     VibranceParams params;
     params.vibrance = std::clamp(c ? c->getDouble("vibrance", 30.0) : 30.0, -100.0, 100.0) / 100.0;
     params.saturation = std::clamp(c ? c->getDouble("saturation", 0.0) : 0.0, -100.0, 100.0) / 100.0;
-    params.skin = std::clamp(c ? c->getDouble("skin_protect", 1.0) : 1.0, 0.0, 1.0);
     params.protect = std::clamp(c ? c->getDouble("protect_highlights", 0.5) : 0.5, 0.0, 1.0);
     params.blend = std::clamp(c ? c->getDouble("blend", 1.0) : 1.0, 0.0, 1.0);
 
     if (params.blend == 0.0 || (params.vibrance == 0.0 && params.saturation == 0.0)) { if(u) u->setProgress(100); return; }
     if (tfm::requiresFloatProcessing(d)) {
+        if (tfm::gpuRequested(id().id(), qint64(r.width()) * r.height())) {
+            auto source = tfm::readEncodedImage(d, r);
+            if (!source.isNull()) {
+                tfm_pointwise_gpu::Parameters gpu;
+                gpu.operation = tfm_pointwise_gpu::Operation::Vibrance;
+                gpu.outputRect = r;
+                gpu.p0 = float(params.vibrance * 100.0);
+                gpu.p1 = float(params.saturation * 100.0);
+                gpu.p2 = float(params.protect);
+                gpu.p3 = float(params.blend);
+                tfm::EncodedRgbaImage output; QString reason, device;
+                if (tfm_pointwise_gpu::renderFloat(source, gpu, output, reason, device,
+                        [u] { return u && u->interrupted(); })) {
+                    if (u && u->interrupted()) return;
+                    if (tfm::writeEncodedImage(d, output, r)) {
+                        tfm::reportBackend(id().id(), QStringLiteral("gpu"), QString(), device);
+                        if (u) u->setProgress(100);
+                        return;
+                    }
+                    reason = QStringLiteral("Float output conversion failed; pixels unchanged");
+                }
+                if (u && u->interrupted()) return;
+                tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
+            }
+        } else {
+            tfm::reportBackend(id().id(), QStringLiteral("cpu"),
+                               tfm::cpuBackendReason(id().id(), qint64(r.width()) * r.height()));
+        }
         tfm::transformEncoded(d,r,id().id(),u,[&](float *p,int,int) {
             const auto out=tfm::pointwise::vibrance({p[0],p[1],p[2]},params,false);
             p[0]=float(out.r); p[1]=float(out.g); p[2]=float(out.b);
@@ -87,9 +113,8 @@ void KisFilterVibrance::processImpl(KisPaintDeviceSP d, const QRect &r,
         gpu.outputRect = r;
         gpu.p0 = float(params.vibrance * 100.0);
         gpu.p1 = float(params.saturation * 100.0);
-        gpu.p2 = float(params.skin);
-        gpu.p3 = float(params.protect);
-        gpu.p4 = float(params.blend);
+        gpu.p2 = float(params.protect);
+        gpu.p3 = float(params.blend);
         QImage output; QString reason, device;
         if (tfm_pointwise_gpu::render(source, gpu, output, reason, device, [u] { return u && u->interrupted(); })) {
             if(u && u->interrupted()) return;

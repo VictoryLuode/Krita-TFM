@@ -5,6 +5,8 @@
 
 #include "tfm_vulkan.h"
 #include "tfm_vulkan_ipc.h"
+#include "tfm_processing.h"
+#include "tfm_gpu_budget.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -35,6 +37,7 @@ struct Worker {
     bool idleArmed = false;
     std::string name;
     std::uint64_t generation = 0;
+    std::uint64_t memoryBudgetMb = 0;
     std::chrono::steady_clock::time_point idleDeadline{};
 
     void closePipes()
@@ -184,11 +187,13 @@ std::wstring workerExecutable()
     return text.substr(0, slash + 1) + L"tfm_vulkan_worker.exe";
 }
 
-std::wstring environmentWith(const std::wstring &binDirectory)
+std::wstring environmentWith(const std::wstring &binDirectory, std::uint64_t memoryBudgetMb)
 {
     std::wstring block;
     wchar_t *source = GetEnvironmentStringsW();
     bool sawPath = false;
+    bool sawMemory = false;
+    const std::wstring memoryEntry = L"TFM_VULKAN_MEMORY_MB=" + std::to_wstring(memoryBudgetMb);
     if (source) {
         for (const wchar_t *cursor = source; *cursor; ) {
             const std::wstring entry = cursor;
@@ -197,6 +202,9 @@ std::wstring environmentWith(const std::wstring &binDirectory)
             if (entry.size() >= 5 && _wcsnicmp(entry.c_str(), L"PATH=", 5) == 0) {
                 rewritten = L"PATH=" + binDirectory + L";" + entry.substr(5);
                 sawPath = true;
+            } else if (entry.size() >= 21 && _wcsnicmp(entry.c_str(), L"TFM_VULKAN_MEMORY_MB=", 21) == 0) {
+                rewritten = memoryEntry;
+                sawMemory = true;
             }
             block.append(rewritten);
             block.push_back(L'\0');
@@ -205,6 +213,10 @@ std::wstring environmentWith(const std::wstring &binDirectory)
     }
     if (!sawPath) {
         block.append(L"PATH=" + binDirectory);
+        block.push_back(L'\0');
+    }
+    if (!sawMemory) {
+        block.append(memoryEntry);
         block.push_back(L'\0');
     }
     block.push_back(L'\0');
@@ -220,6 +232,7 @@ void abandonProcess()
         WaitForSingleObject(current.process, 2000);
     }
     current.closeProcess();
+    current.memoryBudgetMb = 0;
 }
 
 void stopWorker()
@@ -332,9 +345,14 @@ bool ensureWorker(std::string &error, Operation &operation)
         }
     }
     Worker &current = worker();
+    const std::uint64_t memoryBudgetMb = std::max<std::uint64_t>(
+        1, tfm::gpuMemoryBudgetBytes() / (1024ull * 1024ull));
     if (current.process) {
         DWORD code = 0;
-        if (current.ready && GetExitCodeProcess(current.process, &code) && code == STILL_ACTIVE) return true;
+        if (current.ready && current.memoryBudgetMb == memoryBudgetMb
+            && GetExitCodeProcess(current.process, &code) && code == STILL_ACTIVE) {
+            return true;
+        }
         abandonProcess();
     }
     const std::wstring exe = workerExecutable();
@@ -390,7 +408,7 @@ bool ensureWorker(std::string &error, Operation &operation)
     std::wstring command = L"\"" + exe + L"\"";
     std::vector<wchar_t> commandBuffer(command.begin(), command.end());
     commandBuffer.push_back(L'\0');
-    std::wstring environment = environmentWith(executableDirectory());
+    std::wstring environment = environmentWith(executableDirectory(), memoryBudgetMb);
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -427,6 +445,7 @@ bool ensureWorker(std::string &error, Operation &operation)
     current.process = process.hProcess;
     current.toWorker = childInWrite;
     current.fromWorker = childOutRead;
+    current.memoryBudgetMb = memoryBudgetMb;
     childInWrite = childOutRead = nullptr;
     if (!readHello(error, operation)) {
         if (operation.status == Status::Success) operation.status = Status::ProtocolError;
@@ -593,9 +612,9 @@ TfmVulkan::Result TfmVulkan::dispatchResult(const std::vector<std::uint32_t> &sp
                                std::vector<std::uint8_t> &outputData)
 {
     auto fail = [](const std::string &message) { return Result{Status::ProtocolError, message}; };
-    constexpr std::size_t budget = 128ull * 1024 * 1024;
+    const std::size_t budget = std::size_t(tfm::gpuMemoryBudgetBytes());
     if (inputSize > budget || outputSize > budget || parametersSize > budget)
-        return fail("Vulkan buffer exceeds 128 MiB processing budget");
+        return fail(tfm::gpuMemoryBudgetExceededMessage("Vulkan buffer", budget));
     if (spirv.size() > budget / sizeof(std::uint32_t) || spirv.empty() || spirv.front() != 0x07230203u || (spirv.size() * sizeof(std::uint32_t)) % 4 != 0)
         return fail("Invalid SPIR-V module (expected 32-bit words with SPIR-V magic)");
     if (!inputData && inputSize) return fail("inputData is null while inputSize is non-zero");
@@ -608,7 +627,7 @@ TfmVulkan::Result TfmVulkan::dispatchResult(const std::vector<std::uint32_t> &sp
         || config.outputBinding == config.parametersBinding)
         return fail("Descriptor binding numbers must be distinct");
     if (inputSize > 0xffffffffu || parametersSize > 0xffffffffu || outputSize > 0xffffffffu)
-        return fail("Vulkan buffer exceeds 128 MiB processing budget");
+        return fail("Vulkan buffer exceeds IPC size limit");
 
     Operation operation{config.cancelled, Clock::now() + timeout("TFM_VULKAN_STARTUP_TIMEOUT_MS", 10000)};
     if (operation.interrupted()) return operation.result({});

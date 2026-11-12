@@ -1,3 +1,13 @@
+# TFM 0.1.10
+
+- Remove Statistical Color Match; Guided Color Match remains the color-transfer path.
+- Auto/GPU: prefer Vulkan for every supported filter; fall back to CPU only when the worker cannot run the job (no size thresholds).
+- Algorithm polish: value-noise film grain + tone response; OKLab vibrance (no skin protect); linear chromatic-adaptation temperature; multi-scale bloom; OKLab color-range channels; Guided LUT residual smoothing; cos⁴ vignette; adaptive motion samples; flare centroid refine; lens cubic term; softer halation falloff.
+- Float Vulkan paths for Guided/Flare/Bloom(legacy+diffusion)/Kuwahara/Halation/Lens/pointwise filters; regenerated float shaders.
+- GPU memory budget is Settings-tunable (`gpu_memory_mb`, default 1024 MiB, 128–8192); host injects `TFM_VULKAN_MEMORY_MB` and restarts the worker when the budget changes.
+- CPU thread count re-reads `TFM/settings.json` on the next filter run; filter enable hot-sync clears stale Filter menu actions; Focus Blur masks allowed.
+- Manager tools/settings splits; BiRefNet model-folder CTA; GEGL policy is local GIMP discovery only (never ship GEGL/GIMP in the TFM zip); Relight experimental (`docs/relight-research.md`); search smoke (`TFM_SEARCH_LIVE=1` optional).
+
 # TFM 0.1.9
 
 - Finish Menubelt/FxManager → TFM branding: native `tfm_*` sources, `TFM_*` CMake/env knobs with legacy fallbacks, and documented keep-migration for old installs.

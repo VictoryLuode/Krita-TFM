@@ -19,6 +19,8 @@ public:
     static BirefnetRuntime &instance();
 
     QStringList availableModels() const;
+    // Preferred models folder (existing install or canonical ResourceDirectory path).
+    QString modelsDirectory() const;
     QString modelName() const;
     void setModelName(const QString &name);
 
