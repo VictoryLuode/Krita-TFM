@@ -17,7 +17,8 @@ vec3 fetchPixel(ivec2 c) {
 
 vec3 classicKuwahara(ivec2 centre, int radius) {
     vec3 best = vec3(0.0);
-    float bestVariance = 1e30;
+    vec3 base = fetchPixel(centre);
+    float bestVariance = 0.0;
     for (int q = 0; q < 4; ++q) {
         int sx = (q & 1) == 0 ? -1 : 1;
         int sy = (q & 2) == 0 ? -1 : 1;
@@ -26,7 +27,7 @@ vec3 classicKuwahara(ivec2 centre, int radius) {
         int count = 0;
         for (int dy = 0; dy <= radius; ++dy) {
             for (int dx = 0; dx <= radius; ++dx) {
-                vec3 sampleValue = fetchPixel(centre + ivec2(dx * sx, dy * sy));
+                vec3 sampleValue = fetchPixel(centre + ivec2(dx * sx, dy * sy)) - base;
                 sum += sampleValue;
                 sumSquares += sampleValue * sampleValue;
                 ++count;
@@ -36,9 +37,9 @@ vec3 classicKuwahara(ivec2 centre, int radius) {
         vec3 mean = sum * inv;
         vec3 variance = sumSquares * inv - mean * mean;
         float total = variance.r + variance.g + variance.b;
-        if (total < bestVariance) {
+        if (q == 0 || total < bestVariance - 1e-5 * abs(bestVariance)) {
             bestVariance = total;
-            best = mean;
+            best = base + mean;
         }
     }
     return best;

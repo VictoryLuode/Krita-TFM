@@ -73,6 +73,7 @@ class _KeyFilter(QObject):
     def __init__(self, extension, owner=None):
         super().__init__(owner)
         self._ext = extension
+        self._pie_key = None
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.KeyPress:
@@ -89,6 +90,8 @@ class _KeyFilter(QObject):
             # Consume keys we own: a key bound to a list must not *also* reach the
             # canvas / another handler (that would make an override half-applied).
             if self._ext.dispatch_shortcut(seq.toString(QKeySequence.SequenceFormat.PortableText)):
+                if self._ext._pie is not None:
+                    self._pie_key = key
                 return True
         elif event.type() == QEvent.Type.KeyRelease:
             if event.isAutoRepeat():
@@ -97,7 +100,9 @@ class _KeyFilter(QObject):
             if key in _MODIFIER_KEYS:
                 return False
             # A pie is shown while the trigger key is held; release activates it.
-            self._ext.pie_release()
+            if key == self._pie_key:
+                self._pie_key = None
+                self._ext.pie_release()
         return False
 
 

@@ -50,8 +50,8 @@ bool filterEnabled(const QString &filterId);
 // Per-filter backend from TFM/settings.json filter_backends, else global backend.
 // Auto applies measured area thresholds to lightweight filters. An explicit
 // GPU request bypasses these thresholds; CPU remains a live failure fallback.
-bool gpuRequested(const QString &filterId = QString(), qint64 pixels = -1);
-QString cpuBackendReason(const QString &filterId, qint64 pixels);
+bool gpuRequested(const QString &filterId = QString(), qint64 pixels = -1, bool u8 = false);
+QString cpuBackendReason(const QString &filterId, qint64 pixels, bool u8 = false);
 void reportBackend(const QString &filter, const QString &actual, const QString &reason,
                    const QString &device = QString());
 // Vulkan per-buffer budget from TFM_VULKAN_MEMORY_MB or settings.json gpu_memory_mb

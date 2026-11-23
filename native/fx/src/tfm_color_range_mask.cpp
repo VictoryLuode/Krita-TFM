@@ -74,6 +74,8 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     if (applyRect.isEmpty() || !device || (progressUpdater && progressUpdater->interrupted())) return;
 
     const colormask::Settings s = settingsFrom(config);
+    const qint64 pixelCount = qint64(applyRect.width()) * applyRect.height();
+    const bool wantGpu = tfm::gpuRequested(id().id(), pixelCount);
 
     if(tfm::requiresFloatProcessing(device)) {
         auto colours=tfm::readEncodedImage(device,applyRect);
@@ -82,7 +84,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
         QString gpuDevice;
         bool usedGpu = false;
         QVector<float> originalAlpha;
-        if (tfm::gpuRequested(id().id(), qint64(applyRect.width()) * applyRect.height())) {
+        if (wantGpu) {
             const int pixels = applyRect.width() * applyRect.height();
             originalAlpha.resize(pixels);
             for (int i = 0; i < pixels; ++i) originalAlpha[i] = colours.pixels[i * 4 + 3];
@@ -126,8 +128,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
         if(progressUpdater && progressUpdater->interrupted()) return;
         device->writeBytes(reinterpret_cast<const quint8*>(raw.constData()),applyRect);
         tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
-            usedGpu ? QString() : (tfm::gpuRequested(id().id())
-                ? reason : QStringLiteral("High-depth CPU mask; original colour channels retained")),
+            usedGpu ? QString() : (wantGpu ? reason : tfm::cpuBackendReason(id().id(), pixelCount)),
             usedGpu ? gpuDevice : QString());
         if(progressUpdater) progressUpdater->setProgress(100);
         return;
@@ -140,7 +141,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
     image = image.convertToFormat(QImage::Format_ARGB32);
     image.detach(); // Detach before parallel scanLine writes.
 
-    if (tfm::gpuRequested(id().id(),qint64(applyRect.width())*applyRect.height())) {
+    if (wantGpu) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::ColorRangeMask;
         gpu.outputRect = applyRect; gpu.channel = static_cast<int>(s.channel);
@@ -157,7 +158,7 @@ void KisFilterColorRangeMask::processImpl(KisPaintDeviceSP device,
         if(progressUpdater && progressUpdater->interrupted()) return;
         tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
-        tfm::reportBackend(id().id(), QStringLiteral("cpu"), tfm::cpuBackendReason(id().id(),qint64(applyRect.width())*applyRect.height()));
+        tfm::reportBackend(id().id(), QStringLiteral("cpu"), tfm::cpuBackendReason(id().id(), pixelCount));
     }
 
     image.detach(); // Detach before parallel scanLine writes.

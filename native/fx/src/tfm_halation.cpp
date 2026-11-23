@@ -25,18 +25,22 @@ struct HalationParams {
     double blend = 1.0;
     int samples = 32;
     double colorR = 1.0;
-    double colorG = 0.42;
-    double colorB = 0.22;
+    double colorG = 0.29;
+    double colorB = 0.12;
     bool channelR = true;
     bool channelG = true;
     bool channelB = true;
     bool channelMode = false;  // true = R/G/B switches, false = glow colour
 };
 
+constexpr double kLumaR = 0.2126, kLumaG = 0.7152, kLumaB = 0.0722;
+// Detwiler ratios 9 : 5.5 : 3.5 — red scatters farthest through the film base.
+constexpr double kSigmaScaleR = 0.55, kSigmaScaleG = 0.336, kSigmaScaleB = 0.214;
+
 // Colour is stored as "#rrggbb" so it round-trips through KisPropertiesConfiguration.
 void parseGlowColor(const QString &text, double *r, double *g, double *b)
 {
-    *r = 1.0; *g = 0.42; *b = 0.22;
+    *r = 1.0; *g = 0.29; *b = 0.12;
     if (!text.startsWith(QLatin1Char('#')) || text.size() != 7) return;
     bool ok = true;
     const int value = text.midRef(1).toInt(&ok, 16);
@@ -51,63 +55,92 @@ inline QRgb clampedPixel(const QImage &image, int x, int y)
     return reinterpret_cast<const QRgb *>(image.constScanLine(std::clamp(y, 0, image.height() - 1)))[std::clamp(x, 0, image.width() - 1)];
 }
 
-// Mirrors halation() in shaders/halation.comp: gather highlight energy over a
-// golden-angle spiral so one pass covers a large radius without a pyramid.
-void halationBand(QImage &output, const QImage &source, int y0, int y1, const HalationParams &p)
+inline double softEnergy(double luminance, double threshold)
+{
+    const double soft = 0.06;
+    const double lo = threshold - soft;
+    const double hi = std::min(1.0, threshold + soft * 0.35);
+    double gate = 0.0;
+    if (hi > lo) {
+        const double t = std::clamp((luminance - lo) / (hi - lo), 0.0, 1.0);
+        gate = t * t * (3.0 - 2.0 * t);
+    } else if (luminance >= threshold) {
+        gate = 1.0;
+    }
+    return gate * std::max(0.0, luminance - lo);
+}
+
+// Film-base halation (not tinted bloom): soft-gated highlights, per-channel
+// radii, and additive fill into dark-side headroom. Matches shaders/halation.comp.
+struct HalationTap {
+    int x, y;
+    double weight[3];
+};
+
+QVector<HalationTap> halationKernel(const HalationParams &p)
 {
     const int samples = std::clamp(p.samples, 8, 64);
-    const double radius = std::max(0.0, p.radius);
+    const double scales[] = {kSigmaScaleR, kSigmaScaleG, kSigmaScaleB};
+    QVector<HalationTap> taps(samples);
+    double sums[3] = {};
+    for (int i = 0; i < samples; ++i) {
+        const double t = i + 0.5;
+        const double distance = std::sqrt(t / samples) * p.radius;
+        auto &tap = taps[i];
+        tap.x = int(std::cos(t * 2.39996323) * distance);
+        tap.y = int(std::sin(t * 2.39996323) * distance);
+        for (int c = 0; c < 3; ++c) {
+            const double sigma = std::max(1.0, p.radius * scales[c]);
+            tap.weight[c] = std::exp(-distance * distance / (2.0 * sigma * sigma));
+            sums[c] += tap.weight[c];
+        }
+    }
+    for (auto &tap : taps)
+        for (int c = 0; c < 3; ++c) tap.weight[c] /= sums[c];
+    return taps;
+}
+
+void halationBand(QImage &output, const QImage &source, int y0, int y1,
+                  const HalationParams &p, const QVector<HalationTap> &kernel, KoUpdater *updater)
+{
     for (int y = y0; y < y1; ++y) {
+        if (updater && updater->interrupted()) return;
         QRgb *row = reinterpret_cast<QRgb *>(output.scanLine(y));
         for (int x = 0; x < output.width(); ++x) {
             const QRgb centre = clampedPixel(source, x, y);
-            double glowR = 0.0, glowG = 0.0, glowB = 0.0, weightSum = 0.0;
-            const double sigma = std::max(1.0, radius * 0.45);
-            const double invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
-            for (int i = 0; i < samples; ++i) {
-                const double t = double(i) + 0.5;
-                const double angle = t * 2.39996323;
-                const double distance = std::sqrt(t / double(samples)) * radius;
-                const int ox = int(std::cos(angle) * distance);
-                const int oy = int(std::sin(angle) * distance);
-                const QRgb s = clampedPixel(source, x + ox, y + oy);
-                const double luminance = (0.2126 * qRed(s) + 0.7152 * qGreen(s) + 0.0722 * qBlue(s)) / 255.0;
-                const double energy = std::max(0.0, luminance - p.threshold);
-                const double falloff = std::exp(-(distance * distance) * invTwoSigma2);
-                const double w = energy * falloff;
-                glowR += qRed(s) * w;
-                glowG += qGreen(s) * w;
-                glowB += qBlue(s) * w;
-                weightSum += w;
+            double glowR = 0.0, glowG = 0.0, glowB = 0.0;
+            for (const auto &tap : kernel) {
+                const QRgb pixel = clampedPixel(source, x + tap.x, y + tap.y);
+                const double energy = softEnergy((kLumaR * qRed(pixel) + kLumaG * qGreen(pixel)
+                    + kLumaB * qBlue(pixel)) / 255.0, p.threshold);
+                glowR += energy * tap.weight[0];
+                glowG += energy * tap.weight[1];
+                glowB += energy * tap.weight[2];
             }
-            if (weightSum <= 0.0) { row[x] = centre; continue; }
-            const double inv = 1.0 / std::max(weightSum, 1e-6);
-            glowR *= inv * double(samples) * 0.35; glowG *= inv * double(samples) * 0.35; glowB *= inv * double(samples) * 0.35;
+            const double destLum = std::clamp(
+                (kLumaR * qRed(centre) + kLumaG * qGreen(centre) + kLumaB * qBlue(centre)) / 255.0, 0.0, 1.0);
+            const double darkBias = 0.4 + 0.6 * std::pow(1.0 - destLum, 0.9);
+            glowR *= darkBias * 1.45; glowG *= darkBias * 1.45; glowB *= darkBias * 1.45;
             const double tint = std::clamp(p.tintShift, 0.0, 1.0);
             const double gain = std::clamp(p.intensity, 0.0, 4.0);
-            double tintedR, tintedG, tintedB;
+            double shapedR, shapedG, shapedB;
             if (p.channelMode) {
-                // Channel mode: the user picks which channels glow; the colour
-                // picker is ignored so both controls never fight each other.
-                tintedR = glowR * (p.channelR ? 1.0 : 0.0);
-                tintedG = glowG * (p.channelG ? 1.0 : 0.0);
-                tintedB = glowB * (p.channelB ? 1.0 : 0.0);
+                shapedR = glowR * (p.channelR ? 1.0 : 0.0);
+                shapedG = glowG * (p.channelG ? 1.0 : 0.0);
+                shapedB = glowB * (p.channelB ? 1.0 : 0.0);
             } else {
-                tintedR = glowR + (glowR * p.colorR - glowR) * tint;
-                tintedG = glowG + (glowG * p.colorG - glowG) * tint;
-                tintedB = glowB + (glowB * p.colorB - glowB) * tint;
+                shapedR = glowR * (1.0 + (p.colorR - 1.0) * tint);
+                shapedG = glowG * (1.0 + (p.colorG - 1.0) * tint);
+                shapedB = glowB * (1.0 + (p.colorB - 1.0) * tint);
             }
-            tintedR *= gain; tintedG *= gain; tintedB *= gain;
-            auto screen = [](double base, double glow) {
-                return std::clamp(255.0 - (255.0 - base) * (255.0 - glow) / 255.0, 0.0, 255.0);
-            };
+            shapedR *= gain; shapedG *= gain; shapedB *= gain;
             const double blend = std::clamp(p.blend, 0.0, 1.0);
-            auto mixChannel = [&](double base, double glow) {
-                return std::clamp(base + (screen(base, glow) - base) * blend, 0.0, 255.0);
+            auto mixChannel = [&](double base, double light) {
+                return std::clamp(base + (255.0 - base) * light * blend, 0.0, 255.0);
             };
-            row[x] = qRgba(int(std::lround(mixChannel(qRed(centre), tintedR))),
-                           int(std::lround(mixChannel(qGreen(centre), tintedG))),
-                           int(std::lround(mixChannel(qBlue(centre), tintedB))),
+            row[x] = qRgba(int(std::lround(mixChannel(qRed(centre), shapedR))),
+                           int(std::lround(mixChannel(qGreen(centre), shapedG))),
+                           int(std::lround(mixChannel(qBlue(centre), shapedB))),
                            qAlpha(centre));
         }
     }
@@ -119,39 +152,35 @@ namespace {
 tfm::EncodedRgbaImage halationFloat(const tfm::EncodedRgbaImage &source,
                                          const HalationParams &p, KoUpdater *updater)
 {
-    auto output=source;
-    auto *dst=output.pixels.data();
-    const auto *src=source.pixels.constData();
-    QVector<QPoint> offsets;
-    for(int i=0;i<p.samples;++i) {
-        const double t=i+0.5, distance=std::sqrt(t/p.samples)*p.radius;
-        offsets.append(QPoint(int(std::cos(t*2.39996323)*distance),int(std::sin(t*2.39996323)*distance)));
-    }
-    const double colours[]={p.colorR,p.colorG,p.colorB};
-    const bool channels[]={p.channelR,p.channelG,p.channelB};
-    tfm::parallelRows(source.height,[&](int y0,int y1) {
-        for(int y=y0;y<y1;++y) {
-            if(updater && updater->interrupted()) return;
-            for(int x=0;x<source.width;++x) {
-                double glow[3]={}; double weightSum=0.0;
-                const double sigma=std::max(1.0,p.radius*0.45);
-                const double invTwoSigma2=1.0/(2.0*sigma*sigma);
-                for(int i=0;i<offsets.size();++i) {
-                    const auto &offset=offsets[i];
-                    const double distance=std::hypot(double(offset.x()),double(offset.y()));
-                    const auto *pixel=src+4*(std::clamp(y+offset.y(),0,source.height-1)*source.width+std::clamp(x+offset.x(),0,source.width-1));
-                    const double energy=std::max(0.0,0.2126*pixel[0]+0.7152*pixel[1]+0.0722*pixel[2]-p.threshold);
-                    const double w=energy*std::exp(-(distance*distance)*invTwoSigma2);
-                    for(int c=0;c<3;++c) glow[c]+=pixel[c]*w;
-                    weightSum+=w;
+    auto output = source;
+    auto *dst = output.pixels.data();
+    const auto *src = source.pixels.constData();
+    const auto kernel = halationKernel(p);
+    const double colours[] = {p.colorR, p.colorG, p.colorB};
+    const bool channels[] = {p.channelR, p.channelG, p.channelB};
+    tfm::parallelRows(source.height, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            if (updater && updater->interrupted()) return;
+            for (int x = 0; x < source.width; ++x) {
+                double glow[3] = {};
+                for (const auto &tap : kernel) {
+                    const auto *sample = src + 4 * (std::clamp(y + tap.y, 0, source.height - 1)
+                        * source.width + std::clamp(x + tap.x, 0, source.width - 1));
+                    const double energy = softEnergy(
+                        kLumaR * sample[0] + kLumaG * sample[1] + kLumaB * sample[2], p.threshold);
+                    for (int c = 0; c < 3; ++c) glow[c] += energy * tap.weight[c];
                 }
-                auto *pixel=dst+4*(y*source.width+x);
-                for(int c=0;c<3;++c) {
-                    const double tint=p.channelMode ? (channels[c] ? 1.0 : 0.0) : 1.0+(colours[c]-1.0)*p.tintShift;
-                    const double light=std::clamp(glow[c]*tint*p.intensity*0.35/std::max(weightSum,1e-6),0.0,1.0);
-                    // Screen's illumination is bounded, while out-of-range
-                    // source energy stays intact instead of clipping to white.
-                    pixel[c]=float(pixel[c]+(1.0-std::clamp(double(pixel[c]),0.0,1.0))*light*p.blend);
+                auto *pixel = dst + 4 * (y * source.width + x);
+                const double destLum = std::clamp(
+                    kLumaR * pixel[0] + kLumaG * pixel[1] + kLumaB * pixel[2], 0.0, 1.0);
+                const double darkBias = 0.4 + 0.6 * std::pow(1.0 - destLum, 0.9);
+                for (int c = 0; c < 3; ++c) {
+                    double light = glow[c] * darkBias * 1.45;
+                    const double tint = p.channelMode ? (channels[c] ? 1.0 : 0.0)
+                                                      : 1.0 + (colours[c] - 1.0) * p.tintShift;
+                    light *= tint * p.intensity;
+                    const double headroom = std::max(0.0, 1.0 - std::clamp(double(pixel[c]), 0.0, 1.0));
+                    pixel[c] = float(pixel[c] + headroom * light * p.blend);
                 }
             }
         }
@@ -198,7 +227,7 @@ KisConfigWidget *KisFilterHalation::createConfigurationWidget(QWidget *p, const 
         {"channel_b", i18n("Blue channel"), true},
     },
     {
-        {"glow_color", i18n("Glow Color"), QStringLiteral("#ff6b38")},
+        {"glow_color", i18n("Glow Color"), QStringLiteral("#ff4a1e")},
     });
 }
 
@@ -224,7 +253,7 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     params.tintShift = std::clamp(c ? c->getDouble("tint", 1.0) : 1.0, 0.0, 1.0);
     params.blend = std::clamp(c ? c->getDouble("blend", 1.0) : 1.0, 0.0, 1.0);
     params.samples = int(std::clamp(c ? c->getDouble("quality", 32.0) : 32.0, 8.0, 64.0));
-    parseGlowColor(c ? c->getString("glow_color", QStringLiteral("#ff6b38")) : QStringLiteral("#ff6b38"),
+    parseGlowColor(c ? c->getString("glow_color", QStringLiteral("#ff4a1e")) : QStringLiteral("#ff4a1e"),
                    &params.colorR, &params.colorG, &params.colorB);
     params.channelR = !c || c->getBool("channel_r", true);
     params.channelG = !c || c->getBool("channel_g", true);
@@ -329,7 +358,8 @@ void KisFilterHalation::processImpl(KisPaintDeviceSP d, const QRect &r,
     }
 
     QImage current(source.size(), QImage::Format_ARGB32);
-    tfm::parallelRows(current.height(), [&](int y0, int y1) { halationBand(current, source, y0, y1, params); });
+    const auto kernel = halationKernel(params);
+    tfm::parallelRows(current.height(), [&](int y0, int y1) { halationBand(current, source, y0, y1, params, kernel, u); });
     const QImage cropped = current.copy(outputRect.x() - srcRect.x(), outputRect.y() - srcRect.y(),
                                         outputRect.width(), outputRect.height());
     if(u && u->interrupted()) return;

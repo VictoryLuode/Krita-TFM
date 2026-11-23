@@ -5,7 +5,6 @@
 
 #include "tfm_vulkan.h"
 #include "tfm_vulkan_ipc.h"
-#include "tfm_processing.h"
 #include "tfm_gpu_budget.h"
 
 #define WIN32_LEAN_AND_MEAN

@@ -17,15 +17,54 @@ from .color_range import (
     _CaptureSignals, _LuminanceJob, _open_dialogs,
 )
 
+def _calculate_mask(source, luminance, key):
+    mode, threshold, enabled, tolerance, softness, inverted, rgba = key
+    options = dict(threshold_enabled=enabled, tolerance=tolerance, softness=softness)
+    if mode == 'color':
+        target = QColor.fromRgba(rgba)
+        samples = [(target.red(), target.green(), target.blue(), .5, .5, True)]
+        return native_mask(source, samples, max(1, round(threshold * 200 / 255)),
+                           False, 1.0, inverted, **options)
+    if mode.startswith('hue_') or mode in ('skin', 'highlights', 'midtones', 'shadows'):
+        return native_perceptual(source, luminance, mode, threshold, inverted, **options)
+    if mode in ('red', 'green', 'blue', 'luminance'):
+        return native_channel_mask(source, luminance, mode, threshold, inverted, **options)
+    raise ValueError(tr('Unknown color range selection mode.', '未知的高级选区模式。'))
+
+
+class _PreviewJob(QRunnable):
+    def __init__(self, generation, source, luminance, key, signals):
+        super().__init__()
+        self.generation = generation
+        self.source = source
+        self.luminance = luminance
+        self.key = key
+        self.signals = signals
+
+    def run(self):
+        try:
+            mask = _calculate_mask(self.source, self.luminance, self.key)
+            error = None
+        except Exception as caught:
+            mask, error = None, caught
+        self.signals.finished.emit((self.generation, self.key, mask, error))
+
+
 class ColorRangeDialog(QDialog):
     def __init__(self, document, parent=None):
         super().__init__(parent)
         self.document = document
         self.setWindowTitle(TOOL_TITLE())
         self._source_generation = 0
-        self._capture_signals = _CaptureSignals(self)
+        self._preview_busy = False
+        self._finished = False
+        self._preview_signals = _CaptureSignals()
+        self._preview_signals.finished.connect(self._preview_ready)
+        self.finished.connect(self._end_preview)
+        self._capture_signals = _CaptureSignals()
         self._capture_signals.finished.connect(self._on_capture_ready)
-        self._capture_source()
+        self.source = self._read_projection()
+        self.luminance = None
         self._bind_document_changes()
         self.target_color = QColor(255, 255, 255)
         self.mask_mode = QComboBox()
@@ -158,6 +197,8 @@ class ColorRangeDialog(QDialog):
         if destroyed is not None:
             destroyed.connect(self._remove_canvas_preview)
         layout.insertWidget(1, self.preview_mode)
+        large = self.source.width() * self.source.height() >= 1024 * 1024
+        self._capture_source(self.source, async_=large)
         self.change_mode()
         self.refresh()
 
@@ -202,6 +243,7 @@ class ColorRangeDialog(QDialog):
             pass
 
     def _apply_captured(self, source, luminance):
+        self._source_generation += 1
         self.source = source
         self.luminance = luminance
         self._mask_cache_key = None
@@ -223,7 +265,6 @@ class ColorRangeDialog(QDialog):
         elif source.isNull():
             raise ValueError(tr('Unable to read the image projection.', '无法读取图像投影。'))
         if not async_:
-            self._source_generation += 1
             self._apply_captured(source, _luminance_bytes(source))
             return
         # Projection stays on the UI thread; luminance packing moves off it.
@@ -231,11 +272,11 @@ class ColorRangeDialog(QDialog):
         generation = self._source_generation
         if hasattr(self, 'source_status'):
             self.source_status.setText(tr('Refreshing source…', '正在刷新来源…'))
-        QThreadPool.globalInstance().start(_LuminanceJob(generation, source.copy(), self._capture_signals))
+        QThreadPool.globalInstance().start(_LuminanceJob(generation, QImage(source), self._capture_signals))
 
     def _on_capture_ready(self, result):
         generation, source, luminance, error = result
-        if generation != self._source_generation:
+        if self._finished or generation != self._source_generation:
             return
         if error is not None:
             if hasattr(self, 'source_status'):
@@ -337,7 +378,7 @@ class ColorRangeDialog(QDialog):
             canvas = self._canvas_for_view(window, view)
             self.overlay = ColorRangeOverlay(canvas, view, self.document,
                                               lambda: window.activeView() == view)
-            self.overlay.set_mask(self.mask(), self.source.width(), self.source.height(), mode)
+            self.refresh()
             self.overlay.show()
             self.overlay.raise_()
         except (RuntimeError, ValueError, AttributeError) as error:
@@ -367,44 +408,39 @@ class ColorRangeDialog(QDialog):
         self._remove_canvas_preview()
         super().closeEvent(event)
 
+    def _mask_key(self):
+        return (self.mask_mode.currentData(), self.threshold.value(), self.threshold_enabled.isChecked(),
+                self.tolerance.value() if self.tolerance_enabled.isChecked() else None,
+                self.softness.value() if self.softness_enabled.isChecked() else None,
+                self.invert.isChecked(), self.target_color.rgba())
+
     def mask(self):
-        key = (self.mask_mode.currentData(), self.threshold.value(), self.threshold_enabled.isChecked(),
-               self.tolerance.value(), self.tolerance_enabled.isChecked(),
-               self.softness.value(), self.softness_enabled.isChecked(),
-               self.invert.isChecked(), self.target_color.rgba())
+        key = self._mask_key()
         if key != self._mask_cache_key:
-            result = self._calculate_mask()
-            self._mask_cache_key, self._mask_cache = key, result
+            self._mask_cache = _calculate_mask(self.source, self.luminance, key)
+            self._mask_cache_key = key
         return self._mask_cache
 
-    def _calculate_mask(self):
-        threshold = self.threshold.value() if self.threshold_enabled.isChecked() else 128
-        inverted = self.invert.isChecked()
-        mode = self.mask_mode.currentData()
-        if mode == 'color':
-            target = self.target_color
-            samples = [(target.red(), target.green(), target.blue(), .5, .5, True)]
-            tolerance = self.tolerance.value() if self.tolerance_enabled.isChecked() else None
-            softness = self.softness.value() if self.softness_enabled.isChecked() else None
-            return native_mask(
-                self.source, samples,
-                max(1, round(self.threshold.value() * 200 / 255)),
-                False, 1.0, inverted,
-                threshold_enabled=self.threshold_enabled.isChecked(),
-                tolerance=tolerance, softness=softness)
-        if mode.startswith('hue_') or mode in ('skin', 'highlights', 'midtones', 'shadows'):
-            return native_perceptual(
-                self.source, self.luminance, mode, self.threshold.value(), inverted,
-                threshold_enabled=self.threshold_enabled.isChecked(),
-                tolerance=(self.tolerance.value() if self.tolerance_enabled.isChecked() else None),
-                softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
-        if mode in ('red', 'green', 'blue', 'luminance'):
-            return native_channel_mask(
-                self.source, self.luminance, mode, self.threshold.value(), inverted,
-                threshold_enabled=self.threshold_enabled.isChecked(),
-                tolerance=(self.tolerance.value() if self.tolerance_enabled.isChecked() else None),
-                softness=(self.softness.value() if self.softness_enabled.isChecked() else None))
-        raise ValueError(tr('Unknown color range selection mode.', '未知的高级选区模式。'))
+    def _end_preview(self, *_):
+        self._finished = True
+        self.timer.stop()
+
+    def _preview_ready(self, result):
+        self._preview_busy = False
+        if self._finished:
+            return
+        generation, key, mask, error = result
+        if generation != self._source_generation or key != self._mask_key():
+            if not self.timer.isActive():
+                self.refresh()
+            return
+        if error is not None:
+            self.preview.clear()
+            self._preview_image = QImage()
+            self.preview.setText(str(error))
+            return
+        self._mask_cache_key, self._mask_cache = key, mask
+        self.refresh()
 
     def _show_preview(self, mask):
         width, height = self.source.width(), self.source.height()
@@ -424,6 +460,15 @@ class ColorRangeDialog(QDialog):
         return self._preview_image
 
     def refresh(self):
+        if self._finished or self.luminance is None:
+            return
+        key = self._mask_key()
+        if self.source.width() * self.source.height() >= 1024 * 1024 and key != self._mask_cache_key:
+            if not self._preview_busy:
+                self._preview_busy = True
+                QThreadPool.globalInstance().start(_PreviewJob(
+                    self._source_generation, self.source, self.luminance, key, self._preview_signals))
+            return
         try:
             mask = self.combined_mask()
             self._show_preview(mask)
@@ -480,7 +525,15 @@ class ColorRangeDialog(QDialog):
         QApplication.setOverrideCursor(_enum(Qt, 'WaitCursor'))
         holder = None
         try:
-            self._refresh_source(async_=False)
+            # Some hosts omit edit notifications. Compare actual projection pixels
+            # before reusing any preview, including after same-size canvas edits.
+            current = self._read_projection()
+            if self.luminance is None or current != self.source:
+                self._capture_source(current)
+            else:
+                self._source_generation += 1  # Discard older in-flight captures.
+                self._source_stale = False
+                self.source_status.clear()
             width, height = self.source.width(), self.source.height()
             combined = self.combined_mask(mode)
             selection = Selection()
@@ -492,7 +545,9 @@ class ColorRangeDialog(QDialog):
             holder.setSelection(selection)
             selection.invert()
             selection.invert()
-            self.document.setSelection(selection)
+            # Krita assigns a new parent to the global selection. Keep the
+            # temporary selection mask as the sole owner of its pixel device.
+            self.document.setSelection(selection.duplicate())
             self.document.waitForDone()
             show_selection = Krita.instance().action('toggle_display_selection')
             if show_selection is not None and not show_selection.isChecked():

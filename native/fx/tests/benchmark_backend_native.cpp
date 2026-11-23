@@ -36,7 +36,9 @@ public:
 
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
-    qputenv("TFM_THREADS","1"); qputenv("TFM_VULKAN_DISABLE","0");
+    const int threads = std::max(1, qEnvironmentVariableIntValue("TFM_BENCH_THREADS"));
+    qputenv("TFM_THREADS", QByteArray::number(threads));
+    qputenv("TFM_VULKAN_DISABLE","0");
     const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
@@ -66,7 +68,7 @@ int main(int argc,char **argv) try {
         config->setProperty("preset",QStringLiteral("custom"));config->setProperty("amount",.4);
         config->setProperty("factor",.4);
         config->setProperty("range_min",.2);config->setProperty("range_max",.8);
-        QJsonObject record{{"filter",filter->id()},{"side",side},{"cpu_threads",1}};
+        QJsonObject record{{"filter",filter->id()},{"side",side},{"cpu_threads",threads}};
         QByteArray cpu;
         for (const QByteArray &backend : {QByteArray("cpu"),QByteArray("gpu")}) {
             qputenv("TFM_BACKEND",backend);

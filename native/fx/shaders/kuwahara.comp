@@ -23,24 +23,28 @@ vec3 classicKuwahara(ivec2 centre, int radius) {
     for (int q = 0; q < 4; ++q) {
         int sx = (q & 1) == 0 ? -1 : 1;
         int sy = (q & 2) == 0 ? -1 : 1;
-        vec3 sum = vec3(0.0);
-        vec3 sumSquares = vec3(0.0);
+        uvec3 sum = uvec3(0u);
+        uvec3 sumSquares = uvec3(0u);
         int count = 0;
         for (int dy = 0; dy <= radius; ++dy) {
             for (int dx = 0; dx <= radius; ++dx) {
-                vec3 sampleValue = fetchPixel(centre + ivec2(dx * sx, dy * sy));
+                uvec3 sampleValue = uvec3(fetchPixel(centre + ivec2(dx * sx, dy * sy)));
                 sum += sampleValue;
                 sumSquares += sampleValue * sampleValue;
                 ++count;
             }
         }
-        vec3 mean = sum / float(count);
-        vec3 variance = sumSquares / float(count) - mean * mean;
-        float total = variance.r + variance.g + variance.b;
-        // Quantise so float rounding cannot flip the argmin on a tie; both the
-        // CPU and GPU path then pick the first quadrant.
-        int key = int(floor(total * 64.0 + 0.5));
-        if (key < bestKey) { bestKey = key; best = mean; }
+        uint n = uint(count);
+        uint divisor = n * n;
+        uvec3 variance = n * sumSquares - sum * sum;
+        uint numerator = variance.r + variance.g + variance.b;
+        // Split before multiplying by 64 so the U8 key fits a 32-bit register.
+        int key = int(64u * (numerator / divisor)
+                    + (64u * (numerator % divisor) + divisor / 2u) / divisor);
+        if (key < bestKey) {
+            bestKey = key;
+            best = vec3((sum + n / 2u) / n);
+        }
     }
     return best;
 }

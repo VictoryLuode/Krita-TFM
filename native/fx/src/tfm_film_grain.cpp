@@ -118,7 +118,7 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
     }
     QImage image = tfm::readImage(d, r); if (image.isNull()) return;
     const QPoint frameOffset = r.topLeft();
-    if (tfm::gpuRequested(id().id(),qint64(r.width())*r.height())) {
+    if (tfm::gpuRequested(id().id(),qint64(r.width())*r.height(), true)) {
         tfm_pointwise_gpu::Parameters gpu;
         gpu.operation = tfm_pointwise_gpu::Operation::FilmGrain;
         gpu.outputRect = r;
@@ -138,7 +138,7 @@ void KisFilterFilmGrain::processImpl(KisPaintDeviceSP d, const QRect &r, const K
         if(u && u->interrupted()) return;
         tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
     } else {
-        tfm::reportBackend(id().id(), QStringLiteral("cpu"), tfm::cpuBackendReason(id().id(),qint64(r.width())*r.height()));
+        tfm::reportBackend(id().id(), QStringLiteral("cpu"), tfm::cpuBackendReason(id().id(),qint64(r.width())*r.height(), true));
     }
     tfm::parallelRows(image.height(), [&](int y0, int y1) { grainBand(image, y0, y1, amount, size, seed, mono, frameOffset); });
     if(u && u->interrupted()) return;

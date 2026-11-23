@@ -27,6 +27,17 @@ def main():
     sys.modules['krita'] = module
     import tfm
     from tfm.manager import ManagerDialog
+    from tfm.menus.extension import _KeyFilter
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+    shortcut_owner = mock.Mock()
+    shortcut_owner.dispatch_shortcut.return_value = True
+    key_filter = _KeyFilter(shortcut_owner)
+    key_filter.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Q, Qt.NoModifier))
+    key_filter.eventFilter(None, QKeyEvent(QEvent.KeyRelease, Qt.Key_A, Qt.NoModifier))
+    shortcut_owner.pie_release.assert_not_called()
+    key_filter.eventFilter(None, QKeyEvent(QEvent.KeyRelease, Qt.Key_Q, Qt.NoModifier))
+    shortcut_owner.pie_release.assert_called_once()
     def make_manager():
         window = ManagerDialog()
         window._ensure_tab_page(0)

@@ -62,6 +62,37 @@ def test_lazy_tree_preserves_unaffected_nodes_and_async_grid(assets):
         p.close();p.deleteLater();QApplication.processEvents()
 
 
+def test_zoom_burst_keeps_visible_asset_and_uniform_sizes(assets):
+    from unittest.mock import patch
+    _, module = assets
+    p = module.AssetLibraryDocker()
+    p.resize(760, 480)
+    p.show()
+    grid = p.grid
+    try:
+        grid.addItems([str(i) for i in range(1000)])
+        for mode in (module.VIEW_THUMB, module.VIEW_LIST):
+            grid.set_view_mode(mode)
+            grid.scrollToItem(grid.item(500), module.QAbstractItemView.ScrollHint.PositionAtTop)
+            QApplication.processEvents()
+            anchor = grid.itemAt(module.QPoint(8, 8))
+            assert anchor is not None
+            previous = grid.iconSize().width()
+            setter = 'set_icon_edge' if mode == module.VIEW_THUMB else 'set_list_icon'
+            with patch.object(grid, setter, wraps=getattr(grid, setter)) as resize:
+                for _ in range(3):
+                    grid._queue_zoom(1)
+                assert not resize.called
+                wait_for(lambda: grid.iconSize().width() != previous)
+                assert resize.call_count == 1
+            assert grid.iconSize().width() == previous + 3 * (16 if mode == module.VIEW_THUMB else module.LIST_STEP)
+            assert grid.visualItemRect(anchor).intersects(grid.viewport().rect())
+            assert grid.visualItemRect(anchor).height() == grid._item_size_hint().height()
+    finally:
+        p._thumb_service.close()
+        p.close(); p.deleteLater(); QApplication.processEvents()
+
+
 def test_reload_rename_and_internal_drop_preserve_state(assets):
     root, M = assets
     (root/'A'/'nested').mkdir(parents=True); (root/'B').mkdir()
@@ -92,3 +123,28 @@ def test_reload_rename_and_internal_drop_preserve_state(assets):
     finally:
         p._thumb_service.close();wait_for(lambda:not p._thumb_service.active)
         p.close();p.deleteLater();QApplication.processEvents()
+
+
+@pytest.mark.parametrize("same", [True, False])
+def test_insert_uses_krita_document_equality(assets, same):
+    from unittest.mock import Mock
+    from types import SimpleNamespace
+    _, module = assets
+    pending_doc = SimpleNamespace(identity=1)
+    panel = Mock()
+    panel._pending_insert = dict(generation=1, mode="paint", center=None, doc=pending_doc, view=None)
+    panel._document.return_value = SimpleNamespace(identity=1 if same else 2)
+    module.AssetLibraryDocker._finish_insert_rels(panel, (1, [("pic", "path", None, None)], None))
+    assert panel._insert_one.call_count == int(same)
+
+
+def test_u16_asset_keeps_16bit_channels_and_alpha(assets):
+    import struct
+    from qtcompat import QImage, QColor
+    pixels = importlib.import_module('_asset_panel_test.assets.pixels')
+    image = QImage(1024, 1, QImage.Format.Format_RGBA64)
+    for x in range(1024):
+        image.setPixelColor(x, 0, QColor.fromRgba64(x * 64, 1234, 5678, 32001))
+    raw, width, height = pixels.paint_bytes(image, 'U16')
+    assert (width, height) == (1024, 1)
+    assert list(struct.iter_unpack('<4H', raw)) == [(5678, 1234, x * 64, 32001) for x in range(1024)]

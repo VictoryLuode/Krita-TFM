@@ -1,4 +1,5 @@
 """Pure standard-library persistent search history and favorites store."""
+from contextlib import contextmanager
 import copy
 import json
 import math
@@ -6,6 +7,7 @@ import os
 import tempfile
 import time
 import uuid
+import weakref
 
 _SCHEMA_VERSION = 2
 _MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -16,7 +18,34 @@ _FIELDS = {"id", "source", "query", "original_query", "favorite", "created_at", 
 _LEGACY_FIELDS = _FIELDS - {"alias", "favorite_order"}
 
 
+@contextmanager
+def _write_lock(path):
+    # The file remains in place across atomic replacement of the JSON itself.
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path + ".lock", "a+b") as lock:
+        lock.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield  # Closing the file releases the OS lock, including on failure.
+
+
 class SearchStore:
+    _panels = weakref.WeakValueDictionary()
+
+    @classmethod
+    def for_panel(cls, path):
+        key = os.path.normcase(os.path.realpath(path))
+        # Panels are constructed on the Qt GUI thread.
+        store = cls._panels.get(key)
+        if store is None:
+            store = cls(path)
+            cls._panels[key] = store
+        return store
+
     def __init__(self, path, history_limit=50, clock=time.time):
         if not isinstance(history_limit, int) or isinstance(history_limit, bool) or history_limit < 0:
             raise ValueError("history_limit must be a non-negative integer")
@@ -26,7 +55,13 @@ class SearchStore:
         self.last_error = ""
         self._load_blocked = False
         self._records = []
-        self._load()
+        if os.path.isfile(self.path):
+            try:
+                with _write_lock(self.path):
+                    self._load()
+            except OSError as error:
+                self._load_blocked = True
+                self.last_error = str(error)
 
     @staticmethod
     def _validate(source, query):
@@ -98,7 +133,10 @@ class SearchStore:
                 except Exception as migration_error:
                     self.last_error = 'schema1 格式升级未保存，原文件及有效记录已保留：' + str(migration_error)
         except FileNotFoundError:
-            pass
+            self._records = []
+        except OSError as error:
+            self._load_blocked = True
+            self.last_error = str(error)
         except Exception as exc:
             self.last_error = str(exc)
             try:
@@ -161,14 +199,20 @@ class SearchStore:
             raise
 
     def _change(self, operation):
-        old = copy.deepcopy(self._records)
-        try:
-            result = operation()
-            self._save()
-        except Exception as error:
-            self._records = old
-            self.last_error = str(error)
-            raise
+        if self._load_blocked:
+            raise OSError(self.last_error)
+        with _write_lock(self.path):
+            self._load()
+            if self._load_blocked:
+                raise OSError(self.last_error)
+            old = copy.deepcopy(self._records)
+            try:
+                result = operation()
+                self._save()
+            except Exception as error:
+                self._records = old
+                self.last_error = str(error)
+                raise
         self.last_error = ''
         return copy.deepcopy(result)
 

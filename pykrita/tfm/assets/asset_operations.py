@@ -39,8 +39,10 @@ class AssetOperationsMixin:
         if canvas is not None:
             try:
                 view = canvas.view()
-                if view is not None and view.document() is not None:
-                    return view.document()
+                if view is not None:
+                    document = view.document()
+                    if document is not None:
+                        return document
             except Exception:
                 pass
         try:
@@ -126,7 +128,7 @@ class AssetOperationsMixin:
         view = pending["view"]
         center = pending["center"]
         mode = pending["mode"]
-        if self._document() is not doc:
+        if self._document() != doc:
             self._tell(tr("The active document has changed.", "当前文档已切换。"))
             if callable(set_status):
                 set_status("")

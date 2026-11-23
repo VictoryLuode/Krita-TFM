@@ -27,39 +27,72 @@ inline QRgb clampedPixel(const QImage &image, int x, int y)
     return reinterpret_cast<const QRgb *>(image.constScanLine(std::clamp(y, 0, image.height() - 1)))[std::clamp(x, 0, image.width() - 1)];
 }
 
-// Classic Kuwahara: pick the quadrant with the smallest variance and use its
-// mean. Quadrants include the centre pixel, matching the reference filter.
+// Each column holds sums for the top and bottom halves of the kernel.
+struct Moments {
+    int sums[3] = {};
+    int squares[3] = {};
+
+    void addPixel(QRgb pixel) {
+        const int rgb[] = {qRed(pixel), qGreen(pixel), qBlue(pixel)};
+        for (int c = 0; c < 3; ++c) {
+            sums[c] += rgb[c];
+            squares[c] += rgb[c] * rgb[c];
+        }
+    }
+    void slide(const Moments &enter, const Moments &leave) {
+        for (int c = 0; c < 3; ++c) {
+            sums[c] += enter.sums[c] - leave.sums[c];
+            squares[c] += enter.squares[c] - leave.squares[c];
+        }
+    }
+};
+
 void classicBand(QImage &output, const QImage &source, int y0, int y1, int radius)
 {
+    const int count = (radius + 1) * (radius + 1);
+    const int divisor = count * count;
+    const int width = source.width();
+    const Moments zero;
+    QVector<Moments> top(width), bottom(width);
     for (int y = y0; y < y1; ++y) {
-        QRgb *row = reinterpret_cast<QRgb *>(output.scanLine(y));
-        for (int x = 0; x < output.width(); ++x) {
-            double bestKey = 1e30;
-            double bestR = 0.0, bestG = 0.0, bestB = 0.0;
-            for (int q = 0; q < 4; ++q) {
-                const int sx = (q & 1) == 0 ? -1 : 1;
-                const int sy = (q & 2) == 0 ? -1 : 1;
-                double sumR = 0.0, sumG = 0.0, sumB = 0.0;
-                double sumR2 = 0.0, sumG2 = 0.0, sumB2 = 0.0;
-                int count = 0;
-                for (int dy = 0; dy <= radius; ++dy) {
-                    for (int dx = 0; dx <= radius; ++dx) {
-                        const QRgb s = clampedPixel(source, x + dx * sx, y + dy * sy);
-                        const double sr = qRed(s), sg = qGreen(s), sb = qBlue(s);
-                        sumR += sr; sumG += sg; sumB += sb;
-                        sumR2 += sr * sr; sumG2 += sg * sg; sumB2 += sb * sb;
-                        ++count;
-                    }
-                }
-                const double inv = 1.0 / count;
-                const double meanR = sumR * inv, meanG = sumG * inv, meanB = sumB * inv;
-                const double variance = (sumR2 * inv - meanR * meanR) + (sumG2 * inv - meanG * meanG) + (sumB2 * inv - meanB * meanB);
-                // Quantise so float rounding cannot flip the argmin on a tie;
-                // the GPU path applies the same rule.
-                const double key = std::floor(variance * 64.0 + 0.5);
-                if (key < bestKey) { bestKey = key; bestR = meanR; bestG = meanG; bestB = meanB; }
+        top.fill(zero);
+        bottom.fill(zero);
+        for (int dy = 0; dy <= radius; ++dy) {
+            const auto *upper = reinterpret_cast<const QRgb *>(source.constScanLine(std::max(0, y - dy)));
+            const auto *lower = reinterpret_cast<const QRgb *>(source.constScanLine(std::min(source.height() - 1, y + dy)));
+            for (int x = 0; x < width; ++x) {
+                top[x].addPixel(upper[x]);
+                bottom[x].addPixel(lower[x]);
             }
-            row[x] = qRgba(int(std::lround(bestR)), int(std::lround(bestG)), int(std::lround(bestB)), qAlpha(clampedPixel(source, x, y)));
+        }
+        Moments quadrants[4];
+        for (int dx = 0; dx <= radius; ++dx) {
+            const int right = std::min(dx, width - 1);
+            quadrants[0].slide(top[0], zero);
+            quadrants[1].slide(top[right], zero);
+            quadrants[2].slide(bottom[0], zero);
+            quadrants[3].slide(bottom[right], zero);
+        }
+        auto *row = reinterpret_cast<QRgb *>(output.scanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const Moments *best = &quadrants[0];
+            qint64 bestKey = std::numeric_limits<qint64>::max();
+            for (const auto &q : quadrants) {
+                qint64 numerator = 0;
+                for (int c = 0; c < 3; ++c)
+                    numerator += qint64(q.squares[c]) * count - qint64(q.sums[c]) * q.sums[c];
+                const qint64 key = (64 * numerator + divisor / 2) / divisor;
+                if (key < bestKey) { bestKey = key; best = &q; }
+            }
+            auto mean = [&](int c) { return (best->sums[c] + count / 2) / count; };
+            row[x] = qRgba(mean(0), mean(1), mean(2), qAlpha(clampedPixel(source, x, y)));
+            const int left = std::max(0, x - radius);
+            const int next = std::min(width - 1, x + 1);
+            const int right = std::min(width - 1, x + radius + 1);
+            quadrants[0].slide(top[next], top[left]);
+            quadrants[1].slide(top[right], top[x]);
+            quadrants[2].slide(bottom[next], bottom[left]);
+            quadrants[3].slide(bottom[right], bottom[x]);
         }
     }
 }
@@ -79,22 +112,23 @@ tfm::EncodedRgbaImage floatPass(const tfm::EncodedRgbaImage &source,
         for(int y=y0;y<y1;++y) {
             if(updater && updater->interrupted()) return;
             for(int x=0;x<source.width;++x) {
-                double best=std::numeric_limits<double>::infinity();
+                const float *center = src + 4 * (y * source.width + x);
+                double best = 0.0;
                 for(int quadrant=0;quadrant<4;++quadrant) {
                     const int sx=(quadrant&1) ? 1 : -1, sy=(quadrant&2) ? 1 : -1;
                     double sum[3]={}, squares[3]={};
                     for(int dy=0;dy<=radius;++dy) for(int dx=0;dx<=radius;++dx) {
                         const float *p=src+4*(std::clamp(y+dy*sy,0,source.height-1)*source.width+std::clamp(x+dx*sx,0,source.width-1));
-                        for(int c=0;c<3;++c) { sum[c]+=p[c]; squares[c]+=double(p[c])*p[c]; }
+                        for(int c=0;c<3;++c) { const double delta = double(p[c]) - center[c]; sum[c] += delta; squares[c] += delta * delta; }
                     }
                     const double inv=1.0/((radius+1)*(radius+1));
                     double variance=0;
                     for(int c=0;c<3;++c) { sum[c]*=inv; variance+=squares[c]*inv-sum[c]*sum[c]; }
                     // Keep full precision: the U8 variance tie quantizer would
                     // erase real differences in a high-depth smooth gradient.
-                    if(variance<best) {
+                    if (quadrant == 0 || variance < best - 1e-5 * std::abs(best)) {
                         best=variance;
-                        for(int c=0;c<3;++c) dst[4*(y*source.width+x)+c]=float(sum[c]);
+                        for(int c=0;c<3;++c) dst[4*(y*source.width+x)+c]=float(center[c] + sum[c]);
                     }
                 }
             }
@@ -177,6 +211,7 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
         gpu.radius = params.radius;
         QString reason;
         QString device;
+        int completedPasses = 0;
         bool usedGpu = false;
         if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
             tfm::EncodedRgbaImage passOutput;
@@ -184,16 +219,15 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
             for (int pass = 0; pass < params.iterations && ok; ++pass) {
                 ok = tfm_kuwahara_gpu::renderFloat(current, gpu, passOutput, reason, device,
                                                    [u] { return u && u->interrupted(); });
-                if (ok) current = passOutput;
+                if (ok) { current = passOutput; ++completedPasses; }
             }
             if (u && u->interrupted()) return;
             usedGpu = ok;
-            if (!ok) tfm::reportBackend(id().id(), QStringLiteral("cpu"), reason);
         } else {
-            tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
+            reason = QStringLiteral("CPU selected");
         }
         if (!usedGpu) {
-            for(int pass=0;pass<params.iterations;++pass) {
+            for(int pass=completedPasses;pass<params.iterations;++pass) {
                 current=floatPass(current,params.radius,u);
                 if(u && u->interrupted()) return;
             }
@@ -201,7 +235,7 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
         const auto cropped=current.copy(QRect(outputRect.topLeft()-srcRect.topLeft(),outputRect.size()));
         const bool written=tfm::writeEncodedImage(d,cropped,outputRect);
         tfm::reportBackend(id().id(), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu"),
-            written ? QString() : QStringLiteral("Float output conversion failed; pixels unchanged"),
+            written ? (usedGpu ? QString() : reason) : QStringLiteral("Float output conversion failed; pixels unchanged"),
             usedGpu ? device : QString());
         if(written && u) u->setProgress(100);
         return;
@@ -209,7 +243,6 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     const QImage source = tfm::readImage(pristine, srcRect);
     if (source.isNull()) return;
 
-    bool rendered = false;
     if (tfm::gpuRequested(id().id(), qint64(srcRect.width()) * srcRect.height())) {
         tfm_kuwahara_gpu::Parameters gpu;
         gpu.srcRect = srcRect;
@@ -236,7 +269,6 @@ void KisFilterKuwahara::processImpl(KisPaintDeviceSP d, const QRect &r,
     } else {
         tfm::reportBackend(id().id(), QStringLiteral("cpu"), QStringLiteral("CPU selected"));
     }
-    Q_UNUSED(rendered);
 
     QImage current = source.copy();
     for (int pass = 0; pass < params.iterations; ++pass) {

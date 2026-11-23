@@ -162,7 +162,7 @@ void renderLens(const QRect &frame,const QRect &outputRect,bool horizontal,doubl
                         ? (tfm::deterministicNoise(int(imageX-0.5), int(imageY-0.5), start * steps + i, 71) + 1.0) * 0.5
                         : 0.5)) / steps;
                     const double value = chromatic[start] + increment * amount;
-                    const double channelScale = 1.0 / (1.0 + std::sqrt(std::max(0.0, 1.0 - value * distanceSquared)));
+                    const double channelScale = distortionScale(value);
                     const double sampleX = (uvx * channelScale + 0.5) * width - 0.5;
                     const double sampleY = (uvy * channelScale + 0.5) * height - 0.5;
                     const auto pixel = read(sampleX, sampleY);

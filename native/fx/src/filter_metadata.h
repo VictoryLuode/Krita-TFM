@@ -52,7 +52,7 @@ inline const QVector<Parameter> &parameters() {
         {QStringLiteral("tfm_halation"), QStringLiteral("channel_r"), QStringLiteral("bool"), 0, 0, QVariant(true), {}, true},
         {QStringLiteral("tfm_halation"), QStringLiteral("channel_g"), QStringLiteral("bool"), 0, 0, QVariant(true), {}, true},
         {QStringLiteral("tfm_halation"), QStringLiteral("channel_b"), QStringLiteral("bool"), 0, 0, QVariant(true), {}, true},
-        {QStringLiteral("tfm_halation"), QStringLiteral("glow_color"), QStringLiteral("string"), 0, 0, QVariant(QStringLiteral("#ff6b38")), {}, false},
+        {QStringLiteral("tfm_halation"), QStringLiteral("glow_color"), QStringLiteral("string"), 0, 0, QVariant(QStringLiteral("#ff4a1e")), {}, false},
         {QStringLiteral("tfm_lens_flare"), QStringLiteral("threshold"), QStringLiteral("number"), 0.0, 1.0, QVariant(0.85), {}, true},
         {QStringLiteral("tfm_lens_flare"), QStringLiteral("length"), QStringLiteral("number"), 0.01, 1.0, QVariant(0.35), {}, true},
         {QStringLiteral("tfm_lens_flare"), QStringLiteral("decay"), QStringLiteral("number"), 1.0, 6.0, QVariant(3.0), {}, true},

@@ -20,11 +20,11 @@ Custom **menus**, **native filters**, **Advanced Selection**, and an **asset lib
 - **Asset Library** — categorized cutouts onto the canvas; save the active layer as an asset.
 - **Quick Image Search** · **Layer Color Space** — optional tools you can enable under Configure TFM → Tools.
 
-## What's new in 0.1.10
+## What's new in 0.1.11
 
-- Filter quality polish (grain, bloom, guided, temperature, vibrance, color range, halation, flare, lens, motion, vignette) plus broader float Vulkan paths.
-- Auto/GPU prefers Vulkan then falls back to CPU; Settings GPU memory budget defaults to 1024 MB.
-- Statistical Color Match removed; GEGL stays local-GIMP-only (not in the zip); Relight remains experimental.
+- Advanced Selection computes luminance in the background on large canvases. Replace reuses the preview mask when the pixels and selection parameters still match.
+- Auto prefers CPU for 8-bit film grain through 16,777,216 pixels. Other lightweight filters use CPU for small regions while the Vulkan worker is cold. Explicit GPU prefers Vulkan. Settings GPU memory budget defaults to 1024 MB.
+- The Asset Library combines consecutive Ctrl+wheel zoom steps into a single layout update and keeps the current asset in view.
 
 Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
@@ -53,7 +53,7 @@ Full changelog: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 - [ ] macOS
 - [ ] Android
 
-1. Download `TFM-0.1.10.zip` (or the newest `TFM-*.zip`) from [Releases](../../releases).
+1. Download the latest packaged `TFM-*.zip` from [Releases](../../releases).
 2. Copy everything under `resource/` into your Krita **resource** directory.
 3. Copy `kritaplugins/kritatfm.dll` and `kritaplugins/tfm_vulkan_worker.exe` into the Krita install `lib/kritaplugins/` folder (same directory).
 4. Start Krita and enable **TFM** under **Settings → Manage Resources → Python Plugin Manager** if needed.

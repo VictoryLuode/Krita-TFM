@@ -21,11 +21,20 @@ layout(std430, binding = 2) readonly buffer Parameters {
 } p;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+// Film-base scattering: red travels farthest, blue barely returns (Detwiler ratios).
+const vec3 kSigmaScale = vec3(0.55, 0.336, 0.214);
 
 vec3 fetchPixel(ivec2 c) {
     c = clamp(c, ivec2(0), ivec2(p.width - 1, p.height - 1));
     uint v = src.pixels[c.y * p.width + c.x];
     return vec3(float((v >> 16u) & 255u), float((v >> 8u) & 255u), float(v & 255u));
+}
+
+float softEnergy(float luminance) {
+    // Soft knee around Threshold so only bright sources drive the halo.
+    float soft = 0.06;
+    float gate = smoothstep(p.threshold - soft, min(1.0, p.threshold + soft * 0.35), luminance);
+    return gate * max(luminance - (p.threshold - soft), 0.0);
 }
 
 void main() {
@@ -34,16 +43,17 @@ void main() {
     uint packed = src.pixels[centre.y * p.width + centre.x];
     float alpha = float((packed >> 24u) & 255u);
     vec3 base = fetchPixel(centre);
+    vec3 baseN = base / 255.0;
 
-    // Gather the highlight energy of a large disc with a golden-angle spiral.
-    // A single pass keeps this on the GPU with no intermediate readback; the
-    // sampling density is what "Quality" controls.
     int samples = clamp(p.samples, 8, 64);
-    float radius = max(0.0, p.radius);
-    float sigma = max(1.0, radius * 0.45);
-    float invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
+    float radius = max(1.0, p.radius);
+    vec3 sigma = max(vec3(1.0), radius * kSigmaScale);
+    vec3 invTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
+
+    // Gather gated highlight energy with per-channel radii so the far field
+    // collapses to red instead of a uniformly tinted bloom disk.
     vec3 glow = vec3(0.0);
-    float weightSum = 0.0;
+    vec3 kernelSum = vec3(0.0);
     for (int i = 0; i < samples; ++i) {
         float t = float(i) + 0.5;
         float angle = t * 2.39996323;
@@ -51,32 +61,32 @@ void main() {
         ivec2 offset = ivec2(cos(angle) * distance, sin(angle) * distance);
         vec3 sampleValue = fetchPixel(centre + offset);
         float luminance = dot(sampleValue, kLuma) / 255.0;
-        float energy = max(0.0, luminance - p.threshold);
-        float w = energy * exp(-(distance * distance) * invTwoSigma2);
-        glow += sampleValue * w;
-        weightSum += w;
+        float energy = softEnergy(luminance);
+        vec3 falloff = exp(-(distance * distance) * invTwoSigma2);
+        glow += energy * falloff;
+        kernelSum += falloff;
     }
-    if (weightSum <= 0.0) {
-        dst.pixels[centre.y * p.width + centre.x] = packed;
-        return;
-    }
-    glow *= (float(samples) * 0.35) / max(weightSum, 1e-6);
+    glow /= max(kernelSum, vec3(1e-6));
 
-    // Two mutually exclusive modes: pick a glow colour, or pick which channels
-    // glow. Channel switches are ignored in colour mode and vice versa.
-    vec3 tinted;
+    float destLum = clamp(dot(baseN, kLuma), 0.0, 1.0);
+    // Halos read against darker backgrounds (Dehancer-style background bias).
+    float darkBias = mix(0.4, 1.0, pow(1.0 - destLum, 0.9));
+    glow *= darkBias * 1.45;
+
+    vec3 shaped;
     if (p.mode == 1) {
-        tinted = glow * vec3(p.channelR != 0 ? 1.0 : 0.0,
+        shaped = glow * vec3(p.channelR != 0 ? 1.0 : 0.0,
                              p.channelG != 0 ? 1.0 : 0.0,
                              p.channelB != 0 ? 1.0 : 0.0);
     } else {
-        vec3 warm = glow * vec3(p.colorR, p.colorG, p.colorB);
-        tinted = mix(glow, warm, clamp(p.tintShift, 0.0, 1.0));
+        vec3 warm = vec3(p.colorR, p.colorG, p.colorB);
+        shaped = glow * mix(vec3(1.0), warm, clamp(p.tintShift, 0.0, 1.0));
     }
-    tinted *= clamp(p.intensity, 0.0, 4.0);
+    shaped *= clamp(p.intensity, 0.0, 4.0);
 
-    vec3 combined = 255.0 - (255.0 - base) * (255.0 - tinted) / 255.0;
-    vec3 outC = clamp(mix(base, combined, clamp(p.blend, 0.0, 1.0)), 0.0, 255.0);
+    // Additive exposure into remaining headroom — bright cores stay, dark edges pick up red.
+    float amount = clamp(p.blend, 0.0, 1.0);
+    vec3 outC = clamp(base + (vec3(255.0) - base) * shaped * amount, 0.0, 255.0);
     dst.pixels[centre.y * p.width + centre.x] =
         (uint(round(alpha)) << 24u) | (uint(round(outC.r)) << 16u)
         | (uint(round(outC.g)) << 8u) | uint(round(outC.b));

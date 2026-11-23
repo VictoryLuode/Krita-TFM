@@ -9,7 +9,11 @@
 #include "background_composite.h"
 #include <QApplication>
 #include <QDir>
+#include <QLibrary>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFile>
+#include <QFileInfo>
 #include <KoColorSpaceRegistry.h>
 #include <KoResourcePaths.h>
 #include <KisGlobalResourcesInterface.h>
@@ -56,11 +60,72 @@ static QByteArray bytes(KisPaintDeviceSP d,const QRect &area=::area) {
     QByteArray raw(area.width()*area.height()*d->pixelSize(),Qt::Uninitialized);
     d->readBytes(reinterpret_cast<quint8*>(raw.data()),area); return raw;
 }
+#ifndef TFM_RECORD_BASELINE
+static void checkGpuStatus(const QString &filterId)
+{
+    QFile status(QFileInfo(tfm::settingsPath()).dir().filePath("backend-status.json"));
+    check(status.open(QIODevice::ReadOnly), "GPU status missing");
+    const auto record = QJsonDocument::fromJson(status.readAll()).object();
+    check(record["actual"].toString() == "gpu" && record["filter"].toString() == filterId,
+          "spatial regression did not execute on GPU");
+}
+
+static void checkHalationEdge(KisFilterHalation &filter, const KoColorSpace *space)
+{
+    const QRect box(0, 0, 64, 64);
+    tfm::EncodedRgbaImage edge;
+    edge.width = box.width();
+    edge.height = box.height();
+    edge.pixels.resize(edge.width * edge.height * 4);
+    for (int y = 0; y < edge.height; ++y) {
+        for (int x = 0; x < edge.width; ++x) {
+            float *pixel = edge.pixels.data() + 4 * (y * edge.width + x);
+            std::fill_n(pixel, 3, x >= edge.width / 2 ? 1.f : 0.f);
+            pixel[3] = 1.f;
+        }
+    }
+    auto config = filter.defaultConfiguration(KisGlobalResourcesInterface::instance());
+    config->setProperty("threshold", .75);
+    config->setProperty("quality", 32);
+    config->setProperty("glow_mode", "channels");
+    for (int radius : {3, 24}) {
+        config->setProperty("radius", radius);
+        QVector<float> reference;
+        for (bool gpu : {false, true}) {
+            qputenv("TFM_BACKEND", gpu ? "gpu" : "cpu");
+            qputenv("TFM_VULKAN_DISABLE", gpu ? "0" : "1");
+            KisPaintDeviceSP device = new KisPaintDevice(space);
+            device->setDefaultBounds(new Bounds(box));
+            check(tfm::writeEncodedImage(device, edge, box), "halation edge fixture failed");
+            KisTransaction tx(device);
+            filter.processImpl(device, box, config, nullptr);
+            tx.end();
+            const auto result = tfm::readEncodedImage(device, box).pixels;
+            if (gpu) {
+                checkGpuStatus(filter.id().id());
+                for (int i = 0; i < result.size(); ++i)
+                    check(std::abs(reference[i] - result[i]) < .0001, "halation edge CPU/GPU mismatch");
+            } else {
+                reference = result;
+                check(result != edge.pixels, "halation edge was not processed");
+            }
+        }
+    }
+    qputenv("TFM_BACKEND", "cpu");
+    qputenv("TFM_VULKAN_DISABLE", "1");
+}
+#endif
+
 int main(int argc,char **argv) try {
     QApplication app(argc,argv);
     const QString runtime=[](){ QByteArray v=qgetenv("TFM_KRITA_RUNTIME"); if(v.isEmpty()) v=qgetenv("FXMANAGER_KRITA_RUNTIME"); return QString::fromLocal8Bit(v); }();
     app.addLibraryPath(runtime+"/lib");
     KoResourcePaths::addAssetDir("icc_profiles",runtime+"/share/color/icc/krita");
+#ifndef TFM_RECORD_BASELINE
+    QLibrary candidate(QString::fromLocal8Bit(qgetenv("TFM_TEST_NATIVE_DLL")));
+    candidate.setLoadHints(QLibrary::PreventUnloadHint);
+    check(candidate.load(), "isolated GPU plugin not loaded");
+#endif
     auto *registry=KoColorSpaceRegistry::instance();
     KisFilterBloom bloom; KisFilterHalation halation; KisFilterKuwahara kuwahara;
     KisFilterLensFlare flare; KisFilterAnamorphicFlare streak; KisFilterLensDistortion lens; KisFilterColorRangeMask mask;
@@ -86,6 +151,22 @@ int main(int argc,char **argv) try {
         }
         if(baseline) continue;
         const auto expected=tfm::readFloatImage(whole,area);
+#ifndef TFM_RECORD_BASELINE
+        if (depth == "F32" && (index == 2 || index == 3 || index == 6)) {
+            qputenv("TFM_BACKEND", "gpu");
+            qputenv("TFM_VULKAN_DISABLE", "0");
+            auto accelerated = fixture(cs);
+            { KisTransaction tx(accelerated); filter->processImpl(accelerated, area, config, nullptr); tx.end(); }
+            checkGpuStatus(filter->id());
+            qputenv("TFM_BACKEND", "auto");
+            check(tfm::gpuRequested("tfm_vibrance", 64 * 64), "warm Auto preview bypassed the GPU");
+            const auto result = tfm::readFloatImage(accelerated, area);
+            for (int i = 0; i < expected.pixels.size(); ++i)
+                check(std::abs(expected.pixels[i] - result.pixels[i]) < .0001, "F32 spatial CPU/GPU mismatch");
+            qputenv("TFM_BACKEND", "cpu");
+            qputenv("TFM_VULKAN_DISABLE", "1");
+        }
+#endif
         for(bool reverse:{false,true}) {
             auto tiled=fixture(cs);
             KisTransaction transaction(tiled);
@@ -146,6 +227,7 @@ int main(int argc,char **argv) try {
         }
     }
 #ifndef TFM_RECORD_BASELINE
+    checkHalationEdge(halation, registry->colorSpace("RGBA", "F32", registry->p709G10Profile()));
     tfm::guided::Lut lut; lut.valid=true;
     for(int r=0;r<lut.Size;++r) for(int g=0;g<lut.Size;++g) for(int b=0;b<lut.Size;++b) {
         lut.values[lut.index(r,g,b,0)]=float(r)/(lut.Size-1);

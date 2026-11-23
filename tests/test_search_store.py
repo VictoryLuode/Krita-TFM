@@ -261,3 +261,16 @@ def test_schema_version_bool_is_rejected_as_corrupt(tmp_path):
     assert store.last_error
     assert list(tmp_path.glob('db.json.corrupt*'))
 
+
+
+def test_open_panels_and_independent_writers_preserve_favorites(tmp_path):
+    path = tmp_path / 'db.json'
+    first = SearchStore.for_panel(path)
+    second = SearchStore.for_panel(path)
+    independent = SearchStore(path)
+    one = first.toggle_favorite('google', 'one')
+    assert second.get(one['id'])['favorite']
+    independent.toggle_favorite('pinterest', 'two')
+    second.set_alias(one['id'], 'shared')
+    assert [(r['query'], r['alias']) for r in SearchStore(path).favorites()] == [
+        ('one', 'shared'), ('two', '')]

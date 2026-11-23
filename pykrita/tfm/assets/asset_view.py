@@ -194,7 +194,6 @@ class AssetViewMixin:
             item.setData(Qt.ItemDataRole.UserRole + 20, path)
             item.setToolTip(os.path.splitext(name)[0])
             item.setTextAlignment(self.grid._item_alignment())
-            item.setSizeHint(self.grid._item_size_hint())
             item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable

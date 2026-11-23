@@ -1,6 +1,6 @@
 # Candidate build, installation and rollback
 
-This is the 0.1.10 build prepared for user testing. Live-host interaction acceptance
+This is the 0.1.11 build prepared for user testing. Live-host interaction acceptance
 remains separate from the automated checks. Use the matching deployment record
 to determine whether a particular installation has been updated.
 

@@ -137,15 +137,18 @@ def smoke_live():
         print("smoke_search_providers: live skipped (set TFM_SEARCH_LIVE=1 to enable)")
         return
     from quick_image_search.backend import Backend
+    from qtcompat import QCoreApplication
+    app = QCoreApplication.instance() or QCoreApplication([])
     with tempfile.TemporaryDirectory(prefix="tfm-search-live-") as temporary:
         backend = Backend()
-        backend.start(temporary)
-        hits = backend.search("pinterest", "red fox", limit=2)
-        assert isinstance(hits, list) and hits, "live Pinterest returned no hits"
-        print(f"smoke_search_providers: live ok ({len(hits)} hits)")
-        for driver in (backend._google, backend._pinterest):
-            if driver is not None and hasattr(driver, "close"):
-                driver.close()
+        try:
+            backend.start(temporary)
+            hits = backend.search("pinterest", "red fox", limit=2)
+            assert hits, "live Pinterest returned no hits"
+            print(f"smoke_search_providers: live ok ({len(hits)} hits)")
+        finally:
+            backend.close()
+
 
 
 def main():

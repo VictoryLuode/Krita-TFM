@@ -2,6 +2,11 @@
 
 from .widget_helpers import *  # noqa: F401,F403
 
+class GridSizeDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        return self.parent()._item_size_hint()
+
+
 class ImageGrid(QListWidget):
     def __init__(self, panel):
         super().__init__()
@@ -10,6 +15,12 @@ class ImageGrid(QListWidget):
         self._icon_edge = ICON_DEFAULT
         self._list_icon = LIST_DEFAULT
         self._zoom_remainder = 0
+        self._zoom_target = None
+        self._zoom_timer = QTimer(self)
+        self._zoom_timer.setSingleShot(True)
+        self._zoom_timer.setInterval(40)
+        self._zoom_timer.timeout.connect(self._flush_zoom)
+        self.setItemDelegate(GridSizeDelegate(self))
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setMovement(QListWidget.Movement.Static)
         self.setWordWrap(False)
@@ -49,17 +60,34 @@ class ImageGrid(QListWidget):
             steps = int(self._zoom_remainder / 120)
             self._zoom_remainder -= steps * 120
             if steps:
-                if self._view_mode == VIEW_LIST:
-                    self.set_list_icon(self._list_icon + steps * LIST_STEP)
-                    self.panel._remember_list_icon(self._list_icon)
-                else:
-                    self.set_icon_edge(self._icon_edge + steps * 16)
-                    self.panel._remember_icon_edge(self._icon_edge)
+                self._queue_zoom(steps)
             event.accept()
             return
         super().wheelEvent(event)
 
+    def _queue_zoom(self, steps):
+        if self._view_mode == VIEW_LIST:
+            base, step, low, high = self._list_icon, LIST_STEP, LIST_MIN, LIST_MAX
+        else:
+            base, step, low, high = self._icon_edge, 16, ICON_MIN, ICON_MAX
+        current = base if self._zoom_target is None else self._zoom_target
+        self._zoom_target = max(low, min(high, current + steps * step))
+        self._zoom_timer.start()
+
+    def _flush_zoom(self):
+        edge, self._zoom_target = self._zoom_target, None
+        if edge is None:
+            return
+        self._zoom_timer.stop()
+        if self._view_mode == VIEW_LIST:
+            self.set_list_icon(edge)
+            self.panel._remember_list_icon(edge)
+        else:
+            self.set_icon_edge(edge)
+            self.panel._remember_icon_edge(edge)
+
     def set_view_mode(self, mode):
+        self._flush_zoom()
         mode = VIEW_LIST if mode == VIEW_LIST else VIEW_THUMB
         self._view_mode = mode
         if mode == VIEW_LIST:
@@ -104,7 +132,9 @@ class ImageGrid(QListWidget):
         self._list_icon = edge
         if self._view_mode == VIEW_LIST:
             self.setIconSize(QSize(edge, edge))
-            self._restyle_items()
+            self.doItemsLayout()
+            if hasattr(self.panel, '_thumb_timer'):
+                self.panel._thumb_timer.start()
         if anchor is not None:
             self.scrollToItem(anchor, QAbstractItemView.ScrollHint.PositionAtTop)
 
@@ -112,8 +142,6 @@ class ImageGrid(QListWidget):
         cell = QSize(edge + 16, edge + 40)
         self.setIconSize(QSize(edge, edge))
         self.setGridSize(cell)
-        for index in range(self.count()):
-            self.item(index).setSizeHint(cell)
         self.doItemsLayout()
         if hasattr(self.panel, "_thumb_timer"):
             self.panel._thumb_timer.start()
@@ -130,16 +158,9 @@ class ImageGrid(QListWidget):
         return Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
 
     def _restyle_items(self):
-        hint = self._item_size_hint()
         align = self._item_alignment()
-        if self._view_mode == VIEW_LIST:
-            self.setUniformItemSizes(False)
         for index in range(self.count()):
-            item = self.item(index)
-            item.setSizeHint(hint)
-            item.setTextAlignment(align)
-        if self._view_mode == VIEW_LIST:
-            self.setUniformItemSizes(True)
+            self.item(index).setTextAlignment(align)
         self.doItemsLayout()
         if hasattr(self.panel, "_thumb_timer"):
             self.panel._thumb_timer.start()

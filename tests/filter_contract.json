@@ -1,0 +1,131 @@
+{
+  "tfm_bloom": {
+    "threshold": {"default": 0.7, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "radius": {"default": 12.0, "max": 64.0, "min": 1.0, "value_type": "number"},
+    "strength": {"default": 0.65, "max": 2.0, "min": 0.0, "value_type": "number"},
+    "diffusion": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "softness": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_filmgrain": {
+    "preset": {"default": "super_8", "options": ["8mm_caffenol", "8mm_home_movie", "super_8", "16mm_broadcast", "16mm_indie_cinema", "35mm_portra_400", "super_35", "70mm_cinema", "custom"], "value_type": "enum"},
+    "amount": {"default": 0.18, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "size": {"default": 2.0, "max": 8.0, "min": 0.5, "value_type": "number"},
+    "seed": {"default": 17, "max": 999, "min": 0, "value_type": "integer"},
+    "monochrome": {"default": true, "value_type": "bool"}
+  },
+  "tfm_lens_distortion": {
+    "mode": {"default": "radial", "options": ["r", "h"], "value_type": "enum"},
+    "distortion": {"default": 0.0, "max": 1.0, "min": -1.0, "value_type": "number"},
+    "dispersion": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "jitter": {"default": false, "value_type": "bool"},
+    "fit": {"default": false, "value_type": "bool"}
+  },
+  "tfm_vignette": {
+    "factor": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "feather": {"default": 0.4, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "corner_roundness": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "scale_x": {"default": 0.8, "max": 4.0, "min": 0.0001, "value_type": "number"},
+    "scale_y": {"default": 0.8, "max": 4.0, "min": 0.0001, "value_type": "number"},
+    "offset_x": {"default": 0.0, "max": 2.0, "min": -2.0, "value_type": "number"},
+    "offset_y": {"default": 0.0, "max": 2.0, "min": -2.0, "value_type": "number"},
+    "angle": {"default": 0.0, "max": 180.0, "min": -180.0, "value_type": "number"}
+  },
+  "tfm_color_temperature": {
+    "temperature": {"default": 6500.0, "max": 12000.0, "min": 2000.0, "value_type": "number"},
+    "tint": {"default": 0.0, "max": 100.0, "min": -100.0, "value_type": "number"},
+    "blend": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "preserve_luminance": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_vibrance": {
+    "vibrance": {"default": 30.0, "max": 100.0, "min": -100.0, "value_type": "number"},
+    "saturation": {"default": 0.0, "max": 100.0, "min": -100.0, "value_type": "number"},
+    "protect_highlights": {"default": 0.5, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "blend": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_kuwahara": {
+    "size": {"default": 2, "max": 12, "min": 1, "value_type": "integer"},
+    "iterations": {"default": 1, "max": 4, "min": 1, "value_type": "integer"}
+  },
+  "tfm_halation": {
+    "threshold": {"default": 0.75, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "radius": {"default": 24.0, "max": 200.0, "min": 1.0, "value_type": "number"},
+    "intensity": {"default": 1.0, "max": 4.0, "min": 0.0, "value_type": "number"},
+    "tint": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "blend": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "quality": {"default": 32, "max": 64, "min": 8, "value_type": "integer"},
+    "glow_mode": {"default": "color", "options": ["color", "channels"], "value_type": "enum"},
+    "channel_r": {"default": true, "value_type": "bool"},
+    "channel_g": {"default": true, "value_type": "bool"},
+    "channel_b": {"default": true, "value_type": "bool"},
+    "glow_color": {"default": "#ff4a1e", "value_type": "string"}
+  },
+  "tfm_lens_flare": {
+    "threshold": {"default": 0.85, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "length": {"default": 0.35, "max": 1.0, "min": 0.01, "value_type": "number"},
+    "decay": {"default": 3.0, "max": 6.0, "min": 1.0, "value_type": "number"},
+    "intensity": {"default": 1.0, "max": 4.0, "min": 0.0, "value_type": "number"},
+    "tint": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "sources": {"default": 1, "max": 8, "min": 1, "value_type": "integer"},
+    "blend": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_anamorphic_flare": {
+    "threshold": {"default": 0.85, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "length": {"default": 0.45, "max": 1.0, "min": 0.01, "value_type": "number"},
+    "decay": {"default": 0.35, "max": 2.0, "min": 0.05, "value_type": "number"},
+    "aspect": {"default": 0.012, "max": 0.2, "min": 0.002, "value_type": "number"},
+    "intensity": {"default": 1.0, "max": 4.0, "min": 0.0, "value_type": "number"},
+    "tint": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "sources": {"default": 2, "max": 8, "min": 1, "value_type": "integer"},
+    "blend": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_guided_color_match": {
+    "align_brightness": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "match_strength": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "chroma": {"default": 1.0, "max": 2.0, "min": 0.0, "value_type": "number"},
+    "keep_local": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "match_local": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "smoothness": {"default": 0.35, "max": 1.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_background_removal": {
+    "model": {"default": "BiRefNet-lite-F16.gguf", "options": ["BiRefNet-lite-F16.gguf", "BiRefNet-dynamic-F16.gguf"], "value_type": "enum"},
+    "backend": {"default": "cpu", "options": ["c", "g"], "value_type": "enum"},
+    "foreground_mode": {"default": "refined_foreground", "options": ["fast_mask", "refined_foreground"], "value_type": "enum"},
+    "output_mode": {"default": "cutout", "options": ["cutout", "grayscale_mask"], "value_type": "enum"},
+    "preserve_foreground": {"default": 0, "max": 100, "min": 0, "value_type": "integer"},
+    "mask_contrast": {"default": 0, "max": 100, "min": -100, "value_type": "integer"}
+  },
+  "tfm_color_range_mask": {
+    "channel": {"default": "gray", "options": ["gray", "r", "g", "b", "hue", "saturation", "lightness", "chroma", "ok_hue", "delta_e"], "value_type": "enum"},
+    "range_min": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "range_max": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "softness": {"default": 0.05, "max": 0.5, "min": 0.0, "value_type": "number"},
+    "invert": {"default": false, "value_type": "bool"},
+    "preserve_rgb": {"default": true, "value_type": "bool"}
+  },
+  "tfm_motion_blur_circular": {
+    "center_x": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "center_y": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "angle": {"default": 20.0, "max": 360.0, "min": 0.0, "value_type": "number"}
+  },
+  "tfm_motion_blur_zoom": {
+    "center_x": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "center_y": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "factor": {"default": 0.1, "max": 1.0, "min": -10.0, "value_type": "number"}
+  },
+  "tfm_focus_blur": {
+    "blur_type": {"default": "gaussian", "options": ["gaussian", "lens"], "value_type": "enum"},
+    "blur_radius": {"default": 25.0, "max": 200.0, "min": 0.0, "value_type": "number"},
+    "highlight_factor": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "highlight_threshold_low": {"default": 0.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "highlight_threshold_high": {"default": 1.0, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "shape": {"default": "circle", "options": ["circle", "square", "diamond", "horizontal", "vertical"], "value_type": "enum"},
+    "x": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "y": {"default": 0.5, "max": 2.0, "min": -1.0, "value_type": "number"},
+    "radius": {"default": 0.75, "max": 3.0, "min": 0.0, "value_type": "number"},
+    "focus": {"default": 0.25, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "midpoint": {"default": 0.5, "max": 1.0, "min": 0.0, "value_type": "number"},
+    "aspect_ratio": {"default": 0.0, "max": 1.0, "min": -1.0, "value_type": "number"},
+    "rotation": {"default": 0.0, "max": 180.0, "min": -180.0, "value_type": "number"},
+    "high_quality": {"default": false, "value_type": "bool"}
+  }
+}

@@ -7,6 +7,8 @@
 
 namespace tfm {
 
+std::uint64_t gpuMemoryBudgetBytes();
+
 inline constexpr std::uint64_t kDefaultGpuMemoryBudgetMb = 1024;
 inline constexpr std::uint64_t kMinGpuMemoryBudgetMb = 128;
 inline constexpr std::uint64_t kMaxGpuMemoryBudgetMb = 8192;

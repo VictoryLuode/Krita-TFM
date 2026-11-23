@@ -208,16 +208,32 @@ QString requestedBackend(const QString &filterId)
 }
 }
 
-bool gpuRequested(const QString &filterId, qint64 /*pixels*/)
+static bool cpuGrainRegion(const QString &filterId, qint64 pixels, bool u8)
 {
-    // Auto and GPU both prefer Vulkan; filters fall back to CPU when the worker
-    // rejects the job (unsupported depth, memory, device missing, etc.).
-    return requestedBackend(filterId) != QLatin1String("cpu");
+    return u8 && filterId == QLatin1String("tfm_filmgrain") && pixels > 0 && pixels <= 4096LL * 4096;
 }
 
-QString cpuBackendReason(const QString & /*filterId*/, qint64 /*pixels*/)
+bool gpuRequested(const QString &filterId, qint64 pixels, bool u8)
 {
-    return QStringLiteral("CPU selected");
+    const auto backend = requestedBackend(filterId);
+    if (backend == QLatin1String("cpu")) return false;
+    if (backend == QLatin1String("auto") && cpuGrainRegion(filterId, pixels, u8)) return false;
+    // The host supplies the requested region, including small previews and tiles.
+    // Cap this shortcut at the measured pointwise range; spatial kernels cost more.
+    const bool inexpensive = filterId == QLatin1String("tfm_vibrance")
+        || filterId == QLatin1String("tfm_color_temperature") || filterId == QLatin1String("tfm_vignette")
+        || filterId == QLatin1String("tfm_filmgrain") || filterId == QLatin1String("tfm_color_range_mask");
+    if (backend == QLatin1String("auto") && inexpensive && pixels > 0 && pixels <= 256 * 256)
+        return vulkanWorkerReady();
+    return true;
+}
+
+QString cpuBackendReason(const QString &filterId, qint64 pixels, bool u8)
+{
+    if (requestedBackend(filterId) == QLatin1String("auto") && cpuGrainRegion(filterId, pixels, u8))
+        return QStringLiteral("Auto: CPU preferred for U8 film grain at this area");
+    return requestedBackend(filterId) == QLatin1String("auto")
+        ? QStringLiteral("Auto: small region with cold Vulkan worker") : QStringLiteral("CPU selected");
 }
 
 void reportBackend(const QString &filter, const QString &actual, const QString &reason, const QString &device)

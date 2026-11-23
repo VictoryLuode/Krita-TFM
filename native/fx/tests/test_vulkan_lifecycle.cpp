@@ -2,6 +2,9 @@
 // faulty protocol peer, never the user's installed worker or Krita instance.
 #include "tfm_vulkan.h"
 #include "tfm_vulkan_ipc.h"
+#include "tfm_gpu_budget.h"
+
+std::uint64_t tfm::gpuMemoryBudgetBytes() { return gpuMemoryBudgetBytesFromEnv(); }
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>

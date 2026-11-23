@@ -472,7 +472,7 @@
     {
       "id": "tfm_halation",
       "label": "Halation",
-      "description": "Film-style red glow gathered from highlights around bright edges.",
+      "description": "Film-base red fringe: soft-gated highlights with wider red / narrower blue scatter into dark edges.",
       "category": "Artistic",
       "settings": [
         {
@@ -563,7 +563,7 @@
         {
           "key": "glow_color",
           "label": "Glow Color",
-          "default": "#ff6b38",
+          "default": "#ff4a1e",
           "value_type": "string",
           "catalog": false,
           "editable": false

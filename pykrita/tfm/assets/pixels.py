@@ -1,7 +1,7 @@
 """Pack QImage pixels into the channel order Krita paint layers expect.
 
-RGBA documents store Blue, Green, Red, Alpha. QImage Format_ARGB32 uses
-that same byte order. 16-bit channels are the 8-bit value scaled to 0..65535.
+On the supported little-endian host, U8 ARGB32 bytes are already BGRA.
+U16 layers receive straight BGRA64 pixels from the original QImage.
 """
 
 import array
@@ -34,13 +34,17 @@ def qimage_from_bgra8(raw, width, height):
 
 
 def paint_bytes(image, depth):
-    packed, width, height = pack_bgra8(image)
-    if width < 1 or height < 1:
+    if image is None or image.isNull():
         return b"", 0, 0
     if depth == "U8":
-        return packed, width, height
+        return pack_bgra8(image)
     if depth == "U16":
-        return expand_u8_to_u16(packed), width, height
+        from ..menus.qtcompat import QImage
+
+        # Qt converts premultiplied and lower-depth inputs to straight RGBA64.
+        # rgbSwapped exchanges the 16-bit R/B words in Qt's native code.
+        bgra = image.convertToFormat(QImage.Format.Format_RGBA64).rgbSwapped()
+        return _packed_rows(bgra, 8)
     return None
 
 
@@ -52,11 +56,15 @@ def pack_bgra8(image):
     converted = image
     if converted.format() != QImage.Format.Format_ARGB32:
         converted = converted.convertToFormat(QImage.Format.Format_ARGB32)
+    return _packed_rows(converted, 4)
+
+
+def _packed_rows(converted, bytes_per_pixel):
     width = converted.width()
     height = converted.height()
     stride = converted.bytesPerLine()
     raw = _image_bytes(converted)
-    row = width * 4
+    row = width * bytes_per_pixel
     if len(raw) < stride * height:
         raise ValueError("short image buffer")
     if stride == row:
@@ -78,7 +86,7 @@ def qbytearray_from(data):
 
 def _image_bytes(image):
     size = image.sizeInBytes() if hasattr(image, "sizeInBytes") else image.byteCount()
-    bits = image.bits()
+    bits = image.constBits()
     setsize = getattr(bits, "setsize", None)
     if setsize is not None:
         setsize(size)

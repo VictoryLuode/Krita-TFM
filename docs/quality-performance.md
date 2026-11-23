@@ -53,7 +53,9 @@ Actual U8 paint devices, standard sRGB, real filters/conversions/IPC, one CPU th
 | tfm_filmgrain / 5120 | 333.1 ms | 943.6 ms | 724.3 ms |
 | tfm_vignette / 5120 | 536.4 ms | 949.6 ms | 725.1 ms |
 
-Production Auto/GPU policy prefers Vulkan for every supported filter; filters fall back to CPU when the worker rejects the job (unsupported depth, memory budget, missing device, etc.). The table above remains historical evidence of cold/warm crossover sizes and is not used as a runtime size gate. Explicit CPU still forces the CPU path.
+On the same workstation with eight CPU threads and a 4096 × 4096 U8 image, twelve warm samples gave median CPU/GPU times of 164.1/475.3 ms for film grain and 517.7/454.7 ms for vibrance. The maximum CPU/GPU difference was one U8 code value for each. Set `TFM_BENCH_THREADS=8` to repeat this calibration.
+
+Auto prefers CPU for U8 film grain through 16,777,216 pixels. Other lightweight paths use CPU through 65,536 pixels when the Vulkan worker is cold. Explicit GPU bypasses both rules. A rejected GPU job can still fall back to CPU.
 
 Run `scripts/benchmark_assets.py`, `scripts/benchmark_gpu_worker.py`, and the compiled `native/fx/tests/benchmark_backend_native.cpp` to refresh evidence after relevant hardware or processing changes. The latter uses `TFM_BENCH_LARGE=1` for 4096 and `=2` for 5120.
 
@@ -61,4 +63,4 @@ Run `scripts/benchmark_assets.py`, `scripts/benchmark_gpu_worker.py`, and the co
 
 The asset column above uses `assets-final.json`, rerun after responsibility splits and scroll restoration. The earlier implementation checkpoint is retained in `assets-after.json`; the baseline is unchanged.
 
-Colour-range mask was additionally calibrated with the same end-to-end method: CPU/GPU bytes were identical at all five sizes. CPU warm / GPU cold / GPU warm medians were 0.04 / 228.60 / 0.29 ms at 64, 56.35 / 335.65 / 114.17 ms at 2048, and 310.81 / 897.11 / 678.52 ms at 5120. Auto therefore retains CPU across the supported single-buffer U8 range; manual GPU remains available. See `backend-benchmark-mask*/backend-benchmark.json` for all samples.
+Colour-range mask was additionally calibrated with the same end-to-end method: CPU/GPU bytes were identical at all five sizes. CPU warm / GPU cold / GPU warm medians were 0.04 / 228.60 / 0.29 ms at 64, 56.35 / 335.65 / 114.17 ms at 2048, and 310.81 / 897.11 / 678.52 ms at 5120. The current Auto policy applies the same small-region cold-start rule to the mask. See `backend-benchmark-mask*/backend-benchmark.json` for all samples.

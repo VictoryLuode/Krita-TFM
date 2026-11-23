@@ -87,7 +87,7 @@ class SearchLibraryMixin:
         root = Path(user_data_dir) if user_data_dir is not None else (
             Path(cache_dir) / 'search-data' if cache_dir is not None else
             Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)) / 'quick-image-search' / 'library')
-        self.search_store = SearchStore(root / 'searches.json')
+        self.search_store = SearchStore.for_panel(root / 'searches.json')
         self._grid_settings = UIPreferences(root / 'ui.json')
         self._grid_pending_size = None
         self._grid_save_timer = QTimer(self)

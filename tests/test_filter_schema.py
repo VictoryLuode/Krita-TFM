@@ -1,5 +1,3 @@
-import hashlib
-import importlib.util
 import json
 from pathlib import Path
 import runpy
@@ -21,10 +19,16 @@ def test_invalid_schema_is_rejected():
         generator['outputs'](schema)
 
 
-def test_catalog_matches_pre_refactor_contract():
-    catalog = runpy.run_path(str(ROOT / 'pykrita/tfm/filters/catalog.py'))
-    value = {'filters': catalog['FILTERS'], 'defaults': catalog['FILTER_DEFAULT_SPECS']}
-    actual = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
-    # Frozen from the untouched baseline catalog, not the schema generator.
-    assert actual == 'a2379162c7fe4dc3b6c1e2ad2441170efec977a1e6cfbd889641d994008b8175'
-
+def test_persisted_filter_contract():
+    schema = json.loads((ROOT / 'schema/filters.json').read_text(encoding='utf-8'))
+    expected = json.loads(Path(__file__).with_name('filter_contract.json').read_text(encoding='utf-8'))
+    fields = ('value_type', 'default', 'min', 'max', 'aliases')
+    assert {entry['id'] for entry in schema['filters']} == set(expected)
+    for entry in schema['filters']:
+        actual = {}
+        for setting in entry['settings']:
+            contract = {k: setting[k] for k in fields if k in setting}
+            if 'options' in setting:
+                contract['options'] = [option[0] for option in setting['options']]
+            actual[setting['key']] = contract
+        assert actual == expected[entry['id']], entry['id']

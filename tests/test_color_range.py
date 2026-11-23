@@ -37,6 +37,9 @@ def main():
         def setPixelData(self, data, x, y, width, height):
             self.data = bytes(data)
             self.width, self.height = width, height
+        def duplicate(self):
+            import copy
+            return copy.copy(self)
         def invert(self):
             self.data = bytes(255 - value for value in self.data)
         def select(self, x, y, width, height, value):
@@ -122,7 +125,8 @@ def main():
         commit.assert_not_called()
     dialog = ColorRangeDialog(doc)
     expected = dialog.combined_mask()
-    with mock.patch.object(doc, 'setSelection', wraps=doc.setSelection) as commit:
+    with mock.patch('tfm.color_range_dialog._calculate_mask', side_effect=AssertionError('recomputed unchanged mask')), \
+         mock.patch.object(doc, 'setSelection', wraps=doc.setSelection) as commit:
         dialog.apply()
         commit.assert_called_once()
         assert doc.result.pixelData(0, 0, 5, 1) == expected
@@ -320,6 +324,25 @@ def main():
         commit.assert_called_once()
         assert bytes(commit.call_args.args[0].data) == noisy_mask
         warning.assert_not_called()
+    # Out-of-order parameter changes while a full-resolution preview is running.
+    from time import monotonic
+    large = QImage(4096, 4096, QImage.Format_ARGB32)
+    large.fill(QColor(128, 128, 128))
+    large_doc = FakeDocument(large)
+    Krita._instance.document = large_doc
+    preview = ColorRangeDialog(large_doc)
+    assert preview.luminance is None  # First full-size luminance job is asynchronous.
+    preview.threshold.setValue(230)
+    preview.refresh()
+    deadline = monotonic() + 5
+    while (preview._preview_busy or preview._mask_cache_key != preview._mask_key()) and monotonic() < deadline:
+        wait_refresh()
+    assert preview._mask_cache_key == preview._mask_key()
+    assert preview._mask_cache == bytes(large.width() * large.height())
+    # Same dimensions, changed contents, no edit signal: apply must see the new pixel.
+    large_doc.image.setPixelColor(0, 0, QColor(255, 255, 255))
+    preview.apply()
+    assert large_doc.result.data[:2] == bytes((255, 0))
     from PyQt5 import sip
     for widget in app.topLevelWidgets():
         if not sip.isdeleted(widget):

@@ -1,3 +1,9 @@
+# TFM 0.1.11
+
+- Advanced Selection moves the initial luminance calculation off the UI thread on large canvases. Replace checks the current pixels and parameters before reusing a preview mask.
+- Auto selects CPU for 8-bit Film Grain on regions up to 16,777,216 pixels. Users can still select GPU explicitly.
+- Asset Library zoom combines consecutive wheel inputs and preserves the current asset position in thumbnail and list views.
+
 # TFM 0.1.10
 
 - Remove Statistical Color Match; Guided Color Match remains the color-transfer path.
